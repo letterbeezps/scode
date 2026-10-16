@@ -47,7 +47,9 @@ ls .agents/skills | head
 
 ## 当前状态
 
-**脚手架阶段，还没有真正的 agent 代码。** 仓库当前只有 uv 初始化的空壳：
+**Python 后端还是脚手架，网页前端已经能跑了。**
+
+后端这边：
 
 - `pyproject.toml` 的 `dependencies` 还是空的，`deepagents` **尚未安装**
 - `stupid_code/main.py` 只打印一句 `Hello from stupid-code!`
@@ -55,9 +57,18 @@ ls .agents/skills | head
 
 `deepagents` 的安装命令见下方「快速开始」。装完记得把 `dependencies = []` 这个占位描述也一并更新掉。
 
+前端这边（`web/`）：
+
+- 按 [`docs/frontend-design.md`](docs/frontend-design.md) 实现的任务列表、流式对话、
+  工具调用可视化、Diff 渲染、待办同步
+- 输入区下方有**工作空间**（文件夹浏览器）和**权限**（`manual` / `normal` / `auto` 三级确认策略）
+- 全部按设计文档的接口契约写，但**后端一个接口都还没有**，目前只能跑 mock 模式
+
 ---
 
 ## 技术栈
+
+### 后端
 
 | 项目 | 说明 |
 | --- | --- |
@@ -68,6 +79,18 @@ ls .agents/skills | head
 | 控制台脚本 | `scode` → `stupid_code:start` |
 
 `deepagents` 会连带装上 `langchain`（≥ 1.4）、`langchain-core`（≥ 1.6）、`langchain-anthropic`、`langchain-google-genai` 和 `langsmith`。
+
+### 前端
+
+| 项目 | 说明 |
+| --- | --- |
+| 框架 | Vite 8 + React 19 + TypeScript 6 |
+| 样式 | TailwindCSS 4（CSS 变量驱动主题，亮/暗） |
+| 状态 | Zustand 5 |
+| 路由 | React Router 7 |
+| 包管理 | [pnpm](https://pnpm.io/)（`web/pnpm-lock.yaml` 锁定依赖，版本号也锁在 `package.json` 的 `packageManager`） |
+
+前端是**完全独立的项目**，不参与 uv 的依赖管理，两边互不牵连。
 
 ### Deep Agents 提供了什么
 
@@ -156,6 +179,41 @@ result = agent.invoke({"messages": "Research LangGraph and write a summary"})
 
 配合 `deepagents-python-quickstart` skill 一起看。
 
+### 7. 起网页前端
+
+`web/` 是独立的前端项目，用 pnpm 管理，不参与上面 uv 那套。
+
+```bash
+cd web
+pnpm install
+```
+
+后端（LangGraph API Server）还没做，**必须先开 mock 模式才看得到界面**，下面二选一：
+
+```bash
+# 方式一：命令行直接给
+VITE_USE_MOCK=true pnpm dev
+```
+
+```bash
+# 方式二：写进环境文件（.env.example 里已经是 VITE_USE_MOCK=true），之后 pnpm dev 就行
+cp .env.example .env.local
+pnpm dev
+```
+
+打开 <http://localhost:5173>。
+
+注意 mock **默认是关的** —— `VITE_USE_MOCK` 不设即为 false，前端会直接去连后端然后满屏报错。
+后端起来之后关掉它：
+
+```bash
+VITE_USE_MOCK=false pnpm dev
+```
+
+开发态 Vite 把 `/api/*` 代理到 `VITE_LANGGRAPH_URL`（默认 `http://localhost:2024`，即 `langgraph dev` 的端口）。
+
+界面细节、接口契约、`GET /directories` 的约定都在 [`web/README.md`](web/README.md)。
+
 ---
 
 ## 项目结构
@@ -166,6 +224,13 @@ stupid-code/
 ├── uv.lock                 # 依赖锁定
 ├── .python-version         # 3.12
 ├── skills-lock.json        # langchain-skills 的安装记录与 hash
+├── docs/                   # 设计文档
+│   ├── overall-design.md   # 整体架构与后端接口契约
+│   └── frontend-design.md  # 网页前端的界面与交互设计
+├── web/                    # 网页前端（Vite + React，与 Python 相互独立）
+│   ├── README.md           # 前端说明、接口契约、工作空间与权限
+│   ├── pnpm-lock.yaml
+│   └── src/                # api / store / components / pages
 ├── stupid_code/
 │   ├── __init__.py         # start() —— scode 命令的入口
 │   └── main.py             # 主逻辑（当前是占位）
