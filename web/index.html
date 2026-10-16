@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>stupid-code</title>
+    <script>
+      // 在首屏绘制前定好主题，避免闪烁。
+      // 配色完全由 CSS 变量驱动：:root 是暗色，html.light 覆盖成亮色，
+      // 所以这里只需要挂/摘 .light，不要给 <html> 写死任何主题类名。
+      try {
+        if (localStorage.getItem('stupid-code:theme') === 'light') {
+          document.documentElement.classList.add('light')
+        }
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
