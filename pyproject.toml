@@ -4,7 +4,20 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    # server
+    "deepagents>=0.7.28",
+    "httpx>=0.28.1",
+    "langchain>=1.4.6",
+    "langgraph-checkpoint-sqlite>=3.1.2",
+    # client
+    "langgraph-cli[inmem]>=0.4.36",
+    "langgraph-runtime-inmem>=0.36.1",
+    "langgraph-sdk>=0.4.8",
+    #model
+    "langchain-anthropic>=1.7.6",
+    "pydantic>=2.14.1",
+]
 
 [project.scripts]
 scode = "stupid_code:start"
