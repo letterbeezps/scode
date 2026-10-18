@@ -1,0 +1,27 @@
+# 复制本文件为同目录的 config.toml 后填写真实值（config.toml 不入库）。
+
+[models]
+# 模型选择顺序：default → recent。格式："供应商名:模型名"
+default = "minimax:MiniMax-M3"
+# recent 后续由"模型切换"功能自动写回，本期仅作 default 缺省时的回退
+recent = "minimax:MiniMax-M3"
+
+[models.providers.minimax]
+# 协议只支持 anthropic / openai
+protocol = "anthropic"
+display_name = "MiniMax"
+base_url = "https://api.minimax.cn/anthropic"
+# 明文填写；conf/config.toml 已 gitignore，不会入库
+api_key = "sk-你的MiniMax密钥"
+models = [
+    "MiniMax-M3",
+    "MiniMax-M2.5",
+]
+
+# 第二个供应商示例：openai 协议（用于验证多供应商切换）
+[models.providers.deepseek]
+protocol = "openai"
+display_name = "DeepSeek"
+base_url = "https://api.deepseek.com"
+api_key = "sk-你的DeepSeek密钥"
+models = ["deepseek-chat"]

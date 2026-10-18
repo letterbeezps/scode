@@ -26,13 +26,16 @@ uv run scode
 
 | 文件 | 作用 |
 |---|---|
-| [langgraph.json](langgraph.json) | LangGraph 配置：图注册、依赖、env 文件，路径均相对本目录 |
+| [langgraph.json](langgraph.json) | LangGraph 配置：图注册、依赖，路径均相对本目录 |
 | [agent.py](agent.py) | `code_agent` 图：`create_deep_agent()`，导出 `graph` |
+| [config.py](config.py) | 加载与校验 `../conf/config.toml`，构建模型实例 |
 | [main.py](main.py) | `scode` 命令入口：启动子进程、就绪探测、生命周期管理 |
-| `.env` | API key 等环境变量（不入库，见根 `.gitignore`） |
 | `.langgraph_api/` | `langgraph dev` 的 pickle 持久化缓存（不入库，可随时删除） |
+
+> 模型供应商配置（含 api_key）改在项目根 `conf/config.toml`（从 `conf/config.example.toml` 复制，不入库）。本项目不再使用 `.env`。 |
 
 ## 注意
 
 - 不要给 `create_deep_agent()` 传 `checkpointer`：`langgraph dev` 平台自带持久化，显式传入会启动失败。对话历史由平台写入 `.langgraph_api/`，重启后仍可恢复。
-- 详细的阶段目标与验证步骤见 `../docs/backend/001_basic_agent_server.md`。
+- 模型供应商配置在项目根 `conf/config.toml`（从 `conf/config.example.toml` 复制），选择顺序 `default` → `recent`，协议只支持 anthropic / openai；改配置需重启服务。
+- 详细的阶段目标与验证步骤见 `../docs/backend/001_basic_agent_server.md`、`../docs/backend/002_config_toml_models.md`。
