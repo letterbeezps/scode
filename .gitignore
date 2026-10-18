@@ -15,3 +15,8 @@ wheels/
 .env
 .env.*
 !.env.example
+
+# langgraph dev 本地持久化（checkpoint/队列/store 的 pickle 缓存）
+.langgraph_api/
+
+
