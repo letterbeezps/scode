@@ -47,22 +47,30 @@ ls .agents/skills | head
 
 ## 当前状态
 
-**Python 后端还是脚手架，网页前端已经能跑了。**
+**后端 Agent Server 已跑通，前端能连真后端完成一轮对话（001 期完成）。**
 
-后端这边：
+后端（`stupid_code/`）：
 
-- `pyproject.toml` 的 `dependencies` 还是空的，`deepagents` **尚未安装**
-- `stupid_code/main.py` 只打印一句 `Hello from stupid-code!`
-- `uv.lock` 里只有本项目一个包
+- 依赖已装齐并锁进 `uv.lock`：`deepagents`、`langchain`、`langchain-anthropic`、`langgraph-cli[inmem]`、`langgraph-sdk`、`langgraph-runtime-inmem`、`langgraph-checkpoint-sqlite`、`httpx`、`pydantic`
+- `langgraph.json` 注册了 `code_agent` 图（`./agent.py:graph`），`agent.py` 里 `create_deep_agent()` 导出 `graph`
+- `uv run scode` 以子进程拉起 `langgraph dev`（监听 `127.0.0.1:2024`），自动轮询 `GET /ok` 与 `GET /assistants/{id}/graph` 做就绪验证；`Ctrl+C` 或 SIGTERM 会连整个子进程组一起关掉，不留孤儿占端口
+- 对话历史由 `langgraph dev` 的 inmem 持久化写进 `stupid_code/.langgraph_api/`（已 gitignore，可随时删），刷新页面能恢复
 
-`deepagents` 的安装命令见下方「快速开始」。装完记得把 `dependencies = []` 这个占位描述也一并更新掉。
+前端（`web/`）：
 
-前端这边（`web/`）：
-
-- 按 [`docs/frontend-design.md`](docs/frontend-design.md) 实现的任务列表、流式对话、
-  工具调用可视化、Diff 渲染、待办同步
+- 按 [`docs/frontend-design.md`](docs/frontend-design.md) 实现的任务列表、流式对话、工具调用可视化、Diff 渲染、待办同步
 - 输入区下方有**工作空间**（文件夹浏览器）和**权限**（`manual` / `normal` / `auto` 三级确认策略）
-- 全部按设计文档的接口契约写，但**后端一个接口都还没有**，目前只能跑 mock 模式
+- `VITE_USE_MOCK=false` 下直连真后端；mock 只是后端没跑时演示 UI 用的
+
+还没做的（按阶段推进，文档在 `docs/backend/`）：
+
+- **下一期是 [002 config.toml 多供应商模型配置](docs/backend/002_config_toml_models.md)** —— 把模型供应商从 `.env` 单供应商迁到 `config.toml`，支持 anthropic / openai 两种协议。文档已写，代码还没动
+- `GET /directories` **未实现** —— 工作空间选择器在真后端下报 404 属预期，见 [`stupid_code/API.md`](stupid_code/API.md)
+- 工作空间 / 权限目前只是前端随请求发过去的参数（`config.configurable`），**后端还没在工具入口读它、也没按档位拦截**
+- 危险操作确认（HumanInTheLoop）、写文件落真实磁盘、路径逃逸拦截、运行护栏 —— 都还没做
+- 全仓库**没有自动化测试、没有 CI**，验证靠 [`docs/backend/001_basic_agent_server.md`](docs/backend/001_basic_agent_server.md) 里的手工步骤
+
+> 写代码前先看一眼 [`AGENTS.md`](AGENTS.md)：里面记了 checkpointer、路径解析、端点用法这些踩过的坑。
 
 ---
 
@@ -78,7 +86,7 @@ ls .agents/skills | head
 | Agent 框架 | [`deepagents`](https://pypi.org/project/deepagents/)（MIT，当前最新 0.7.x，要求 Python ≥ 3.11） |
 | 控制台脚本 | `scode` → `stupid_code:start` |
 
-`deepagents` 会连带装上 `langchain`（≥ 1.4）、`langchain-core`（≥ 1.6）、`langchain-anthropic`、`langchain-google-genai` 和 `langsmith`。
+`pyproject.toml` 里显式声明的是 `deepagents`、`langchain`、`langchain-anthropic`、`langgraph-cli[inmem]`、`langgraph-sdk`、`langgraph-runtime-inmem`、`langgraph-checkpoint-sqlite`、`httpx`、`pydantic`；`deepagents` 自身还会再拉一批传递依赖进来。
 
 ### 前端
 
@@ -134,32 +142,49 @@ LangSmith     ← 横切，追踪与评测
 uv sync
 ```
 
-### 3. 装 deepagents
+依赖已经在 `pyproject.toml` 里声明好并锁进 `uv.lock`，不用再 `uv add`。
+
+> `deepagents` 是 model-agnostic 的，任何支持 tool calling 的模型都行——OpenAI、Anthropic、Google、Ollama / vLLM 自托管的开放权重模型都可以。换 provider 时改 `stupid_code/agent.py` 里的 `init_chat_model(...)` 即可。
+
+### 3. 配置 API key
+
+**建在 `stupid_code/.env`，不是仓库根目录。** `langgraph.json` 里的 `"env": "./.env"` 是相对 `stupid_code/` 解析的，放错地方启动时读不到 key。
 
 ```bash
-uv add deepagents python-dotenv
-uv add langchain-anthropic   # 或 langchain-openai / langchain-google-genai，按你选的模型来
-```
-
-> `deepagents` 是 model-agnostic 的，任何支持 tool calling 的模型都行——OpenAI、Anthropic、Google、Ollama / vLLM 自托管的开放权重模型都可以。具体用哪个 provider 的包，取决于你选哪个模型。
-
-### 4. 配置 API key
-
-在项目根目录建 `.env`（**记得加进 `.gitignore`**，别把 key 提交上去）：
-
-```bash
+# stupid_code/.env
 ANTHROPIC_API_KEY=sk-ant-...
-# 或
-OPENAI_API_KEY=sk-...
 ```
 
-### 5. 跑起来
+`.env` 已被 `.gitignore` 忽略，别把 key 提交上去。
+
+> 001 期就这一份 `.env`、单供应商。002 期会迁到 `config.toml`（见 [`docs/backend/002_config_toml_models.md`](docs/backend/002_config_toml_models.md)），`.env` 届时只留密钥供 `${VAR}` 引用。
+
+### 4. 跑起来
 
 ```bash
 uv run scode
 ```
 
-### 6. 跑通官方最小示例
+看到这两行才算启动成功（`/ok` 通了 + `code_agent` 图能加载）：
+
+```
+✅ Agent Server 已就绪：http://127.0.0.1:2024/ok
+✅ 图 code_agent 已注册并可加载（6 个节点）
+```
+
+60 秒没就绪、或子进程提前退出，`scode` 会报错并以退出码 1 结束。`Ctrl+C` 停止。
+
+改完 `langgraph.json` 想确认配置本身没问题：
+
+```bash
+uv run langgraph validate --config stupid_code/langgraph.json   # Configuration file ... is valid. (1 graph found)
+```
+
+排查见 [`stupid_code/README.md`](stupid_code/README.md) 和 [`docs/backend/001_basic_agent_server.md`](docs/backend/001_basic_agent_server.md)。
+
+> ⚠️ **别给 `create_deep_agent()` 传 `checkpointer`。** `langgraph dev` 会直接抛 ValueError（持久化由平台接管，不需要你配）。
+
+### 5. 跑通官方最小示例
 
 别急着抄现成的代码，先照着官方 quickstart 手写一遍 research agent，把 `create_deep_agent` 的形状摸清楚：
 
@@ -179,38 +204,31 @@ result = agent.invoke({"messages": "Research LangGraph and write a summary"})
 
 配合 `deepagents-python-quickstart` skill 一起看。
 
-### 7. 起网页前端
+### 6. 起网页前端
 
-`web/` 是独立的前端项目，用 pnpm 管理，不参与上面 uv 那套。
+`web/` 是独立的前端项目，用 pnpm 管理，不参与上面 uv 那套。后端起来了，**默认就该走真后端**：
 
 ```bash
 cd web
 pnpm install
-```
-
-后端（LangGraph API Server）还没做，**必须先开 mock 模式才看得到界面**，下面二选一：
-
-```bash
-# 方式一：命令行直接给
-VITE_USE_MOCK=true pnpm dev
-```
-
-```bash
-# 方式二：写进环境文件（.env.example 里已经是 VITE_USE_MOCK=true），之后 pnpm dev 就行
 cp .env.example .env.local
+```
+
+`.env.example` 里 `VITE_USE_MOCK=true`，连真后端时把它改成 `false`，然后：
+
+```bash
 pnpm dev
 ```
 
-打开 <http://localhost:5173>。
+打开 <http://localhost:5173>。开发态 Vite 把 `/api/*` 代理到 `VITE_LANGGRAPH_URL`（默认 `http://localhost:2024`，即 `langgraph dev` 的端口），避免跨域。
 
-注意 mock **默认是关的** —— `VITE_USE_MOCK` 不设即为 false，前端会直接去连后端然后满屏报错。
-后端起来之后关掉它：
+mock 只是后端没跑时演示 UI 用的，可以临时开：
 
 ```bash
-VITE_USE_MOCK=false pnpm dev
+VITE_USE_MOCK=true pnpm dev
 ```
 
-开发态 Vite 把 `/api/*` 代理到 `VITE_LANGGRAPH_URL`（默认 `http://localhost:2024`，即 `langgraph dev` 的端口）。
+`src/api/mock/` 用与真后端**完全相同的接口签名**实现假数据，覆盖流式 token、工具调用状态流转、todo 同步、Diff 渲染、停止生成等路径，侧边栏有黄色提示条提示当前是假数据。注意 mock **默认是关的** —— `VITE_USE_MOCK` 不设即为 false，前端会直接去连后端然后满屏报错。
 
 界面细节、接口契约、`GET /directories` 的约定都在 [`web/README.md`](web/README.md)。
 
@@ -220,23 +238,34 @@ VITE_USE_MOCK=false pnpm dev
 
 ```
 stupid-code/
-├── pyproject.toml          # 项目配置与依赖（scode 入口在这里）
-├── uv.lock                 # 依赖锁定
-├── .python-version         # 3.12
-├── skills-lock.json        # langchain-skills 的安装记录与 hash
-├── docs/                   # 设计文档
-│   ├── overall-design.md   # 整体架构与后端接口契约
-│   └── frontend-design.md  # 网页前端的界面与交互设计
-├── web/                    # 网页前端（Vite + React，与 Python 相互独立）
-│   ├── README.md           # 前端说明、接口契约、工作空间与权限
+├── AGENTS.md                # 给编码 Agent 看的项目约定：命令、坑、边界
+├── pyproject.toml           # 项目配置与依赖（scode 入口在这里）
+├── uv.lock                  # 依赖锁定
+├── .python-version          # 3.12
+├── skills-lock.json         # langchain-skills 的安装记录与 hash
+├── docs/                    # 设计文档
+│   ├── overall-design.md    # 目标架构与前后端接口契约
+│   ├── frontend-design.md   # 网页前端的界面与交互设计
+│   └── backend/             # 按阶段推进的后端任务文档
+│       └── 001_basic_agent_server.md
+├── web/                     # 网页前端（Vite + React，与 Python 相互独立）
+│   ├── README.md            # 前端说明、接口契约、工作空间与权限
 │   ├── pnpm-lock.yaml
-│   └── src/                # api / store / components / pages
-├── stupid_code/
-│   ├── __init__.py         # start() —— scode 命令的入口
-│   └── main.py             # 主逻辑（当前是占位）
-└── .agents/skills/         # langchain-skills（gitignore，需自行安装）
+│   └── src/                 # api / store / components / pages
+├── stupid_code/             # 后端 Python 包
+│   ├── README.md            # 后端启动说明
+│   ├── API.md               # 当前实际在用的端点清单
+│   ├── langgraph.json       # 图注册：code_agent → ./agent.py:graph
+│   ├── agent.py             # create_deep_agent()，导出 graph
+│   ├── main.py              # scode：拉起子进程 + 就绪探测 + 优雅关停
+│   ├── __init__.py          # start() —— scode 命令的入口
+│   ├── .env                 # API key（gitignore，需自建）
+│   └── .langgraph_api/      # langgraph dev 的持久化缓存（gitignore，可删）
+└── .agents/skills/          # langchain-skills（gitignore，需自行安装）
     └── ... 22 个 skill
 ```
+
+> 后端所有路径都相对 `stupid_code/` 解析（`langgraph.json` 在那里，`scode` 也把子进程 cwd 设成那里）。别把 `langgraph.json` / `.env` / `agent.py` 挪出去。
 
 ---
 
@@ -276,7 +305,9 @@ stupid-code/
 
 - 边界要**在工具层 / 沙箱层**强制执行，不要指望模型自觉
 - 跑在真实仓库里之前，先在容器或一次性沙箱里试
-- 危险命令的批准流程用 `HumanInTheLoopMiddleware` 配 checkpointer 搭起来
+- 危险命令的批准流程用 `HumanInTheLoopMiddleware` 搭；中断恢复需要的 checkpointer 由 `langgraph dev` 平台自动提供，**不要手动传给 `create_deep_agent()`**（会直接抛 ValueError）
+- **只监听 `127.0.0.1`**。`scode` 已经写死了这个地址，别改成 `0.0.0.0` —— 一个天生带 shell 执行和文件写权限的 agent 暴露到局域网，等于把整台机器交出去
+- `/directories` 这类会暴露文件系统结构的端点，用之前必须加路径白名单
 - API key 永远走环境变量 / `.env`，别硬编码
 
 ---
