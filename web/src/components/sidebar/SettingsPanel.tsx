@@ -1,6 +1,13 @@
 /**
  * 侧边栏底部的设置区（前端设计文档 3.1：模型选择器 + 设置入口）。
+ *
+ * 模型列表来自后端 /admin/models（conf/config.toml），不再是写死的四项。
+ *
+ * 注意这里的下拉框只是**本地偏好**：后端实际用哪个模型由 config.toml 的
+ * [models].default 决定，没有任何端点能改它。所以选中态与 default 不一致时
+ * 要显式提示，不能让人以为「选了就算切了」。
  */
+import { useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { Moon, Settings, Sun } from 'lucide-react'
 import { isMockMode } from '../../api/client'
@@ -8,28 +15,48 @@ import { useSettingsStore } from '../../store/settingsStore'
 import { useUIStore } from '../../store/uiStore'
 
 export function SettingsPanel() {
-  const modelId = useSettingsStore((s) => s.modelId)
   const models = useSettingsStore((s) => s.models)
-  const setModel = useSettingsStore((s) => s.setModel)
+  const defaultId = useSettingsStore((s) => s.defaultId)
+  const selectedId = useSettingsStore((s) => s.selectedId)
+  const setModel = useSettingsStore((s) => s.select)
+  const load = useSettingsStore((s) => s.load)
   const theme = useUIStore((s) => s.theme)
   const toggleTheme = useUIStore((s) => s.toggleTheme)
+
+  // 首次挂载拉一次列表。设置页也会 load()，重复请求无副作用。
+  useEffect(() => {
+    void load()
+  }, [load])
 
   return (
     <div className="space-y-2">
       <label className="block">
         <span className="sr-only">选择模型</span>
         <select
-          value={modelId}
+          value={selectedId}
           onChange={(e) => setModel(e.target.value)}
+          disabled={models.length === 0}
           className={cnSelect()}
         >
+          {models.length === 0 && <option value="">没有可用模型</option>}
           {models.map((model) => (
             <option key={model.id} value={model.id}>
-              {model.label}
+              {model.display_name ? `${model.display_name} · ${model.name}` : model.name}
             </option>
           ))}
         </select>
       </label>
+
+      {selectedId && defaultId && selectedId !== defaultId && (
+        <p className="text-[11px] leading-relaxed text-fg-muted">
+          仅本地选中；后端实际用的是 <code className="font-mono">{defaultId}</code>。
+          改默认模型请到{' '}
+          <Link to="/settings" className="text-accent hover:underline">
+            设置 → 模型管理
+          </Link>
+          。
+        </p>
+      )}
 
       <div className="flex items-center gap-1">
         <button
@@ -65,5 +92,6 @@ function cnSelect(): string {
   return [
     'w-full rounded-md border border-line bg-bg px-2 py-1.5 text-xs text-fg',
     'transition-colors hover:border-accent focus:border-accent focus:outline-none',
+    'disabled:cursor-not-allowed disabled:opacity-50',
   ].join(' ')
 }

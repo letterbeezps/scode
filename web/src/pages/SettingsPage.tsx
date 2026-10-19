@@ -1,21 +1,24 @@
 /**
  * 设置页（设计文档 9 的 `/settings`）。
  *
- * 模型选择会写进 localStorage，但目前还没有把它透传给后端：
- * LangGraph 的 run 请求体里模型由后端配置决定，前端选择只在 UI 层生效。
- * 等后端接上 model 参数后，这里补一个字段即可。
+ * 模型一节接的是后端 /admin/models（契约见 stupid_code/API.md「模型管理」），
+ * 操作对象是仓库根的 conf/config.toml，不再是写死的本地列表。
+ *
+ * 下拉框里的「选中」仍只是本地偏好：后端用哪个模型由 config.toml 的
+ * [models].default 决定，没有任何端点能改它，所以这里把这点写清楚。
  */
 import { Link } from 'react-router-dom'
 import { ArrowLeft, Monitor, Moon, Sun } from 'lucide-react'
 import { apiBaseUrl, isMockMode } from '../api/client'
+import { ModelManager } from '../components/settings/ModelManager'
 import { useSettingsStore } from '../store/settingsStore'
 import { useUIStore } from '../store/uiStore'
 import { cn } from '../lib/cn'
 
 export function SettingsPage() {
-  const modelId = useSettingsStore((s) => s.modelId)
+  const selectedId = useSettingsStore((s) => s.selectedId)
   const models = useSettingsStore((s) => s.models)
-  const setModel = useSettingsStore((s) => s.setModel)
+  const setModel = useSettingsStore((s) => s.select)
   const theme = useUIStore((s) => s.theme)
   const toggleTheme = useUIStore((s) => s.toggleTheme)
 
@@ -58,22 +61,30 @@ export function SettingsPage() {
           </div>
         </Section>
 
-        <Section title="模型">
+        <Section title="默认模型">
           <select
-            value={modelId}
+            value={selectedId}
             onChange={(e) => setModel(e.target.value)}
-            className="w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-fg focus:border-accent focus:outline-none"
+            disabled={models.length === 0}
+            className="w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-fg focus:border-accent focus:outline-none disabled:opacity-50"
           >
+            {models.length === 0 && <option value="">没有可用模型</option>}
             {models.map((model) => (
               <option key={model.id} value={model.id}>
-                {model.label}（{model.provider}）
+                {model.display_name ? `${model.display_name} · ${model.name}` : model.name}（{model.provider}）
               </option>
             ))}
           </select>
           <p className="mt-1.5 text-xs text-fg-muted">
-            选择目前只在本地生效。后端的模型由 <code className="font-mono">langgraph.json</code>{' '}
-            与服务端环境变量决定。
+            这里的选择只写进浏览器本地。后端实际使用的模型由{' '}
+            <code className="font-mono">conf/config.toml</code> 的{' '}
+            <code className="font-mono">[models].default</code> 决定，接口没有提供改它的入口，
+            改完要重启服务。
           </p>
+        </Section>
+
+        <Section title="模型管理">
+          <ModelManager />
         </Section>
 
         <Section title="后端连接">

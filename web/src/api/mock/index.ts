@@ -11,7 +11,19 @@
 import type { RunHandlers } from '../run'
 import type { DirectoryListing } from '../directory'
 import { permissionMeta } from '../../lib/permissions'
-import type { RunOptions, Thread, Todo } from '../types'
+import { ApiError } from '../client'
+import type {
+  AdminModel,
+  ModelCreateInput,
+  ModelCreateResult,
+  ModelDeleteResult,
+  ModelListResponse,
+  ModelUpdateInput,
+  ModelUpdateResult,
+  RunOptions,
+  Thread,
+  Todo,
+} from '../types'
 
 /* ------------------------------------------------------------ 内存态 */
 
@@ -369,5 +381,185 @@ export const mockRuns = {
     })()
 
     return () => controller.abort()
+  },
+}
+
+/* ------------------------------------------------------------ 模型管理 */
+
+/**
+ * conf/config.toml 的内存镜像，按真实后端 config.py 的语义实现：
+ *
+ * - provider 分组保存连接字段，但接口层摊平成「每个模型自带全部字段」
+ * - api_key 脱敏规则同款：长度 ≤4 显示 ****，否则 ***末4位
+ * - 新增时 provider 已存在则校验 protocol / base_url 一致，否则报 ConfigError
+ * - PUT 只写 body 里出现的字段；连接字段是供应商级的，所以 co_affected 是整段
+ * - 删完某个供应商的 models[] 为空时自动清理该段
+ * - 删模型**不会**调整 default / recent（与真实后端一致），留给 UI 提示
+ */
+interface MockProvider {
+  protocol: AdminModel['protocol']
+  display_name?: string | null
+  base_url?: string | null
+  api_key: string
+  models: string[]
+}
+
+const mockConfig: { default: string | null; recent: string | null; providers: Record<string, MockProvider> } = {
+  default: 'minimax:MiniMax-M3',
+  recent: 'minimax:MiniMax-M3',
+  providers: {
+    minimax: {
+      protocol: 'anthropic',
+      display_name: 'MiniMax',
+      base_url: 'https://api.minimax.cn/anthropic',
+      api_key: 'sk-mock-minimax-1234',
+      models: ['MiniMax-M3', 'MiniMax-M2.5'],
+    },
+    deepseek: {
+      protocol: 'openai',
+      display_name: 'DeepSeek',
+      base_url: 'https://api.deepseek.com',
+      api_key: 'sk-mock-deepseek-5678',
+      models: ['deepseek-chat'],
+    },
+  },
+}
+
+function mockMask(key: string): string {
+  return key.length <= 4 ? '****' : `***${key.slice(-4)}`
+}
+
+function mockConfigError(message: string): never {
+  // 与 request() 抛出的是同一种错误，上层的错误处理只需要认 ApiError
+  throw new ApiError(message, 400, { error: message })
+}
+
+function mockParseId(modelId: string): { provider: string; model: string } {
+  const [provider, ...rest] = modelId.split(':')
+  const model = rest.join(':')
+  if (!provider || !model) {
+    mockConfigError(`模型 ID '${modelId}' 不合法，应为 "供应商名:模型名"`)
+  }
+  return { provider, model }
+}
+
+function mockToModel(providerName: string, p: MockProvider, model: string, reveal: boolean): AdminModel {
+  return {
+    id: `${providerName}:${model}`,
+    name: model,
+    provider: providerName,
+    protocol: p.protocol,
+    display_name: p.display_name ?? null,
+    base_url: p.base_url ?? null,
+    api_key: reveal ? p.api_key : mockMask(p.api_key),
+  }
+}
+
+export const mockAdminModels = {
+  async list(reveal = false): Promise<ModelListResponse> {
+    const models: AdminModel[] = []
+    for (const [name, p] of Object.entries(mockConfig.providers)) {
+      for (const model of p.models) models.push(mockToModel(name, p, model, reveal))
+    }
+    return {
+      default: mockConfig.default,
+      recent: mockConfig.recent,
+      models,
+      restart_required: true,
+    }
+  },
+
+  async get(id: string, reveal = false): Promise<AdminModel> {
+    const { provider, model } = mockParseId(id)
+    const p = mockConfig.providers[provider]
+    if (!p || !p.models.includes(model)) {
+      const message = `模型 '${id}' 不存在`
+      throw new ApiError(message, 404, { error: message })
+    }
+    return mockToModel(provider, p, model, reveal)
+  },
+
+  async create(body: ModelCreateInput): Promise<ModelCreateResult> {
+    const name = body?.name
+    if (!name) mockConfigError('name 必填（模型名）')
+    if (body.protocol !== 'anthropic' && body.protocol !== 'openai') {
+      mockConfigError(`protocol 只支持 anthropic / openai，当前为 '${body.protocol}'`)
+    }
+    if (!body.provider) mockConfigError('provider 必填（供应商名）')
+    if (!body.api_key) mockConfigError(`api_key 必填（模型 ${name}）`)
+
+    const existing = mockConfig.providers[body.provider]
+    if (!existing) {
+      mockConfig.providers[body.provider] = {
+        protocol: body.protocol,
+        display_name: body.display_name ?? null,
+        base_url: body.base_url ?? null,
+        api_key: body.api_key,
+        models: [name],
+      }
+      return { id: `${body.provider}:${name}`, created: true, restart_required: true }
+    }
+
+    if (existing.protocol !== body.protocol) {
+      mockConfigError(
+        `供应商 '${body.provider}' 已存在且 protocol='${existing.protocol}'，` +
+          `与请求 '${body.protocol}' 不一致`,
+      )
+    }
+    if (body.base_url && existing.base_url && body.base_url !== existing.base_url) {
+      mockConfigError(
+        `供应商 '${body.provider}' 已存在且 base_url='${existing.base_url}'，` +
+          `与请求 '${body.base_url}' 不一致（要改用 PUT）`,
+      )
+    }
+    if (existing.models.includes(name)) mockConfigError(`模型 ${body.provider}:${name} 已存在`)
+    existing.models.push(name)
+    return { id: `${body.provider}:${name}`, created: true, restart_required: true }
+  },
+
+  async update(id: string, body: ModelUpdateInput): Promise<ModelUpdateResult> {
+    const { provider, model } = mockParseId(id)
+    const p = mockConfig.providers[provider]
+    if (!p || !p.models.includes(model)) {
+      const message = `模型 '${id}' 不存在`
+      throw new ApiError(message, 404, { error: message })
+    }
+
+    if (body.protocol !== undefined) {
+      if (body.protocol !== 'anthropic' && body.protocol !== 'openai') {
+        mockConfigError(`protocol 只支持 anthropic / openai，当前为 '${body.protocol}'`)
+      }
+      p.protocol = body.protocol
+    }
+    if (body.base_url !== undefined) p.base_url = body.base_url
+    if (body.display_name !== undefined) p.display_name = body.display_name
+    if (body.api_key !== undefined) {
+      if (!body.api_key) mockConfigError('api_key 不能为空')
+      p.api_key = body.api_key
+    }
+
+    return {
+      id,
+      updated: true,
+      co_affected: p.models.filter((m) => m !== model).map((m) => `${provider}:${m}`),
+      restart_required: true,
+    }
+  },
+
+  async delete(id: string): Promise<ModelDeleteResult> {
+    const { provider, model } = mockParseId(id)
+    const p = mockConfig.providers[provider]
+    if (!p || !p.models.includes(model)) {
+      const message = `模型 '${id}' 不存在`
+      throw new ApiError(message, 404, { error: message })
+    }
+
+    p.models = p.models.filter((m) => m !== model)
+    let remaining = p.models.map((m) => `${provider}:${m}`)
+    if (p.models.length === 0) {
+      delete mockConfig.providers[provider]
+      remaining = []
+    }
+    return { id, deleted: true, remaining_peers: remaining, restart_required: true }
   },
 }

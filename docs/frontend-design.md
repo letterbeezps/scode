@@ -272,7 +272,12 @@ interface TaskStore {
 
 ### 5.5 settingsStore
 
-模型选择。列表目前写死四项，存在 `localStorage`，不参与对话状态。
+模型配置。数据源是后端 `GET /admin/models`（即 `conf/config.toml` 的视图），
+增删改走 `/admin/models` 一族端点，不再是写死的本地列表。
+
+下拉框里的「选中」仍只写 `localStorage`，**不改后端实际使用的模型**——
+后端用哪个由 `conf/config.toml` 的 `[models].default` 决定，接口没有提供改它的入口。
+所以两者不一致时 UI 要显式提示，不能让人以为「选了就算切了」。
 
 ### 5.6 消息的数据形状
 
@@ -678,8 +683,9 @@ refractor 的语言包，属于按需加载，不在首屏关键路径上。
       后端要能挂起工具调用、前端要能展示确认卡片，**这套协议还没设计**
 - [ ] 右侧文件预览面板（本期布局已按两栏设计，接上不影响）
 - [ ] 历史消息分页加载策略
-- [ ] 多模型切换的真正透传（`/settings` 的模型选择目前只写 `localStorage`，
-      后端模型由 `langgraph.json` 和服务端环境变量决定）
+- [ ] 多模型切换的真正透传（`/settings` 的模型选择仍只写 `localStorage`；
+      模型增删改已接 `/admin/models`，但改后端实际使用的模型要手改
+      `conf/config.toml` 的 `[models].default` 再重启，没有接口入口）
 - [ ] 附件上传与 @提及文件
 - [ ] 移动端适配（本期优先桌面端）
 - [ ] **虚拟滚动**：`index.css` 里的 `.cv-auto` 已定义但尚未挂到消息项上，目前是全量渲染。

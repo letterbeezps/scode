@@ -103,9 +103,87 @@ export interface ThreadListResponse {
   threads: Thread[]
 }
 
-/** 客户端可枚举的模型（/settings 页展示） */
-export interface ModelOption {
+/* ------------------------------------------------------------------ 模型管理 */
+
+/**
+ * 一个模型的完整描述（`GET /admin/models` 扁平数组里的一项）。
+ *
+ * 接口层按「模型」而不是「供应商」暴露：toml 内部虽然按 provider 分组避免
+ * 重复写 api_key / base_url，但每次返回都把连接字段摊平到每个模型上，
+ * 前端不需要（也不该）理解分组结构。
+ *
+ * api_key 默认脱敏（`***末4位`），只有带 `?reveal=true` 才返回明文。
+ */
+export interface AdminModel {
+  /** `供应商名:模型名`，与 conf/config.toml 里 [models].default 同格式 */
   id: string
-  label: string
-  provider?: string
+  name: string
+  provider: string
+  /** 只接受 anthropic / openai */
+  protocol: ModelProtocol
+  display_name?: string | null
+  /** 留空则用协议官方端点 */
+  base_url?: string | null
+  api_key?: string | null
+}
+
+export type ModelProtocol = 'anthropic' | 'openai'
+
+/** `GET /admin/models` 的响应 */
+export interface ModelListResponse {
+  /** config.toml 里 [models].default，后端实际使用的模型 */
+  default: string | null
+  /** config.toml 里 [models].recent，default 缺省时的回退 */
+  recent: string | null
+  models: AdminModel[]
+  /** 配置是启动时读的，改完必须重启才生效 */
+  restart_required: boolean
+}
+
+/** 新增模型的请求体（config.py add_model 的入参） */
+export interface ModelCreateInput {
+  name: string
+  protocol: ModelProtocol
+  provider: string
+  base_url?: string
+  api_key: string
+  display_name?: string
+}
+
+/**
+ * 修改模型的请求体。
+ *
+ * 字段**只影响出现的那些**：后端 update_model 逐个判断 `"key" in body`，
+ * 所以 api_key 留空时必须整个字段不发，而不是发空串（空串会报 ConfigError）。
+ */
+export interface ModelUpdateInput {
+  protocol?: ModelProtocol
+  base_url?: string
+  api_key?: string
+  display_name?: string
+}
+
+/** POST /admin/models 的 201 响应 */
+export interface ModelCreateResult {
+  id: string
+  created: boolean
+  restart_required: boolean
+}
+
+/** PUT /admin/models/{id} 的 200 响应 */
+export interface ModelUpdateResult {
+  id: string
+  updated: boolean
+  /** 受影响的其他同级模型：连接字段按 provider 分组，改一个会波及整段 */
+  co_affected: string[]
+  restart_required: boolean
+}
+
+/** DELETE /admin/models/{id} 的 200 响应 */
+export interface ModelDeleteResult {
+  id: string
+  deleted: boolean
+  /** 剩余同级模型；空数组表示该供应商段已被自动清理 */
+  remaining_peers: string[]
+  restart_required: boolean
 }
