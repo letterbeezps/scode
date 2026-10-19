@@ -54,7 +54,7 @@ ls .agents/skills | head
 - 依赖已装齐并锁进 `uv.lock`：`deepagents`、`langchain`、`langchain-anthropic`、`langgraph-cli[inmem]`、`langgraph-sdk`、`langgraph-runtime-inmem`、`langgraph-checkpoint-sqlite`、`httpx`、`pydantic`
 - `langgraph.json` 注册了 `code_agent` 图（`./agent.py:graph`），`agent.py` 里 `create_deep_agent()` 导出 `graph`
 - `uv run scode` 以子进程拉起 `langgraph dev`（监听 `127.0.0.1:2024`），自动轮询 `GET /ok` 与 `GET /assistants/{id}/graph` 做就绪验证；`Ctrl+C` 或 SIGTERM 会连整个子进程组一起关掉，不留孤儿占端口
-- scode 把 langgraph 进程当用完即弃的本地计算进程：**在哪个目录运行 scode，那个目录就是工作空间**（子进程 cwd）；langgraph 必然生成的 `.langgraph_api/` 易失缓存落在工作空间下，但 scode 启动前/退出时各删一次（有价值状态都在 SQLite，删它无损失）；派生 langgraph.json 放 `$TMPDIR/scode-config-*`（退出即删）；唯一持久的是 checkpoint/store，经 `persistence.py` 写入 `stupid_code/data/langgraph.db`（已 gitignore，删掉即重置历史），刷新页面能恢复对话
+- scode 把 langgraph 进程当用完即弃的本地计算进程：**在哪个目录运行 scode，那个目录就是工作空间**（子进程 cwd）；langgraph 必然生成的 `.langgraph_api/` 落在工作空间下并**保留**（里面的 `.langgraph_ops.pckl` 是 thread 索引，删了重启后会话列表就空）；派生 langgraph.json 放 `$TMPDIR/scode-config-*`（退出即删）；持久状态分两处：thread 索引在 `.langgraph_api/`，checkpoint/store 经 `persistence.py` 写入 `stupid_code/data/langgraph.db`（已 gitignore，删掉即重置历史），两者都在才能跨重启恢复对话
 
 前端（`web/`）：
 
@@ -269,7 +269,7 @@ stupid-code/
     └── ... 22 个 skill
 ```
 
-> **工作空间语义**：在哪个目录运行 `uv run scode`，langgraph 子进程的 cwd 就是那个目录（agent 未来的文件/shell 工具以此为根）。langgraph 必然在 cwd 生成的 `.langgraph_api/` 由 scode 在启动前和退出时各删一次；scode 自己把路径绝对化后的派生 langgraph.json 放进 `$TMPDIR/scode-config-*`（退出即删）。作者视角的配置路径仍相对 `stupid_code/` 写，别把 `langgraph.json` / `agent.py` / `persistence.py` / `admin/app.py` 挪出去——这四个路径被 `langgraph.json` 直接引用。
+> **工作空间语义**：在哪个目录运行 `uv run scode`，langgraph 子进程的 cwd 就是那个目录（agent 未来的文件/shell 工具以此为根）。langgraph 必然在 cwd 生成的 `.langgraph_api/` **保留不动**（里面的 ops pckl 是 thread 索引，删了重启后历史会话取不回来）；scode 自己把路径绝对化后的派生 langgraph.json 放进 `$TMPDIR/scode-config-*`（退出即删）。作者视角的配置路径仍相对 `stupid_code/` 写，别把 `langgraph.json` / `agent.py` / `persistence.py` / `admin/app.py` 挪出去——这四个路径被 `langgraph.json` 直接引用。
 
 ---
 

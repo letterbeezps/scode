@@ -496,6 +496,15 @@ Content-Type: application/json
   **这是正常收尾，不是前端 bug**。error 事件在关闭之前已经送到，前端能正常显示
 - 平台 `error` 事件是 `{"error": "AnthropicAuthenticationError", "message": "An internal error occurred"}`，
   只显示 message 等于什么都没说，两个字段要合起来给用户看
+- **重启后 thread 会整体"消失"，除非保留 `.langgraph_api/`**：checkpoint 快照确实持久化在
+  `stupid_code/data/langgraph.db`（`checkpoints` / `writes` 两张表），但 **thread 索引**
+  （会话列表、metadata、status）存在工作空间的 `.langgraph_api/.langgraph_ops.pckl` 里。
+  删掉该目录再重启，`POST /threads/search` 返回空数组、`GET /threads/{id}/state` 报 404
+  `Thread or assistant not found.`——数据还躺在 SQLite 里，平台却认不出这些 thread 了。
+  保留该目录后，两者都恢复正常（`same-named .langgraph_checkpoint.*.pckl` 是空的，
+  说明 checkpoint 确实只走 SQLite）
+- 附带结论：thread 索引按**工作空间**分（跟着 cwd 走），checkpoint 按**代码文件**定位
+  （全局一份）。两者不在同一个工作空间时索引会与 checkpoint 失配
 
 ### 官方文档
 

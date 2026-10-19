@@ -18,7 +18,8 @@ wheels/
 !.env.example
 conf/config.toml
 
-# langgraph dev 的易失缓存（scode 会在启动前/退出时清理工作空间里的这个目录；
+# langgraph dev 的运行状态目录（工作空间下；scode 不再清理它——
+# 里面的 .langgraph_ops.pckl 是 thread 索引，删了重启后会话列表就空了；
 # 直接手动跑 langgraph dev 或在后端目录运行时也会出现，一并忽略）
 .langgraph_api/
 

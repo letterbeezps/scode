@@ -15,10 +15,13 @@ uv run scode
 1. **工作空间 = 当前目录**：langgraph 子进程的 cwd 就是你运行 scode 的目录，
    未来 agent 的 shell / 文件工具以它为根（当前 deepagents 默认 StateBackend，
    文件还在 graph state 的虚拟文件系统里，与 cwd 无关）；
-2. **`.langgraph_api/` 注定消失**：langgraph inmem 运行时必然在 cwd 下生成它
-   （路径硬编码，无法配置改位），但里面只有易失缓存——scode 在启动前和退出时
-   各删一次（启动前那次兜底上次被强杀的残留）。有价值的数据都在 SQLite，删它无损失；
-3. **唯一持久的状态**（checkpoint / store）经自定义 saver 写入本包目录下的
+2. **`.langgraph_api/` 保留不动**：langgraph inmem 运行时必然在 cwd 下生成它
+   （路径硬编码，无法配置改位）。里面的 `.langgraph_ops.pckl` 是 **thread 索引**——
+   会话列表与 metadata 的来源。删掉它，平台重启后认不出已有 thread：
+   `/threads/search` 返回空、`/threads/{id}/state` 报 404，历史数据还躺在
+   SQLite 里却取不出来。所以 scode 不再清理它；
+3. **持久状态分两处，缺一不可**：thread 索引在工作空间的 `.langgraph_api/` 里；
+   checkpoint / store 经自定义 saver 写入本包目录下的
    `data/langgraph.db`（SQLite），路径按代码文件定位，与你在哪个目录运行无关；
 4. 派生配置（把 langgraph.json 里的 `./agent.py` 等相对路径绝对化）写到
    `$TMPDIR/scode-config-*`，退出即删。
@@ -29,7 +32,7 @@ uv run scode
 2. `GET /assistants/{id}/graph` — `code_agent` 图能正常加载。
 
 两项都通过后输出就绪提示；60 秒未就绪或子进程崩溃则以退出码 1 失败。
-`Ctrl+C` / SIGTERM / SIGINT 都会关闭整个子进程组并清理工作空间缓存，不残留进程占用端口。
+`Ctrl+C` / SIGTERM / SIGINT 都会关闭整个子进程组并清理临时配置目录，不残留进程占用端口。
 scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件会自我触发重启），改后端代码后请重启 scode。
 
 前端联调另开终端：`cd ../web && pnpm dev`（http://localhost:5173）。
@@ -42,7 +45,7 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 |---|---|
 | **起停** | |
 | [__init__.py](__init__.py) | `start()` —— `scode` 命令入口；设 `sys.dont_write_bytecode` 保证源码目录零运行残留 |
-| [launcher.py](launcher.py) | cwd 即工作空间、生成临时派生配置、就绪探测、`.langgraph_api` 启动前/退出清理、生命周期管理 |
+| [launcher.py](launcher.py) | cwd 即工作空间、生成临时派生配置、就绪探测、生命周期管理（`.langgraph_api` 保留不清理） |
 | **图与持久化** | |
 | [agent.py](agent.py) | `code_agent` 图：`create_deep_agent()`，导出 `graph` |
 | [persistence.py](persistence.py) | SQLite 持久化工厂：`AsyncSqliteSaver`（checkpoint）+ `AsyncSqliteStore`（store），都指向 `data/langgraph.db` |

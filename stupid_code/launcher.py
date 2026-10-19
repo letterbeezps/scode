@@ -11,12 +11,15 @@
   即 graph state 里的虚拟文件系统，与 cwd 无关；将来接真实磁盘 backend 时
   会直接以 cwd 为根）。
 - langgraph dev 必然在 cwd 下生成 `.langgraph_api/`（inmem 运行时硬编码的
-  相对路径，无法通过配置改到别处）。它只是 inmem 的易失缓存：
-  checkpoint 已由 persistence.py 的 SQLite saver 接管，里面没有有价值数据，
-  所以 scode 在【启动前】和【退出时】各删一次——让它成为一个"注定消失"的目录；
-  启动前删是为了兜住上次被强杀（SIGKILL / 断电）没走到退出清理的情况。
-- 唯一有价值的运行产物是 checkpoint/store，由 persistence.py 按 __file__
-  定位到 stupid_code/data/langgraph.db，与工作空间目录无关。
+  相对路径，无法通过配置改到别处）。**这个目录要保留，不要删**：checkpoint
+  确实已由 persistence.py 的 SQLite saver 接管（同名的
+  `.langgraph_checkpoint.*.pckl` 是空的），但 `.langgraph_ops.pckl` 存的是
+  **thread 索引**——会话列表与 metadata 的来源。删掉它，平台重启后认不出
+  已有 thread：`/threads/search` 返回空、`/threads/{id}/state` 报 404，
+  历史数据还躺在 SQLite 里却取不出来。
+- 持久状态有两处，缺一不可：thread 索引在工作空间的 `.langgraph_api/` 里；
+  checkpoint/store 由 persistence.py 按 __file__ 定位到
+  stupid_code/data/langgraph.db，与工作空间目录无关。
 
 另外：
 - 派生配置（把 ./agent.py 等相对路径绝对化后的 langgraph.json）放系统临时目录，
@@ -47,7 +50,6 @@ OK_URL = f"{BASE_URL}/ok"
 GRAPH_ID = "code_agent"
 CONFIG_NAME = "langgraph.json"
 RUNTIME_DIR_PREFIX = "scode-config-"
-LANGGRAPH_CACHE_DIR = ".langgraph_api"
 READY_TIMEOUT_SECONDS = 60.0
 POLL_INTERVAL_SECONDS = 0.5
 STOP_TIMEOUT_SECONDS = 10.0
@@ -157,11 +159,14 @@ def _handle_sigterm(*_) -> None:
     raise KeyboardInterrupt()
 
 
-def _cleanup_runtime(workspace: Path, runtime_dir: Path, proc: subprocess.Popen) -> None:
-    """停止子进程并清掉两类残留：工作空间里的 .langgraph_api、临时配置目录。"""
+def _cleanup_runtime(runtime_dir: Path, proc: subprocess.Popen) -> None:
+    """停止子进程并清掉临时配置目录。
+
+    工作空间里的 .langgraph_api **不删**：它是 langgraph dev 的 thread 索引
+    （.langgraph_ops.pckl），删掉等于每次重启都把会话列表清零。
+    """
     _terminate(proc)
-    # 子进程停手后再删缓存，避免与它的 flush 线程竞争
-    shutil.rmtree(workspace / LANGGRAPH_CACHE_DIR, ignore_errors=True)
+    # 子进程停手后再删临时配置，避免与它的 flush 线程竞争
     shutil.rmtree(runtime_dir, ignore_errors=True)
 
 
@@ -185,9 +190,6 @@ def main() -> None:
     workspace = Path.cwd()
     backend_dir = _backend_dir()
 
-    # 上次若被强杀，.langgraph_api 会留在工作空间；启动前先清，保证幂等。
-    shutil.rmtree(workspace / LANGGRAPH_CACHE_DIR, ignore_errors=True)
-
     # 派生配置只放临时目录（退出即删），不污染工作空间
     runtime_dir = Path(tempfile.mkdtemp(prefix=RUNTIME_DIR_PREFIX))
     config_path = _build_runtime_config(backend_dir, runtime_dir)
@@ -208,7 +210,8 @@ def main() -> None:
     ]
 
     # cwd = 用户工作空间：agent 未来的 shell / 文件工具以这里为根。
-    # .langgraph_api 会生成在工作空间下，由本进程在启动前/退出时清理。
+    # .langgraph_api 生成在工作空间下并**保留**：里面的 ops pckl 是 thread 索引，
+    # 删了重启后会话列表就空了（checkpoint 本身在 SQLite，不受影响）。
     # PYTHONDONTWRITEBYTECODE：后端源码按绝对路径加载，不在源码目录留 __pycache__。
     # start_new_session=True：子进程成为新进程组组长，退出时可整组清理，
     # 同时 Ctrl+C 的 SIGINT 只发给父进程，由我们统一控制关闭顺序。
@@ -230,7 +233,7 @@ def main() -> None:
             node_count = _wait_until_ready(client, proc)
     except Exception as exc:
         print(f"启动失败：{exc}", file=sys.stderr)
-        _cleanup_runtime(workspace, runtime_dir, proc)
+        _cleanup_runtime(runtime_dir, proc)
         raise SystemExit(1) from exc
 
     print(f"✅ Agent Server 已就绪：{OK_URL}")
@@ -245,4 +248,4 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n正在停止服务...")
     finally:
-        _cleanup_runtime(workspace, runtime_dir, proc)
+        _cleanup_runtime(runtime_dir, proc)
