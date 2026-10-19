@@ -18,7 +18,11 @@ wheels/
 !.env.example
 conf/config.toml
 
-# langgraph dev 本地持久化（checkpoint/队列/store 的 pickle 缓存）
+# langgraph dev 的易失缓存（scode 会在启动前/退出时清理工作空间里的这个目录；
+# 直接手动跑 langgraph dev 或在后端目录运行时也会出现，一并忽略）
 .langgraph_api/
+
+# SQLite 持久化数据（checkpoint + store）
+stupid_code/data/
 
 
