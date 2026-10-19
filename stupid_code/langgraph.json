@@ -2,5 +2,8 @@
   "dependencies": ["."],
   "graphs": {
     "code_agent": "./agent.py:graph"
+  },
+  "http": {
+    "app": "./admin_app.py:app"
   }
 }

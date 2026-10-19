@@ -7,7 +7,9 @@
 模型在 agent.py 导入时构建一次，改配置需重启服务。
 """
 
+import os
 import tomllib
+import tomli_w
 from pathlib import Path
 from typing import Any
 
@@ -116,3 +118,196 @@ def build_model(config: dict[str, Any]) -> BaseChatModel:
 
 def load_model() -> BaseChatModel:
     return build_model(load_config())
+
+
+def save_config(config: dict[str, Any]) -> None:
+    """原子写回 conf/config.toml。先写临时文件再 os.replace，
+    避免半截写入导致下一次启动解析失败。注释会丢失（tomli_w 不保留注释）。"""
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".toml.tmp")
+    with tmp.open("wb") as fp:
+        tomli_w.dump(config, fp)
+    os.replace(tmp, path)
+
+
+def _mask(key: str | None) -> str | None:
+    """api_key 脱敏：长度 ≤4 显示 ****，否则显示末 4 位。"""
+    if not key:
+        return None
+    if len(key) <= 4:
+        return "****"
+    return f"***{key[-4:]}"
+
+
+def _parse_model_id(model_id: str) -> tuple[str, str]:
+    """解析 'provider:model' 为 (provider, model_name)。
+    与 conf/config.toml 里 [models].default = "minimax:MiniMax-M3" 的格式对齐。"""
+    if ":" not in model_id:
+        raise ConfigError(f'模型 ID {model_id!r} 不合法，应为 "供应商名:模型名"')
+    provider, _, model_name = model_id.partition(":")
+    provider = provider.strip()
+    model_name = model_name.strip()
+    if not provider or not model_name:
+        raise ConfigError(f'模型 ID {model_id!r} 不合法，应为 "供应商名:模型名"')
+    return provider, model_name
+
+
+def list_models(config: dict[str, Any], reveal: bool = False) -> list[dict[str, Any]]:
+    """扁平化返回所有模型，每个模型自带全部连接字段。
+    toml 内部按 provider 分组避免 key/base_url 重复，接口层不暴露该结构。"""
+    providers = config.get("models", {}).get("providers", {})
+    out = []
+    for prov_name, p in providers.items():
+        for model_name in p.get("models", []):
+            out.append({
+                "id": f"{prov_name}:{model_name}",
+                "name": model_name,
+                "provider": prov_name,
+                "protocol": p.get("protocol"),
+                "display_name": p.get("display_name"),
+                "base_url": p.get("base_url"),
+                "api_key": p.get("api_key") if reveal else _mask(p.get("api_key")),
+            })
+    return out
+
+
+def get_model(config: dict[str, Any], model_id: str, reveal: bool = False) -> dict[str, Any] | None:
+    """按 'provider:model' 取单个模型详情。不存在返回 None。"""
+    provider_name, model_name = _parse_model_id(model_id)
+    p = config.get("models", {}).get("providers", {}).get(provider_name)
+    if p is None or model_name not in p.get("models", []):
+        return None
+    return {
+        "id": model_id,
+        "name": model_name,
+        "provider": provider_name,
+        "protocol": p.get("protocol"),
+        "display_name": p.get("display_name"),
+        "base_url": p.get("base_url"),
+        "api_key": p.get("api_key") if reveal else _mask(p.get("api_key")),
+    }
+
+
+def add_model(config: dict[str, Any], body: dict[str, Any]) -> str:
+    """新增模型。body 必含 name/protocol/provider/base_url/api_key，display_name 可选。
+    返回新建模型 id（'provider:model'）。
+
+    语义：
+    - provider 不存在 → 创建新段，body 提供的连接字段全部落进去
+    - provider 已存在 → 把 name 加到该 provider 的 models[] 列表
+      连接字段（protocol/base_url）与现有不一致时报 ConfigError，避免静默覆盖；
+      要改用 PUT。同名模型已存在报 ConfigError。
+    """
+    if not isinstance(body, dict):
+        raise ConfigError("请求体必须是 JSON 对象")
+
+    name = body.get("name")
+    if not isinstance(name, str) or not name:
+        raise ConfigError("name 必填（模型名）")
+
+    protocol = body.get("protocol")
+    if protocol not in SUPPORTED_PROTOCOLS:
+        raise ConfigError(
+            f"protocol 只支持 {' / '.join(SUPPORTED_PROTOCOLS)}，当前为 {protocol!r}"
+        )
+
+    provider_name = body.get("provider")
+    if not isinstance(provider_name, str) or not provider_name:
+        raise ConfigError("provider 必填（供应商名）")
+
+    base_url = body.get("base_url")
+    api_key = body.get("api_key")
+    if not isinstance(api_key, str) or not api_key:
+        raise ConfigError(f"api_key 必填（模型 {name}）")
+
+    providers = config.setdefault("models", {}).setdefault("providers", {})
+    existing = providers.get(provider_name)
+
+    if existing is None:
+        # 新建供应商段
+        providers[provider_name] = {
+            "protocol": protocol,
+            "display_name": body.get("display_name"),
+            "base_url": base_url,
+            "api_key": api_key,
+            "models": [name],
+        }
+        return f"{provider_name}:{name}"
+
+    # 已存在的供应商段：连接字段必须一致
+    if existing.get("protocol") != protocol:
+        raise ConfigError(
+            f"供应商 {provider_name!r} 已存在且 protocol={existing.get('protocol')!r}，"
+            f"与请求 {protocol!r} 不一致"
+        )
+    if base_url and existing.get("base_url") and base_url != existing.get("base_url"):
+        raise ConfigError(
+            f"供应商 {provider_name!r} 已存在且 base_url={existing.get('base_url')!r}，"
+            f"与请求 {base_url!r} 不一致（要改用 PUT）"
+        )
+    models_list = existing.setdefault("models", [])
+    if name in models_list:
+        raise ConfigError(f"模型 {provider_name}:{name} 已存在")
+    models_list.append(name)
+    return f"{provider_name}:{name}"
+
+
+def update_model(
+    config: dict[str, Any], model_id: str, body: dict[str, Any]
+) -> tuple[bool, list[str]]:
+    """改模型属性。可改：protocol、base_url、api_key、display_name。
+    model_name 自身不可改（要改请删后增）。
+
+    返回 (是否成功, 受影响的其他同级模型 id 列表)。
+    注意：toml 按 provider 分组，这些字段属于整个供应商段，所以会
+    影响该供应商下所有同级模型——co_affected 列出它们让用户知情。
+    """
+    provider_name, model_name = _parse_model_id(model_id)
+    providers = config.get("models", {}).get("providers", {})
+    p = providers.get(provider_name)
+    if p is None or model_name not in p.get("models", []):
+        return False, []
+
+    if not isinstance(body, dict):
+        raise ConfigError("请求体必须是 JSON 对象")
+
+    if "protocol" in body:
+        if body["protocol"] not in SUPPORTED_PROTOCOLS:
+            raise ConfigError(
+                f"protocol 只支持 {' / '.join(SUPPORTED_PROTOCOLS)}，当前为 {body['protocol']!r}"
+            )
+        p["protocol"] = body["protocol"]
+    if "base_url" in body:
+        p["base_url"] = body["base_url"]
+    if "api_key" in body:
+        if not isinstance(body["api_key"], str) or not body["api_key"]:
+            raise ConfigError("api_key 不能为空")
+        p["api_key"] = body["api_key"]
+    if "display_name" in body:
+        p["display_name"] = body["display_name"]
+
+    co_affected = [f"{provider_name}:{m}" for m in p.get("models", []) if m != model_name]
+    return True, co_affected
+
+
+def delete_model(config: dict[str, Any], model_id: str) -> tuple[bool, list[str]]:
+    """删模型。返回 (是否删除, 剩余同级模型 id 列表)。
+
+    若删除后该供应商 models[] 为空，自动删除整个供应商段，保持 toml 一致性。
+    """
+    provider_name, model_name = _parse_model_id(model_id)
+    providers = config.get("models", {}).get("providers", {})
+    p = providers.get(provider_name)
+    if p is None:
+        return False, []
+    models_list = p.get("models", [])
+    if model_name not in models_list:
+        return False, []
+    models_list.remove(model_name)
+    co_remaining = [f"{provider_name}:{m}" for m in models_list]
+    if not models_list:
+        # 该供应商段已空，自动清理
+        providers.pop(provider_name, None)
+        co_remaining = []
+    return True, co_remaining

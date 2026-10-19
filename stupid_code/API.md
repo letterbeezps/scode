@@ -20,6 +20,11 @@
 | 前端 | POST | [`/threads/{id}/runs/stream`](#post-threadsidrunsstream) | 流式运行 | ✅ |
 | 前端 | POST | [`/threads/{id}/runs/{runId}/cancel`](#post-threadsidrunsrunidcancel) | 停止运行 | ✅ |
 | 前端 | GET | [`/directories`](#get-directories未实现) | 浏览目录（工作空间） | ❌ 未实现 |
+| 管理端 | GET | [`/admin/models`](#get-adminmodels) | 列出全部模型 | ✅（003 起） |
+| 管理端 | GET | [`/admin/models/{id}`](#get-adminmodelsid) | 单个模型详情 | ✅（003 起） |
+| 管理端 | POST | [`/admin/models`](#post-adminmodels) | 新增模型 | ✅（003 起） |
+| 管理端 | PUT | [`/admin/models/{id}`](#put-adminmodelsid) | 改模型属性 | ✅（003 起） |
+| 管理端 | DELETE | [`/admin/models/{id}`](#delete-adminmodelsid) | 删除模型 | ✅（003 起） |
 
 ---
 
@@ -203,6 +208,178 @@ Accept: text/event-stream
 **请求**：无 body。
 
 **响应 `200`**。
+
+---
+
+## 模型管理
+
+由 `stupid_code/admin_app.py` 提供的自定义 ASGI 路由，通过 `langgraph.json` 的 `http.app` 字段挂载到 langgraph dev 服务。操作对象是项目根 `conf/config.toml`（不入库）。**改完配置需重启 `scode` 才能让运行中的 graph 加载新模型实例**——所有响应里的 `restart_required: true` 就是这个意思。
+
+接口对外细粒度是**模型**：每个模型自带全部连接字段（`name` / `protocol` / `provider` / `base_url` / `api_key`）。toml 内部按 `provider` 分组只是为了避免重复写 `key` / `base_url`，接口层不暴露该结构。
+
+> 模型 id 形如 `provider:model_name`，与 `conf/config.toml` 里 `[models].default = "minimax:MiniMax-M3"` 的格式一致。URL 里冒号是合法字符，无需转义。
+
+> `api_key` 默认脱敏（末 4 位，长度 ≤4 时显示 `****`）；带 `?reveal=true` 才返回完整 key。
+
+### `GET /admin/models`
+
+列出全部模型，扁平数组，每项自带全部连接字段（key 默认脱敏）。
+
+**响应 `200`**
+
+```json
+{
+  "default": "minimax:MiniMax-M3",
+  "recent": "minimax:MiniMax-M3",
+  "models": [
+    {
+      "id": "minimax:MiniMax-M3",
+      "name": "MiniMax-M3",
+      "provider": "minimax",
+      "protocol": "anthropic",
+      "display_name": "MiniMax",
+      "base_url": "https://api.minimax.cn/anthropic",
+      "api_key": "***ax密钥"
+    },
+    {
+      "id": "minimax:MiniMax-M2.5",
+      "name": "MiniMax-M2.5",
+      "provider": "minimax",
+      "protocol": "anthropic",
+      "display_name": "MiniMax",
+      "base_url": "https://api.minimax.cn/anthropic",
+      "api_key": "***ax密钥"
+    }
+  ],
+  "restart_required": true
+}
+```
+
+### `GET /admin/models/{id}`
+
+单个模型详情。
+
+**路径参数**
+
+| 名 | 说明 |
+|---|---|
+| `id` | 模型 id，形如 `minimax:MiniMax-M3` |
+
+**查询参数**
+
+| 名 | 默认 | 说明 |
+|---|---|---|
+| `reveal` | `false` | 设为 `true` 返回完整 `api_key` |
+
+**响应 `200`**
+
+```json
+{
+  "id": "minimax:MiniMax-M3",
+  "name": "MiniMax-M3",
+  "provider": "minimax",
+  "protocol": "anthropic",
+  "display_name": "MiniMax",
+  "base_url": "https://api.minimax.cn/anthropic",
+  "api_key": "***ax密钥"
+}
+```
+
+**响应 `404`** — `{"error": "模型 'minimax:foo' 不存在"}`
+**响应 `400`** — id 格式不合法（缺冒号 / 空段），`{"error": "模型 ID 'xxx' 不合法，应为 \"供应商名:模型名\""}`
+
+### `POST /admin/models`
+
+新增模型。若该 `provider` 不存在则自动创建供应商段，已存在则把 `name` 加到该供应商的 `models[]` 列表。
+
+**请求**
+
+```http
+POST /admin/models
+Content-Type: application/json
+
+{
+  "name": "moonshot-v1-8k",
+  "protocol": "openai",
+  "provider": "moonshot",
+  "base_url": "https://api.moonshot.cn/v1",
+  "api_key": "sk-...",
+  "display_name": "Moonshot"
+}
+```
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `name` | 是 | 模型名（供应商给的标识） |
+| `protocol` | 是 | 只接受 `anthropic` / `openai` |
+| `provider` | 是 | 供应商名，作为 toml `[models.providers.<name>]` 段的 key |
+| `base_url` | 否 | 第三方端点；不填则用协议官方端点 |
+| `api_key` | 是 | 明文，写入 `conf/config.toml`（已 gitignore） |
+| `display_name` | 否 | 展示名，留给后续前端模型选择器 |
+
+> 若 `provider` 已存在，body 里的 `protocol` / `base_url` 必须与现有段一致，否则返回 `400`——这避免静默覆盖连接字段。要改用 `PUT`。
+
+**响应 `201`**
+
+```json
+{"id": "moonshot:moonshot-v1-8k", "created": true, "restart_required": true}
+```
+
+**响应 `400`** — ConfigError，例如：
+- `protocol` 不是 `anthropic` / `openai`
+- `name` 或 `provider` 或 `api_key` 缺失
+- 同名模型已存在：`{"error": "模型 minimax:MiniMax-M3 已存在"}`
+- 与已有供应商段连接字段冲突：`{"error": "供应商 'minimax' 已存在且 protocol='anthropic'，与请求 'openai' 不一致"}`
+
+### `PUT /admin/models/{id}`
+
+改模型属性。可改字段：`protocol`、`base_url`、`api_key`、`display_name`。`model_name` 自身不可改（要改请删后增）。
+
+**请求**
+
+```http
+PUT /admin/models/minimax:MiniMax-M3
+Content-Type: application/json
+
+{"api_key": "sk-rotated-key"}
+```
+
+**响应 `200`**
+
+```json
+{
+  "id": "minimax:MiniMax-M3",
+  "updated": true,
+  "co_affected": ["minimax:MiniMax-M2.5"],
+  "restart_required": true
+}
+```
+
+> `co_affected` 列出受影响的其他同级模型 id。因为 toml 按 `provider` 分组，`protocol` / `base_url` / `api_key` / `display_name` 实际属于整个供应商段，改一个模型会影响该供应商下所有同级模型——响应里明确告知，避免误以为是局部修改。
+
+**响应 `404`** — `{"error": "模型 'minimax:foo' 不存在"}`
+**响应 `400`** — ConfigError（如 `protocol` 不合法）
+
+### `DELETE /admin/models/{id}`
+
+删除模型。若删除后该供应商 `models[]` 变空，自动删除整个供应商段，保持 toml 一致性。
+
+**响应 `200`**
+
+```json
+{
+  "id": "minimax:MiniMax-M2.5",
+  "deleted": true,
+  "remaining_peers": ["minimax:MiniMax-M3"],
+  "restart_required": true
+}
+```
+
+> `remaining_peers` 列出剩余同级模型 id。空数组表示该供应商段已被自动清理。
+
+**响应 `404`** — `{"error": "模型 'minimax:foo' 不存在"}`
+
+> 删除后 `[models].default` / `[models].recent` 不会自动调整——如果删的模型恰好是 `default`，下次启动会报 ConfigError；需要手动改 `default` 指向仍存在的模型 id。
 
 ---
 
