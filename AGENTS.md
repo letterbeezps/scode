@@ -28,7 +28,7 @@ Python 侧**没有** ruff / black / mypy 配置，**整个仓库没有测试、�
 
 ## Project layout
 
-- `stupid_code/` — 后端包。`agent.py` 导出 `graph`（`create_deep_agent()`），`langgraph.json` 注册图，API key 在项目根 `conf/config.toml`（不入库），`main.py` 是 `scode` 的启动/就绪/关停逻辑，`persistence.py` 把 checkpoint/store 落到 `data/langgraph.db`（SQLite，不入库）
+- `stupid_code/` — 后端包，按职责分四块。`agent.py` 导出 `graph`（`create_deep_agent()`）；`launcher.py` 是 `scode` 的启动/就绪/关停逻辑；`persistence.py` 把 checkpoint/store 落到 `data/langgraph.db`（SQLite，不入库）；`model_config.py` 读 `conf/config.toml` 并构建模型；`admin/` 是挂在 `/admin` 下的管理接口
 - `stupid_code/README.md` — 后端启动说明；`stupid_code/API.md` — 当前实际可用的端点清单
 - `web/src/api/` — 后端通信层，`mock/` 用**与真实后端完全相同的签名**实现假数据；`web/src/store/` Zustand 状态；`components/`、`pages/`、`lib/`
 - `docs/overall-design.md` — 目标架构与前后端契约；`docs/frontend-design.md` — 前端交互设计
@@ -41,16 +41,17 @@ Python 侧**没有** ruff / black / mypy 配置，**整个仓库没有测试、�
    `npx skills add langchain-ai/langchain-skills --skill '*' --yes`
    然后 `ls .agents/skills | head` 确认。**写 deepagents / LangGraph 代码前先查这些 skill 和线上文档，别凭记忆写**——框架还在 0.x，迭代很快。
 2. **不要给 `create_deep_agent()` 传 `checkpointer`**。`langgraph dev` 会直接抛 ValueError（ValueError: persistence 由平台自动处理）。持久化在 `langgraph.json` 配置：`checkpointer`/`store` 指向 `persistence.py` 的 SQLite 工厂，checkpoint 落 `stupid_code/data/langgraph.db`，重启后对话历史可恢复。
-3. **`.langgraph_api/` 是必然生成但注定消失的缓存**：inmem 运行时把它硬编码为相对 cwd 的路径，无法配置改位。scode 在**启动前**和**退出时**各删一次工作空间下的 `.langgraph_api/`（启动前那次兜底上次被 SIGKILL/断电的残留）；它没有有价值数据——持久化在 `langgraph.json` 里配置，`checkpointer`/`store` 指向 `persistence.py` 的 SQLite 工厂，checkpoint 落 `stupid_code/data/langgraph.db`。派生 langgraph.json（相对路径绝对化）只放 `$TMPDIR/scode-config-*`，退出即删。后端源码目录不进运行 cwd，不会被写 `.langgraph_api` / `__pycache__`。
-4. **`GET /assistants` 返回 405**。列 assistant 要用 `POST /assistants/search`，再拿 `assistant_id`（UUID）去 `GET /assistants/{id}/graph`。
-5. **前端已经按契约写完了，后端要"实现前端已假定的契约"，不是"对齐已有实现"**。改后端接口前先看 `stupid_code/API.md` 和 `web/src/api/`。`GET /directories` 前端已在调用但后端**未实现**——工作空间选择器在真后端下报错是预期的，不是 bug。
-6. **SSE 一律用 fetch + 手动解析，不用 `EventSource`**（已定事项，别改回去）。
-7. **工作空间 + 权限是任务级参数**，按 `threadId` 存而非全局：同任务内前后两条消息可能针对不同目录。另有 `draft` 副本供新任务用，`createThread()` 时 `adoptDraft()` 固化并重置，否则两个任务的运行边界会串。
+3. **`langgraph.json` 里写死了三个文件路径**：`./agent.py:graph`、`./persistence.py:checkpointer`、`./admin/app.py:app`。挪这三个文件必须同步改 `langgraph.json`，否则启动时报找不到模块。另有两个文件用 `__file__` 定位目录，因此只能待在 `stupid_code/` 根这一层：`model_config.py`（`../conf`）、`launcher.py`（本包目录）。`scode` 启动时会把这些相对路径绝对化后写进 `$TMPDIR/scode-config-*`，所以**作者视角的路径仍相对 `stupid_code/` 写**。
+4. **`.langgraph_api/` 是必然生成但注定消失的缓存**：inmem 运行时把它硬编码为相对 cwd 的路径，无法配置改位。scode 在**启动前**和**退出时**各删一次工作空间下的 `.langgraph_api/`（启动前那次兜底上次被 SIGKILL/断电的残留）；它没有有价值数据——持久化在 `langgraph.json` 里配置，`checkpointer`/`store` 指向 `persistence.py` 的 SQLite 工厂，checkpoint 落 `stupid_code/data/langgraph.db`。派生 langgraph.json（相对路径绝对化）只放 `$TMPDIR/scode-config-*`，退出即删。后端源码目录不进运行 cwd，不会被写 `.langgraph_api` / `__pycache__`。
+5. **`GET /assistants` 返回 405**。列 assistant 要用 `POST /assistants/search`，再拿 `assistant_id`（UUID）去 `GET /assistants/{id}/graph`。
+6. **前端已经按契约写完了，后端要"实现前端已假定的契约"，不是"对齐已有实现"**。改后端接口前先看 `stupid_code/API.md` 和 `web/src/api/`。`GET /directories` 前端已在调用但后端**未实现**——工作空间选择器在真后端下报错是预期的，不是 bug。
+7. **SSE 一律用 fetch + 手动解析，不用 `EventSource`**（已定事项，别改回去）。
+8. **工作空间 + 权限是任务级参数**，按 `threadId` 存而非全局：同任务内前后两条消息可能针对不同目录。另有 `draft` 副本供新任务用，`createThread()` 时 `adoptDraft()` 固化并重置，否则两个任务的运行边界会串。
 
 ## Code style
 
 - 注释和 docstring 用中文；标识符、命令、库名保持英文原样
-- 后端：类型注解齐全，偏现代写法（`X | None`），HTTP 用 `httpx`；涉及子进程时注意信号与进程组处理（`main.py` 已处理 SIGTERM→优雅关闭）
+- 后端：类型注解齐全，偏现代写法（`X | None`），HTTP 用 `httpx`；涉及子进程时注意信号与进程组处理（`launcher.py` 已处理 SIGTERM/SIGINT→优雅关闭）
 - 前端：**`strict` 模式没有开**（`tsconfig.app.json` 里没有 `strict` 键），但有 `verbatimModuleSyntax`、`noUnusedLocals`、`noUnusedParameters`、`erasableSyntaxOnly` —— 类型检查只在 `pnpm build` 时跑
 - 主题走 Tailwind CSS 变量（亮/暗），类名合并用 `lib/cn.ts`
 

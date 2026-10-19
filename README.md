@@ -252,20 +252,24 @@ stupid-code/
 │   ├── README.md            # 前端说明、接口契约、工作空间与权限
 │   ├── pnpm-lock.yaml
 │   └── src/                 # api / store / components / pages
-├── stupid_code/             # 后端 Python 包
+├── stupid_code/             # 后端 Python 包，按职责分四块
 │   ├── README.md            # 后端启动说明
 │   ├── API.md               # 当前实际在用的端点清单
-│   ├── langgraph.json       # 图注册 + checkpointer/store 指向 persistence.py
+│   ├── langgraph.json       # 图注册 + http.app + checkpointer/store 指向 persistence.py
+│   ├── __init__.py          # start() —— scode 命令的入口
+│   ├── launcher.py          # scode：cwd 即工作空间 + 派生配置 + 就绪探测 + 缓存清理 + 优雅关停
 │   ├── agent.py             # create_deep_agent()，导出 graph
 │   ├── persistence.py       # SQLite 工厂：checkpoint/store → data/langgraph.db
-│   ├── main.py              # scode：cwd 即工作空间 + 派生配置 + 就绪探测 + 缓存清理 + 优雅关停
-│   ├── __init__.py          # start() —— scode 命令的入口
+│   ├── model_config.py      # 读 conf/config.toml、校验、构建模型、模型 CRUD helpers
+│   ├── admin/               # 挂在 /admin 下的管理接口（langgraph.json 的 http.app 指向 app.py）
+│   │   ├── app.py           # Starlette 子应用与路由表
+│   │   └── models.py        # /admin/models 五个端点的处理函数
 │   └── data/                # langgraph.db（gitignore，唯一持久运行产物，固定在后端包目录）
 └── .agents/skills/          # langchain-skills（gitignore，需自行安装）
     └── ... 22 个 skill
 ```
 
-> **工作空间语义**：在哪个目录运行 `uv run scode`，langgraph 子进程的 cwd 就是那个目录（agent 未来的文件/shell 工具以此为根）。langgraph 必然在 cwd 生成的 `.langgraph_api/` 由 scode 在启动前和退出时各删一次；scode 自己把路径绝对化后的派生 langgraph.json 放进 `$TMPDIR/scode-config-*`（退出即删）。作者视角的配置路径仍相对 `stupid_code/` 写，别把 `langgraph.json` / `agent.py` 挪出去。
+> **工作空间语义**：在哪个目录运行 `uv run scode`，langgraph 子进程的 cwd 就是那个目录（agent 未来的文件/shell 工具以此为根）。langgraph 必然在 cwd 生成的 `.langgraph_api/` 由 scode 在启动前和退出时各删一次；scode 自己把路径绝对化后的派生 langgraph.json 放进 `$TMPDIR/scode-config-*`（退出即删）。作者视角的配置路径仍相对 `stupid_code/` 写，别把 `langgraph.json` / `agent.py` / `persistence.py` / `admin/app.py` 挪出去——这四个路径被 `langgraph.json` 直接引用。
 
 ---
 

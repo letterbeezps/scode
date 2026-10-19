@@ -1,6 +1,6 @@
 from deepagents import create_deep_agent
 
-from stupid_code.config import load_model
+from stupid_code.model_config import load_model
 
 graph = create_deep_agent(
     model=load_model(),

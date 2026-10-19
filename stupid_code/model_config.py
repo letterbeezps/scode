@@ -17,6 +17,7 @@ from langchain.chat_models import BaseChatModel, init_chat_model
 
 SUPPORTED_PROTOCOLS = ("anthropic", "openai")
 # 本文件位于 stupid_code/，上一级即项目根，配置统一放根下 conf/ 目录
+# （model_config.py 若被挪进子目录，这里要改成 .parents[1]）
 _CONF_DIR = Path(__file__).resolve().parent.parent / "conf"
 _CONFIG_FILENAME = "config.toml"
 

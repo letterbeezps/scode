@@ -7,11 +7,10 @@
 在项目根 `uv sync` 后，**切到要让 agent 操作的目录**再启动（那个目录就是工作空间）：
 
 ```bash
-cd /path/to/your/project
 uv run scode
 ```
 
-`scode`（入口见 [main.py](main.py)）把 langgraph 服务器当成「用完即弃」的本地计算进程：
+`scode`（入口见 [launcher.py](launcher.py)）把 langgraph 服务器当成「用完即弃」的本地计算进程：
 
 1. **工作空间 = 当前目录**：langgraph 子进程的 cwd 就是你运行 scode 的目录，
    未来 agent 的 shell / 文件工具以它为根（当前 deepagents 默认 StateBackend，
@@ -37,16 +36,29 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 
 ## 文件
 
+按职责分四块：起停、图、持久化、模型配置与管理接口。
+
 | 文件 | 作用 |
 |---|---|
-| [langgraph.json](langgraph.json) | LangGraph 配置：图注册、依赖、`http.app` 挂载、checkpointer/store 指向 SQLite；路径均相对本目录（scode 启动时改写为绝对路径） |
+| **起停** | |
+| [__init__.py](__init__.py) | `start()` —— `scode` 命令入口；设 `sys.dont_write_bytecode` 保证源码目录零运行残留 |
+| [launcher.py](launcher.py) | cwd 即工作空间、生成临时派生配置、就绪探测、`.langgraph_api` 启动前/退出清理、生命周期管理 |
+| **图与持久化** | |
 | [agent.py](agent.py) | `code_agent` 图：`create_deep_agent()`，导出 `graph` |
 | [persistence.py](persistence.py) | SQLite 持久化工厂：`AsyncSqliteSaver`（checkpoint）+ `AsyncSqliteStore`（store），都指向 `data/langgraph.db` |
-| [config.py](config.py) | 加载与校验 `../conf/config.toml`，构建模型实例；CRUD helpers |
-| [admin_app.py](admin_app.py) | 挂在 langgraph dev 的 Starlette 子应用，提供 `/admin/models` 接口 |
-| [admin_models.py](admin_models.py) | `/admin/models` 路由处理函数 |
-| [main.py](main.py) | `scode` 命令入口：cwd 即工作空间、生成临时派生配置、就绪探测、`.langgraph_api` 启动前/退出清理、生命周期管理 |
+| **模型配置** | |
+| [model_config.py](model_config.py) | 加载与校验 `../conf/config.toml`，构建模型实例；CRUD helpers |
+| **管理接口** | |
+| [admin/app.py](admin/app.py) | 挂在 langgraph dev 的 Starlette 子应用与路由表（`langgraph.json` 的 `http.app` 指向它） |
+| [admin/models.py](admin/models.py) | `/admin/models` 路由处理函数 |
+| **配置与产物** | |
+| [langgraph.json](langgraph.json) | LangGraph 配置：图注册、依赖、`http.app` 挂载、checkpointer/store 指向 SQLite；路径均相对本目录（scode 启动时改写为绝对路径） |
 | `data/` | SQLite 数据库目录（gitignore，唯一持久运行产物，可删除后重置历史）；**不在工作空间里**，固定在本包目录下 |
+
+> `agent.py`、`persistence.py`、`admin/app.py` 这三个路径被 `langgraph.json` 直接引用，
+> 挪动它们必须同步改 `langgraph.json`，否则启动时找不到模块。
+> `model_config.py` 与 `launcher.py` 用 `__file__` 定位项目根（`../conf`）与本包目录，
+> 只能待在包根这一层。
 
 > 模型供应商配置（含 api_key）改在项目根 `conf/config.toml`（从 `conf/config.example.toml` 复制，不入库）。本项目不再使用 `.env`。 |
 
@@ -54,5 +66,5 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 
 - 不要给 `create_deep_agent()` 传 `checkpointer`：持久化由平台在 `langgraph.json` 层配置（`checkpointer`/`store` 指向 `persistence.py`），在 agent 里显式传入会启动失败。对话历史写入 `data/langgraph.db`，重启后仍可恢复；删除该文件即重置全部历史。
 - 模型供应商配置在项目根 `conf/config.toml`（从 `conf/config.example.toml` 复制），选择顺序 `default` → `recent`，协议只支持 anthropic / openai；改配置需重启服务。
-- `langgraph.json` 的 `http.app` 字段指向 `admin_app.py:app`。本期实现的 `/admin/models` 接口改完配置后仍需重启 `scode` 才能让运行中的 graph 加载新模型实例。
+- `langgraph.json` 的 `http.app` 字段指向 `admin/app.py:app`。本期实现的 `/admin/models` 接口改完配置后仍需重启 `scode` 才能让运行中的 graph 加载新模型实例。
 - 详细的阶段目标与验证步骤见 `../docs/backend/001_basic_agent_server.md`、`../docs/backend/002_config_toml_models.md`、`../docs/backend/003_model_admin_api.md`。

@@ -517,12 +517,21 @@ stupid-code/
 ├── docs/
 │   ├── overall-design.md      # 本文档
 │   ├── overall-design-review.md  # v0.1 评审意见（历史存档）
-│   └── frontend-design.md     # 前端设计文档
+│   ├── frontend-design.md     # 前端设计文档
+│   └── backend/                # 按阶段推进的后端任务文档（001 / 002 / 003）
+├── conf/                       # 模型供应商配置（config.toml 不入库）
 ├── stupid_code/               # 后端 Python 包
 │   ├── agent.py               # create_deep_agent 构建入口，导出 graph
-│   ├── middlewares/            # 自研中间件（护栏、工作空间校验、埋点）
-│   ├── tools/                  # 自定义工具
-│   └── prompts/                # 版本化提示词（§8）
+│   ├── launcher.py            # scode：拉起 langgraph dev 子进程、就绪探测、优雅关停
+│   ├── persistence.py         # SQLite 工厂：checkpoint/store → data/langgraph.db
+│   ├── model_config.py        # 读 conf/config.toml、校验、构建模型
+│   ├── langgraph.json         # langgraph-cli 配置（图注册 / http.app / checkpointer / store）
+│   ├── admin/                 # 挂在 /admin 下的管理接口
+│   │   ├── app.py             # Starlette 子应用与路由表
+│   │   └── models.py          # /admin/models 端点处理
+│   ├── middlewares/            # 自研中间件（护栏、工作空间校验、埋点）—— 待建
+│   ├── tools/                  # 自定义工具 —— 待建
+│   └── prompts/                # 版本化提示词（§8）—— 待建
 ├── web/                       # 前端 Web 应用（独立子项目，注意不是 frontend/）
 │   ├── src/
 │   │   ├── components/
@@ -532,10 +541,13 @@ stupid-code/
 │   │   └── lib/
 │   ├── package.json
 │   └── vite.config.ts
-├── langgraph.json             # langgraph-cli 配置（待创建）
-├── pyproject.toml             # 依赖待补全（当前为空）
-└── .env
+├── pyproject.toml             # 依赖与 scode 入口（scode = stupid_code:start）
+└── skills-lock.json           # langchain-skills 安装记录
 ```
+
+> 本节按 003 完成后的实际布局更新。002 之前项目用的是 `.env` 配模型，现已改为
+> 根目录 `conf/config.toml`（见 §1.3）。`middlewares/` / `tools/` / `prompts/`
+> 仍是目标设计，尚未建。
 
 ---
 

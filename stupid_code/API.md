@@ -213,7 +213,7 @@ Accept: text/event-stream
 
 ## 模型管理
 
-由 `stupid_code/admin_app.py` 提供的自定义 ASGI 路由，通过 `langgraph.json` 的 `http.app` 字段挂载到 langgraph dev 服务。操作对象是项目根 `conf/config.toml`（不入库）。**改完配置需重启 `scode` 才能让运行中的 graph 加载新模型实例**——所有响应里的 `restart_required: true` 就是这个意思。
+由 `stupid_code/admin/app.py` 提供的自定义 ASGI 路由，通过 `langgraph.json` 的 `http.app` 字段挂载到 langgraph dev 服务。操作对象是项目根 `conf/config.toml`（不入库）。**改完配置需重启 `scode` 才能让运行中的 graph 加载新模型实例**——所有响应里的 `restart_required: true` 就是这个意思。
 
 接口对外细粒度是**模型**：每个模型自带全部连接字段（`name` / `protocol` / `provider` / `base_url` / `api_key`）。toml 内部按 `provider` 分组只是为了避免重复写 `key` / `base_url`，接口层不暴露该结构。
 
@@ -408,4 +408,4 @@ Content-Type: application/json
 ## 备注
 
 - 本文档仅列**已被代码调用**的端点，完整 LangGraph Platform API 见官方文档。
-- 端点参数与响应以 [web/src/api](file:///Users/1token/Desktop/project/stupid-code/web/src/api) 和 [main.py](file:///Users/1token/Desktop/project/stupid-code/stupid_code/main.py) 中的实际调用为准。
+- 端点参数与响应以 [web/src/api](file:///Users/1token/Desktop/project/stupid-code/web/src/api) 和 [admin/models.py](file:///Users/1token/Desktop/project/stupid-code/stupid_code/admin/models.py) 中的实际调用为准。

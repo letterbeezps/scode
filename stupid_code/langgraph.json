@@ -4,7 +4,7 @@
     "code_agent": "./agent.py:graph"
   },
   "http": {
-    "app": "./admin_app.py:app"
+    "app": "./admin/app.py:app"
   },
   "checkpointer": {
     "path": "./persistence.py:checkpointer"

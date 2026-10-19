@@ -11,7 +11,7 @@ toml 内部按 provider 分组避免重复写 key/base_url，接口层不暴露�
 from starlette.applications import Starlette
 from starlette.routing import Mount, Route
 
-from stupid_code.admin_models import (
+from stupid_code.admin.models import (
     create,
     delete,
     get_one,

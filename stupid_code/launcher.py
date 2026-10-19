@@ -54,7 +54,7 @@ STOP_TIMEOUT_SECONDS = 10.0
 
 
 def _backend_dir() -> Path:
-    # stupid_code/main.py 的上一级即后端目录（langgraph.json 所在处）
+    # stupid_code/launcher.py 的上一级即后端目录（langgraph.json 所在处）
     return Path(__file__).resolve().parent
 
 
