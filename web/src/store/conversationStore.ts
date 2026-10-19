@@ -7,7 +7,7 @@
  */
 import { create } from 'zustand'
 import * as threadApi from '../api/thread'
-import { errorMessage } from '../api/client'
+import { ApiError, errorMessage } from '../api/client'
 import { streamRun } from '../api/run'
 import { useTodoStore } from './todoStore'
 import { useTaskStore } from './taskStore'
@@ -53,6 +53,20 @@ function deriveTitle(thread: Thread | undefined, msgs: Message[] | undefined): s
   return firstUser ? firstUser.content.trim().slice(0, 24) : '新任务'
 }
 
+/**
+ * 拉历史失败时的提示。
+ *
+ * 404 单独说人话：平台只回 "Thread or assistant not found."，
+ * 但用户真正遇到的多半是「URL 里的会话被删了」或「后端重启过」，
+ * 直接透传英文报错等于让人自己猜。
+ */
+function loadErrorMessage(err: unknown): string {
+  if (err instanceof ApiError && err.status === 404) {
+    return '会话不存在或已被删除（后端重启后旧会话也可能取不到）'
+  }
+  return errorMessage(err)
+}
+
 export const useConversationStore = create<ConversationState>((set, get) => ({
   threads: [],
   activeThreadId: null,
@@ -75,7 +89,8 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
           ...state.titles,
           ...Object.fromEntries(threads.map((t) => [t.thread_id, deriveTitle(t, state.messages[t.thread_id])])),
         },
-        error: null,
+        // 这里不把 error 清空：ChatPage 挂载时 loadThreads 和 selectThread 是并发跑的，
+        // 列表晚返回会顺手抹掉 selectThread 刚设的错误（会话已删除之类），错误条就再也不出现
       }))
     } catch (err) {
       set({ error: errorMessage(err) })
@@ -121,7 +136,7 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
         }
       })
     } catch (err) {
-      set({ error: errorMessage(err) })
+      set({ error: loadErrorMessage(err) })
     } finally {
       set({ loading: false })
     }

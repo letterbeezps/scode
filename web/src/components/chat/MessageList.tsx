@@ -4,7 +4,7 @@
  * 流式生成中的 pendingMessage 单独渲染在末尾，且不参与历史列表的 memo，
  * 否则每来一个 token 都要重算整条消息的渲染结果。
  */
-import { ArrowDown, Loader2, TriangleAlert } from 'lucide-react'
+import { ArrowDown, Loader2 } from 'lucide-react'
 import type { Message } from '../../api/types'
 import { cn } from '../../lib/cn'
 import { useAutoScroll } from '../../hooks/useAutoScroll'
@@ -15,17 +15,9 @@ interface Props {
   messages: Message[]
   pendingMessage: Message | null
   isGenerating: boolean
-  error: string | null
-  onDismissError: () => void
 }
 
-export function MessageList({
-  messages,
-  pendingMessage,
-  isGenerating,
-  error,
-  onDismissError,
-}: Props) {
+export function MessageList({ messages, pendingMessage, isGenerating }: Props) {
   const { containerRef, contentRef, pinned, scrollToBottom, handleScroll } = useAutoScroll<HTMLDivElement>()
 
   return (
@@ -68,18 +60,6 @@ export function MessageList({
           <ArrowDown className="mr-1 inline size-3.5" />
           回到底部
         </button>
-      )}
-
-      {error && (
-        <div className="absolute inset-x-0 top-0 flex justify-center px-4 pt-3">
-          <div className="flex items-start gap-2 rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">
-            <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-            <span className="max-w-lg break-words">{error}</span>
-            <button type="button" onClick={onDismissError} className="shrink-0 underline underline-offset-2">
-              知道了
-            </button>
-          </div>
-        </div>
       )}
     </div>
   )

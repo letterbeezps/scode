@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
 import { Sidebar } from '../components/sidebar/Sidebar'
 import { MessageList } from '../components/chat/MessageList'
+import { ErrorBanner } from '../components/chat/ErrorBanner'
 import { InputBar } from '../components/chat/InputBar'
 import { EmptyState } from '../components/chat/EmptyState'
 import { useConversationStore } from '../store/conversationStore'
@@ -77,7 +78,11 @@ export function ChatPage() {
     <div className="flex h-full">
       <Sidebar onNewChat={handleNewChat} onSelect={handleSelect} />
 
-      <main className="flex min-w-0 flex-1 flex-col">
+      <main className="relative flex min-w-0 flex-1 flex-col">
+        {/* 错误条浮在主区域顶部：空会话时 MessageList 不渲染，
+            错误若挂在它上面会跟着消失，用户只看到白屏 */}
+        <ErrorBanner error={error} onDismiss={clearError} />
+
         {isEmpty ? (
           <div className="min-h-0 flex-1">
             <EmptyState onPick={setDraft} />
@@ -89,8 +94,6 @@ export function ChatPage() {
             messages={threadMessages}
             pendingMessage={pendingMessage}
             isGenerating={isGenerating}
-            error={error}
-            onDismissError={clearError}
           />
         )}
 
