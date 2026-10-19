@@ -12,7 +12,7 @@
 **后端（Python ≥ 3.12，uv + hatchling）**
 
 - 装依赖：`uv sync`
-- 跑起来：`uv run scode` —— 以子进程方式拉起 `langgraph dev`（cwd 固定 `stupid_code/`，监听 `127.0.0.1:2024`），并轮询 `GET /ok` + `GET /assistants/{id}/graph` 做就绪验证，两项都通过才算启动成功
+- 跑起来：`uv run scode` —— **在哪个目录运行，那个目录就是 agent 的工作空间**（langgraph 子进程 cwd = 当前目录）；scode 在 `$TMPDIR/scode-config-*` 生成一份路径绝对化的派生 langgraph.json，监听 `127.0.0.1:2024`，并轮询 `GET /ok` + `GET /assistants/{id}/graph` 做就绪验证，两项都通过才算启动成功。改后端代码需重启（scode 固定传 `--no-reload`）
 - 校验配置：`uv run langgraph validate --config stupid_code/langgraph.json`
 - 控制台脚本 `scode` = `stupid_code:start`（`pyproject.toml`）
 
@@ -28,7 +28,7 @@ Python 侧**没有** ruff / black / mypy 配置，**整个仓库没有测试、�
 
 ## Project layout
 
-- `stupid_code/` — 后端包。`agent.py` 导出 `graph`（`create_deep_agent()`），`langgraph.json` 注册图，`.env` 放 API key，`main.py` 是 `scode` 的启动/就绪/关停逻辑，`.langgraph_api/` 是 langgraph 的 pickle 持久化缓存
+- `stupid_code/` — 后端包。`agent.py` 导出 `graph`（`create_deep_agent()`），`langgraph.json` 注册图，API key 在项目根 `conf/config.toml`（不入库），`main.py` 是 `scode` 的启动/就绪/关停逻辑，`persistence.py` 把 checkpoint/store 落到 `data/langgraph.db`（SQLite，不入库）
 - `stupid_code/README.md` — 后端启动说明；`stupid_code/API.md` — 当前实际可用的端点清单
 - `web/src/api/` — 后端通信层，`mock/` 用**与真实后端完全相同的签名**实现假数据；`web/src/store/` Zustand 状态；`components/`、`pages/`、`lib/`
 - `docs/overall-design.md` — 目标架构与前后端契约；`docs/frontend-design.md` — 前端交互设计
@@ -40,8 +40,8 @@ Python 侧**没有** ruff / black / mypy 配置，**整个仓库没有测试、�
 1. **`.agents/` 和 `.claude/` 是 gitignore 的**。clone 后必须先装参考资料，否则编码 Agent 看不到它们：
    `npx skills add langchain-ai/langchain-skills --skill '*' --yes`
    然后 `ls .agents/skills | head` 确认。**写 deepagents / LangGraph 代码前先查这些 skill 和线上文档，别凭记忆写**——框架还在 0.x，迭代很快。
-2. **不要给 `create_deep_agent()` 传 `checkpointer`**。`langgraph dev` 会直接抛 ValueError（ValueError: persistence 由平台自动处理）。对话历史由平台写进 `.langgraph_api/`，重启能恢复。
-3. **后端所有路径都相对 `stupid_code/` 解析**——`langgraph.json` 里的 `./agent.py`、`./.env`、`dependencies: ["."]` 都按子进程 cwd 走。别把这些文件挪出 `stupid_code/`。
+2. **不要给 `create_deep_agent()` 传 `checkpointer`**。`langgraph dev` 会直接抛 ValueError（ValueError: persistence 由平台自动处理）。持久化在 `langgraph.json` 配置：`checkpointer`/`store` 指向 `persistence.py` 的 SQLite 工厂，checkpoint 落 `stupid_code/data/langgraph.db`，重启后对话历史可恢复。
+3. **`.langgraph_api/` 是必然生成但注定消失的缓存**：inmem 运行时把它硬编码为相对 cwd 的路径，无法配置改位。scode 在**启动前**和**退出时**各删一次工作空间下的 `.langgraph_api/`（启动前那次兜底上次被 SIGKILL/断电的残留）；它没有有价值数据——持久化在 `langgraph.json` 里配置，`checkpointer`/`store` 指向 `persistence.py` 的 SQLite 工厂，checkpoint 落 `stupid_code/data/langgraph.db`。派生 langgraph.json（相对路径绝对化）只放 `$TMPDIR/scode-config-*`，退出即删。后端源码目录不进运行 cwd，不会被写 `.langgraph_api` / `__pycache__`。
 4. **`GET /assistants` 返回 405**。列 assistant 要用 `POST /assistants/search`，再拿 `assistant_id`（UUID）去 `GET /assistants/{id}/graph`。
 5. **前端已经按契约写完了，后端要"实现前端已假定的契约"，不是"对齐已有实现"**。改后端接口前先看 `stupid_code/API.md` 和 `web/src/api/`。`GET /directories` 前端已在调用但后端**未实现**——工作空间选择器在真后端下报错是预期的，不是 bug。
 6. **SSE 一律用 fetch + 手动解析，不用 `EventSource`**（已定事项，别改回去）。

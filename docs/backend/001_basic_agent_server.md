@@ -151,11 +151,14 @@ curl -s "http://127.0.0.1:2024/assistants/$AID/graph"
 ## 5. 已验证的事实
 
 - `langgraph dev` 默认监听 127.0.0.1
-- `--no-browser`、`--config` 参数存在；配置与内部相对路径都以启动 cwd 为基准
+- `langgraph dev` 的相对路径以启动 cwd 为基准；scode 让 cwd = 用户运行 scode 时所在目录（即 agent 工作空间），因此把 langgraph.json 派生一份路径绝对化的副本到 `$TMPDIR/scode-config-*`，用 `--config` 指向它
 - `langgraph validate --config stupid_code/langgraph.json` 输出 `1 graph found`
 - `langgraph dev` 拒绝自带 checkpointer 的图
 - `/ok` 响应是紧凑 JSON（`{"ok":true,...}`）
 - `GET /assistants` 返回 405，列出 assistant 要用 `POST /assistants/search`
 - `GET /assistants/{assistant_id}/graph` 返回图结构（`nodes`/`edges`），assistant_id 是 UUID，需先 search 获取
-- inmem 持久化缓存写在 cwd 下的 `.langgraph_api/`（已 gitignore）
+- `.langgraph_api/` 由 inmem 运行时硬编码生成在 cwd 下（无法通过配置改位）；scode 在启动前和退出时各删一次（启动前兜底强杀残留），里面没有有价值数据
+- checkpoint/store 通过 `langgraph.json` 的 `checkpointer`/`store` 指向 `persistence.py` 的 SQLite 工厂，唯一持久产物是 `stupid_code/data/langgraph.db`（按代码文件定位，与工作空间无关，gitignore）
+- scode 固定传 `--no-reload`：reload 监视 cwd，而 cwd 是用户的真实项目目录，agent 写文件会自我触发重启；改后端代码统一重启 scode
+- SIGINT 必须显式 `signal.signal` 接管：非交互环境（IDE 任务、shell 后台作业）可能继承 SIGINT=IGN，仅靠 Python 默认的 KeyboardInterrupt 注入不触发清理
 - 依赖已在 `pyproject.toml` 声明，`uv sync` 即可
