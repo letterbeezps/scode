@@ -3,25 +3,97 @@
  *
  * 历史消息来自 `/threads/{id}/state` 的 `values.messages`，需要把 LangChain
  * 的消息数组还原成前端的有序渲染结构（见 restoreMessages 的注释）。
+ *
+ * 端点形状对着 LangGraph 平台文档核过，有两个地方和直觉不一样（都踩过）：
+ *
+ * 1. **建会话必须带 body。** `POST /threads` 的 requestBody 是必填的，
+ *    不带 body 会被判成 `Invalid JSON in request body` → 422。
+ *    官方 cURL 示例就是 `--data '{}'`。
+ * 2. **列表没有 `GET /threads`。** 那个路径只接受 POST，直接 GET 会 405
+ *    （响应里写着 `allow: POST`）。列表走 `POST /threads/search`。
+ *
+ * 另外平台的 Thread 结构没有 title 字段，标题走 metadata.title。
  */
 import { request, isMockMode } from './client'
 import { mockThreads } from './mock'
-import type { Message, MessagePart, Thread, ToolCall, ToolResult } from './types'
+import type { Message, MessagePart, Thread, ThreadStatus, ToolCall, ToolResult } from './types'
 
-export async function createThread(): Promise<Thread> {
-  if (isMockMode) return mockThreads.create()
-  return request<Thread>('/threads', { method: 'POST' })
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
 }
 
-export async function listThreads(): Promise<Thread[]> {
+/**
+ * 把平台的 Thread 摊平成前端的 Thread。
+ *
+ * title 是我们自己的概念：平台不存标题，所以借 metadata.title 存一份，
+ * 这样侧边栏的标题在刷新页面后还在。
+ */
+function toThread(raw: unknown): Thread {
+  const rec = asRecord(raw)
+  const metadata = asRecord(rec.metadata)
+  const status = rec.status
+  return {
+    thread_id: String(rec.thread_id ?? ''),
+    title: typeof metadata.title === 'string' ? metadata.title : '',
+    created_at: String(rec.created_at ?? ''),
+    updated_at: String(rec.updated_at ?? rec.state_updated_at ?? rec.created_at ?? ''),
+    metadata,
+    status: isThreadStatus(status) ? status : undefined,
+  }
+}
+
+function isThreadStatus(value: unknown): value is ThreadStatus {
+  return (
+    value === 'idle' || value === 'busy' || value === 'interrupted' || value === 'error'
+  )
+}
+
+export async function createThread(metadata?: Record<string, unknown>): Promise<Thread> {
+  if (isMockMode) return mockThreads.create()
+  // body 必填：空 body 会 422
+  const raw = await request<unknown>('/threads', {
+    method: 'POST',
+    body: JSON.stringify(metadata ?? {}),
+  })
+  return toThread(raw)
+}
+
+export async function listThreads(limit = 50): Promise<Thread[]> {
   if (isMockMode) return mockThreads.list()
-  const res = await request<{ threads?: Thread[] } | Thread[]>('/threads')
-  return Array.isArray(res) ? res : (res.threads ?? [])
+  // 没有 GET /threads（405），列表走 search
+  const raw = await request<unknown>('/threads/search', {
+    method: 'POST',
+    body: JSON.stringify({
+      limit,
+      sort_by: 'updated_at',
+      sort_order: 'desc',
+    }),
+  })
+  const list = Array.isArray(raw) ? raw : asRecord(raw).threads
+  return Array.isArray(list) ? list.map(toThread) : []
 }
 
 export async function deleteThread(threadId: string): Promise<void> {
   if (isMockMode) return mockThreads.remove(threadId)
   await request<void>(`/threads/${threadId}`, { method: 'DELETE' })
+}
+
+/**
+ * 改线程的 metadata，用来把标题持久化到后端。
+ *
+ * 平台也会往 metadata 里塞 graph_id / assistant_id，所以这里只增量写 title，
+ * 不覆盖整个 metadata。
+ */
+export async function updateThreadMetadata(
+  threadId: string,
+  metadata: Record<string, unknown>,
+): Promise<Thread> {
+  if (isMockMode) return mockThreads.update(threadId, metadata)
+  const raw = await request<unknown>(`/threads/${threadId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ metadata }),
+  })
+  return toThread(raw)
 }
 
 /** 读取线程状态原始负载 */
@@ -38,10 +110,6 @@ export async function loadMessages(threadId: string): Promise<Message[]> {
 }
 
 /* ------------------------------------------------------- LangChain 消息还原 */
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
-}
 
 function textOf(content: unknown): string {
   if (typeof content === 'string') return content

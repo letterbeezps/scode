@@ -14,8 +14,9 @@
 | `scode` | POST | [`/assistants/search`](#post-assistantssearch) | 列出 assistant | ✅ |
 | `scode` | GET | [`/assistants/{id}/graph`](#get-assistantsidgraph) | 加载图结构 | ✅ |
 | 前端 | POST | [`/threads`](#post-threads) | 创建会话 | ✅ |
-| 前端 | GET | [`/threads`](#get-threads) | 会话列表 | ✅ |
+| 前端 | POST | [`/threads/search`](#post-threadssearch) | 会话列表 | ✅ |
 | 前端 | DELETE | [`/threads/{id}`](#deletethreadsid) | 删除会话 | ✅ |
+| 前端 | PATCH | [`/threads/{id}`](#patch-threadsid) | 改 metadata（存标题） | ✅ |
 | 前端 | GET | [`/threads/{id}/state`](#get-threadsidstate) | 历史消息 | ✅ |
 | 前端 | POST | [`/threads/{id}/runs/stream`](#post-threadsidrunsstream) | 流式运行 | ✅ |
 | 前端 | POST | [`/threads/{id}/runs/{runId}/cancel`](#post-threadsidrunsrunidcancel) | 停止运行 | ✅ |
@@ -104,7 +105,23 @@ Content-Type: application/json
 
 创建新会话。前端「新建对话」调用。
 
-**请求**：无 body。
+**请求**：body **必填**（哪怕是空的）。平台把 requestBody 标成 required，
+不发 body 会被判成 `Invalid JSON in request body` → 422。
+
+```http
+POST /threads
+Content-Type: application/json
+
+{}
+```
+
+body 字段（`ThreadCreate`）：
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `thread_id` | 否 | 不传就随机生成 UUID |
+| `metadata` | 否 | 线程元数据。**标题存在这里**（`metadata.title`），平台没有独立的 title 字段 |
+| `if_exists` | 否 | `raise`（默认）/ `do_nothing`，处理 thread_id 冲突 |
 
 **响应 `200`**
 
@@ -112,21 +129,71 @@ Content-Type: application/json
 {
   "thread_id": "1a2b3c4d-...",
   "created_at": "2026-10-17T...",
-  "metadata": null
+  "updated_at": "2026-10-17T...",
+  "metadata": {},
+  "status": "idle"
 }
 ```
 
-### `GET /threads`
+### `POST /threads/search`
 
-列出当前用户的会话。前端进入页面时加载。
+列出（或搜索）当前用户的会话。前端进入页面时加载。
 
-**响应 `200`** — 数组或 `{ threads: [...] }`，前端两者都兼容。
+**没有 `GET /threads`** —— 那个路径只接受 POST，直接 GET 会 405
+（响应头里写着 `allow: POST`）。列表必须走 search。
+
+**请求**：body 必填。
+
+```http
+POST /threads/search
+Content-Type: application/json
+
+{"limit": 50, "sort_by": "updated_at", "sort_order": "desc"}
+```
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `limit` | 10 | 最多返回多少条，上限 1000 |
+| `offset` | 0 | 偏移 |
+| `sort_by` | — | `thread_id` / `status` / `created_at` / `updated_at` / `state_updated_at` |
+| `sort_order` | — | `asc` / `desc` |
+| `metadata` | — | 按 metadata 过滤 |
+| `status` | — | `idle` / `busy` / `interrupted` / `error` |
+
+**响应 `200`** — Thread 数组。
 
 ```json
 [
-  {"thread_id": "...", "created_at": "...", "metadata": null}
+  {
+    "thread_id": "...",
+    "created_at": "2026-10-17T...",
+    "updated_at": "2026-10-17T...",
+    "metadata": {"title": "帮我看看 README"},
+    "status": "idle"
+  }
 ]
 ```
+
+> Thread **没有 title 字段**，标题是前端自己定义的，存 `metadata.title`，
+> 用 `PATCH /threads/{id}` 写。这样侧边栏的标题刷新页面后还在。
+
+### `PATCH /threads/{thread_id}`
+
+改线程的 metadata，前端用它把标题持久化到后端。
+
+**请求**
+
+```http
+PATCH /threads/1a2b3c4d-...
+Content-Type: application/json
+
+{"metadata": {"title": "帮我看看 README"}}
+```
+
+**响应 `200`** — 改完的 Thread。
+
+> 平台自己也会往 metadata 里塞 `graph_id` / `assistant_id`，
+> 所以这里只增量写要改的键，不要整块覆盖。
 
 ### `DELETE /threads/{thread_id}`
 
@@ -409,3 +476,29 @@ Content-Type: application/json
 
 - 本文档仅列**已被代码调用**的端点，完整 LangGraph Platform API 见官方文档。
 - 端点参数与响应以 [web/src/api](file:///Users/1token/Desktop/project/stupid-code/web/src/api) 和 [admin/models.py](file:///Users/1token/Desktop/project/stupid-code/stupid_code/admin/models.py) 中的实际调用为准。
+
+---
+
+## 已验证的事实（2026-10-19 实测）
+
+对着真后端逐条打过，凭空猜的地方都改了：
+
+- `POST /threads` 的 body **必填**，空 body → 422 `Invalid JSON in request body`
+- `GET /threads` → **405**（`allow: POST`）；列表走 `POST /threads/search`
+- Thread **没有 title 字段**，标题要自己存 `metadata.title`，用 `PATCH /threads/{id}` 写
+- 平台错误体的字段是 `{"detail": "..."}`，不是我们 `/admin/*` 用的 `{"error": "..."}` —— 前端两种都认
+- `GET /threads/{id}/state` 的 `values.messages` 是标准 LangChain 消息数组
+  （`type` 取 `human`/`ai`/`tool`，`content` 是字符串），前端能直接还原
+- `POST /threads/{id}/runs/stream` 的 body 形状
+  （`assistant_id` + `input.messages` + `stream_mode` + `on_disconnect` + `config.configurable`）被平台接受
+- `assistant_id` 传 graph_id（`code_agent`）也能跑，平台会自己解析到对应的 assistant
+- run 结束（尤其出错）时服务端直接关连接，浏览器把这个记成 `net::ERR_ABORTED`——
+  **这是正常收尾，不是前端 bug**。error 事件在关闭之前已经送到，前端能正常显示
+- 平台 `error` 事件是 `{"error": "AnthropicAuthenticationError", "message": "An internal error occurred"}`，
+  只显示 message 等于什么都没说，两个字段要合起来给用户看
+
+### 官方文档
+
+- Create Thread — <https://docs.langchain.com/langsmith/agent-server-api/threads/create-thread>
+- Search Threads — <https://docs.langchain.com/langsmith/agent-server-api/threads/search-threads>
+- Streaming API — <https://docs.langchain.com/langsmith/streaming>

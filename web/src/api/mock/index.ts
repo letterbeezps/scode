@@ -81,7 +81,7 @@ export const mockThreads = {
   create(): Thread {
     const id = nextId('thread')
     const now = new Date().toISOString()
-    const thread: Thread = { thread_id: id, title: '新任务', created_at: now, updated_at: now }
+    const thread: Thread = { thread_id: id, title: '', created_at: now, updated_at: now }
     threads.set(id, thread)
     rawMessages.set(id, [])
     todosByThread.set(id, [])
@@ -90,6 +90,24 @@ export const mockThreads = {
 
   list(): Thread[] {
     return [...threads.values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+  },
+
+  /** 对应 PATCH /threads/{id}：把标题写进 metadata */
+  update(threadId: string, metadata: Record<string, unknown>): Thread {
+    const thread = threads.get(threadId)
+    if (!thread) {
+      const message = `线程 ${threadId} 不存在`
+      throw new ApiError(message, 404, { detail: message })
+    }
+    const merged = { ...(thread.metadata ?? {}), ...metadata }
+    const next: Thread = {
+      ...thread,
+      title: typeof merged.title === 'string' ? merged.title : thread.title,
+      metadata: merged,
+      updated_at: new Date().toISOString(),
+    }
+    threads.set(threadId, next)
+    return next
   },
 
   async remove(threadId: string): Promise<void> {

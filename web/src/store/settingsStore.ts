@@ -10,8 +10,8 @@
  * UI 要显式提示这一点，别让用户以为选了就算切了。
  */
 import { create } from 'zustand'
+import { errorMessage } from '../api/client'
 import {
-  adminErrorMessage,
   createModel,
   deleteModel,
   listModels,
@@ -95,7 +95,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         }
       }
     } catch (err) {
-      set({ error: adminErrorMessage(err) })
+      set({ error: errorMessage(err) })
     } finally {
       set({ loading: false })
     }
@@ -127,7 +127,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const res = await listModels(true)
       set({ models: res.models, reveal: true })
     } catch (err) {
-      set({ error: adminErrorMessage(err) })
+      set({ error: errorMessage(err) })
     } finally {
       set({ loading: false })
     }
@@ -141,7 +141,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       set({ notice: `已新增模型 ${res.id}。配置写在 conf/config.toml，重启 scode 后生效。` })
       return res
     } catch (err) {
-      set({ error: adminErrorMessage(err) })
+      set({ error: errorMessage(err) })
       return null
     } finally {
       set({ saving: false })
@@ -161,7 +161,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       })
       return res
     } catch (err) {
-      set({ error: adminErrorMessage(err) })
+      set({ error: errorMessage(err) })
       return null
     } finally {
       set({ saving: false })
@@ -184,7 +184,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       set({ notice: `已删除 ${res.id}。${peers}${warn}重启 scode 后生效。` })
       return res
     } catch (err) {
-      set({ error: adminErrorMessage(err) })
+      set({ error: errorMessage(err) })
       return null
     } finally {
       set({ saving: false })

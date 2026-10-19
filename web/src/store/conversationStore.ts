@@ -7,6 +7,7 @@
  */
 import { create } from 'zustand'
 import * as threadApi from '../api/thread'
+import { errorMessage } from '../api/client'
 import { streamRun } from '../api/run'
 import { useTodoStore } from './todoStore'
 import { useTaskStore } from './taskStore'
@@ -77,7 +78,7 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
         error: null,
       }))
     } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) })
+      set({ error: errorMessage(err) })
     } finally {
       set({ loading: false })
     }
@@ -95,11 +96,11 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
         threads: [thread, ...state.threads],
         activeThreadId: thread.thread_id,
         messages: { ...state.messages, [thread.thread_id]: [] },
-        titles: { ...state.titles, [thread.thread_id]: thread.title || '新任务' },
+        titles: { ...state.titles, [thread.thread_id]: deriveTitle(thread, []) },
       }))
       return thread.thread_id
     } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) })
+      set({ error: errorMessage(err) })
       return null
     }
   },
@@ -120,7 +121,7 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
         }
       })
     } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) })
+      set({ error: errorMessage(err) })
     } finally {
       set({ loading: false })
     }
@@ -149,7 +150,7 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       const next = get().activeThreadId
       if (next) await get().selectThread(next)
     } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) })
+      set({ error: errorMessage(err) })
     }
   },
 
@@ -195,6 +196,14 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       isGenerating: true,
       error: null,
     }))
+
+    // 标题写进后端的 metadata：平台的 Thread 没有 title 字段，
+    // 只存前端内存的话刷新页面侧边栏就全变成"新任务"了。
+    // 写失败不影响主流程，标题退回从首条消息推导。
+    const title = get().titles[threadId!]
+    if (title && title !== '新任务') {
+      void threadApi.updateThreadMetadata(threadId!, { title }).catch(() => {})
+    }
 
     // 工作空间与权限按任务存；发送这一刻读一次快照，跑完之前再改不影响本次运行
     const runOptions = useTaskStore.getState().resolve(threadId)

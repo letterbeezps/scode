@@ -8,11 +8,24 @@ import type { PermissionLevel } from '../lib/permissions'
 
 /* ------------------------------------------------------------------ 对话线程 */
 
+export type ThreadStatus = 'idle' | 'busy' | 'interrupted' | 'error'
+
+/**
+ * 一个会话（LangGraph 的 thread）。
+ *
+ * 平台的 Thread 结构里**没有 title 字段**，标题是前端自己定义的，
+ * 存在 thread 的 metadata.title 里（见 api/thread.ts 的 toThread）。
+ * 这样标题跟着 thread 走，刷新页面还在——只存在前端内存里的话重载就没了。
+ */
 export interface Thread {
   thread_id: string
+  /** 来自 metadata.title，没有就是空串 */
   title: string
   created_at: string
   updated_at: string
+  /** 平台会往里塞 graph_id / assistant_id，以及我们的 title */
+  metadata?: Record<string, unknown>
+  status?: ThreadStatus
 }
 
 /* ---------------------------------------------------------------------- 工具 */

@@ -15,7 +15,7 @@
  *    api_key / display_name 实际属于整段，所以改一个模型会影响同供应商下所有
  *    模型——响应里的 co_affected 就是这个意思，别在 UI 上写成「只改了这一个」。
  */
-import { ApiError, isMockMode, request } from './client'
+import { isMockMode, request } from './client'
 import { mockAdminModels } from './mock'
 import type {
   AdminModel,
@@ -35,21 +35,6 @@ import type {
  */
 function encodeId(id: string): string {
   return encodeURIComponent(id)
-}
-
-/**
- * 把后端的 {"error": "中文原因"} 挖出来。
- *
- * client.request 抛的是 ApiError，message 是 `400 Bad Request — /admin/models`
- * 这种请求行信息，对用户没意义；真正的可读原因在 body.error 里。
- */
-export function adminErrorMessage(err: unknown): string {
-  if (err instanceof ApiError) {
-    const body = err.body as { error?: unknown } | null | undefined
-    if (body && typeof body.error === 'string' && body.error) return body.error
-    return err.message
-  }
-  return err instanceof Error ? err.message : String(err)
 }
 
 /**

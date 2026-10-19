@@ -254,12 +254,11 @@ export function createEventNormalizer(): Normalizer {
       }
 
       case 'error': {
-        const message =
-          typeof payload.message === 'string'
-            ? payload.message
-            : typeof payload.error === 'string'
-              ? payload.error
-              : '未知错误'
+        // 平台发的是 {"error": "AnthropicAuthenticationError", "message": "An internal error occurred"}
+        // ——只显示 message 等于什么都没说，只显示 error 又丢了描述。两个都在就拼起来。
+        const err = typeof payload.error === 'string' ? payload.error : ''
+        const detail = typeof payload.message === 'string' ? payload.message : ''
+        const message = err && detail && err !== detail ? `${err}：${detail}` : err || detail || '未知错误'
         return [{ type: 'error', message }]
       }
 
