@@ -47,28 +47,33 @@ ls .agents/skills | head
 
 ## 当前状态
 
-**后端 Agent Server 已跑通，前端能连真后端完成一轮对话（001 期完成）。**
+**后端 Agent Server 已跑通，前端已连真后端完成整轮对话（001 / 002 / 003 期均已落地）。**
 
-后端（`stupid_code/`）：
+后端（`stupid_code/`，按职责分四块：`agent` 图 / `launcher` 起停 / `persistence` 持久化 / `model_config` + `admin` 模型配置与管理）：
 
 - 依赖已装齐并锁进 `uv.lock`：`deepagents`、`langchain`、`langchain-anthropic`、`langgraph-cli[inmem]`、`langgraph-sdk`、`langgraph-runtime-inmem`、`langgraph-checkpoint-sqlite`、`httpx`、`pydantic`
 - `langgraph.json` 注册了 `code_agent` 图（`./agent.py:graph`），`agent.py` 里 `create_deep_agent()` 导出 `graph`
+- 模型配置走根目录 `conf/config.toml`（002 期）：支持 anthropic / openai 两种协议、多供应商多模型；`model_config.py` 读配置并构建模型，**不再用 `.env` 配 key**
+- `/admin/models` 提供模型配置的增删改查（003 期），由 `admin/app.py` 挂在 `/admin` 前缀下，与 langgraph 内置路由并行
 - `uv run scode` 以子进程拉起 `langgraph dev`（监听 `127.0.0.1:2024`），自动轮询 `GET /ok` 与 `GET /assistants/{id}/graph` 做就绪验证；`Ctrl+C` 或 SIGTERM 会连整个子进程组一起关掉，不留孤儿占端口
 - scode 把 langgraph 进程当用完即弃的本地计算进程：**在哪个目录运行 scode，那个目录就是工作空间**（子进程 cwd）；langgraph 必然生成的 `.langgraph_api/` 落在工作空间下并**保留**（里面的 `.langgraph_ops.pckl` 是 thread 索引，删了重启后会话列表就空）；派生 langgraph.json 放 `$TMPDIR/scode-config-*`（退出即删）；持久状态分两处：thread 索引在 `.langgraph_api/`，checkpoint/store 经 `persistence.py` 写入 `stupid_code/data/langgraph.db`（已 gitignore，删掉即重置历史），两者都在才能跨重启恢复对话
 
 前端（`web/`）：
 
 - 按 [`docs/frontend-design.md`](docs/frontend-design.md) 实现的任务列表、流式对话、工具调用可视化、Diff 渲染、待办同步
+- **已对接 LangGraph 平台的 thread / run 系列接口**（实测过的契约见 [`stupid_code/API.md`](stupid_code/API.md)）：建会话、列会话、改 metadata、读历史、流式运行、取消运行
+- 会话标题存平台的 `metadata.title`（平台没有独立的 title 字段），刷新页面后侧栏标题还在
+- 模型管理界面直连 `/admin/models`，可切供应商 / 换模型 / 改 key
 - 输入区下方有**工作空间**（文件夹浏览器）和**权限**（`manual` / `normal` / `auto` 三级确认策略）
 - `VITE_USE_MOCK=false` 下直连真后端；mock 只是后端没跑时演示 UI 用的
 
 还没做的（按阶段推进，文档在 `docs/backend/`）：
 
-- **下一期是 [002 config.toml 多供应商模型配置](docs/backend/002_config_toml_models.md)** —— 把模型供应商从 `.env` 单供应商迁到 `config.toml`，支持 anthropic / openai 两种协议。文档已写，代码还没动
 - `GET /directories` **未实现** —— 工作空间选择器在真后端下报 404 属预期，见 [`stupid_code/API.md`](stupid_code/API.md)
 - 工作空间 / 权限目前只是前端随请求发过去的参数（`config.configurable`），**后端还没在工具入口读它、也没按档位拦截**
 - 危险操作确认（HumanInTheLoop）、写文件落真实磁盘、路径逃逸拦截、运行护栏 —— 都还没做
-- 全仓库**没有自动化测试、没有 CI**，验证靠 [`docs/backend/001_basic_agent_server.md`](docs/backend/001_basic_agent_server.md) 里的手工步骤
+- 流式回复目前是「整段到达」而非 token 级增量（平台两种模式都支持，`messages-tuple` 事件名是 `messages`）
+- 全仓库**没有自动化测试、没有 CI**，验证靠各阶段文档里的手工步骤
 
 > 写代码前先看一眼 [`AGENTS.md`](AGENTS.md)：里面记了 checkpointer、路径解析、端点用法这些踩过的坑。
 
@@ -144,20 +149,30 @@ uv sync
 
 依赖已经在 `pyproject.toml` 里声明好并锁进 `uv.lock`，不用再 `uv add`。
 
-> `deepagents` 是 model-agnostic 的，任何支持 tool calling 的模型都行——OpenAI、Anthropic、Google、Ollama / vLLM 自托管的开放权重模型都可以。换 provider 时改 `stupid_code/agent.py` 里的 `init_chat_model(...)` 即可。
+> `deepagents` 是 model-agnostic 的，任何支持 tool calling 的模型都行——OpenAI、Anthropic、Google、Ollama / vLLM 自托管的开放权重模型都可以。换 provider 不用动代码，在 `conf/config.toml` 里加一段 `[models.providers.*]` 就行。
 
-### 3. 配置 API key
+### 3. 配置模型与 API key
 
-**建在 `stupid_code/.env`，不是仓库根目录。** `langgraph.json` 里的 `"env": "./.env"` 是相对 `stupid_code/` 解析的，放错地方启动时读不到 key。
+**建在根目录 `conf/config.toml`**（002 期起不再用 `.env`）。复制模板后填真实值：
 
 ```bash
-# stupid_code/.env
-ANTHROPIC_API_KEY=sk-ant-...
+cp conf/config.example.toml conf/config.toml
 ```
 
-`.env` 已被 `.gitignore` 忽略，别把 key 提交上去。
+```toml
+[models]
+default = "minimax:MiniMax-M3"     # "供应商名:模型名"
 
-> 001 期就这一份 `.env`、单供应商。002 期会迁到 `config.toml`（见 [`docs/backend/002_config_toml_models.md`](docs/backend/002_config_toml_models.md)），`.env` 届时只留密钥供 `${VAR}` 引用。
+[models.providers.minimax]
+protocol = "anthropic"              # 只支持 anthropic / openai
+base_url = "https://api.minimax.cn/anthropic"
+api_key = "sk-..."
+models = ["MiniMax-M3", "MiniMax-M3.1-Flash"]
+```
+
+`conf/config.toml` 已被 `.gitignore` 忽略，别把 key 提交上去；`conf/config.example.toml` 是模板，可以提交。
+
+供应商 / 模型也可以直接在网页端的「设置 → 模型管理」里改（走 `/admin/models`），改完按提示重启后端生效。
 
 ### 4. 跑起来
 
@@ -243,11 +258,14 @@ stupid-code/
 ├── uv.lock                  # 依赖锁定
 ├── .python-version          # 3.12
 ├── skills-lock.json         # langchain-skills 的安装记录与 hash
+├── conf/                    # 模型配置：config.toml 不入库（放 key），config.example.toml 是模板
 ├── docs/                    # 设计文档
 │   ├── overall-design.md    # 目标架构与前后端接口契约
 │   ├── frontend-design.md   # 网页前端的界面与交互设计
 │   └── backend/             # 按阶段推进的后端任务文档
-│       └── 001_basic_agent_server.md
+│       ├── 001_basic_agent_server.md
+│       ├── 002_config_toml_models.md
+│       └── 003_model_admin_api.md
 ├── web/                     # 网页前端（Vite + React，与 Python 相互独立）
 │   ├── README.md            # 前端说明、接口契约、工作空间与权限
 │   ├── pnpm-lock.yaml
@@ -257,14 +275,14 @@ stupid-code/
 │   ├── API.md               # 当前实际在用的端点清单
 │   ├── langgraph.json       # 图注册 + http.app + checkpointer/store 指向 persistence.py
 │   ├── __init__.py          # start() —— scode 命令的入口
-│   ├── launcher.py          # scode：cwd 即工作空间 + 派生配置 + 就绪探测 + 缓存清理 + 优雅关停
+│   ├── launcher.py          # scode：cwd 即工作空间 + 派生配置 + 就绪探测 + 优雅关停
 │   ├── agent.py             # create_deep_agent()，导出 graph
 │   ├── persistence.py       # SQLite 工厂：checkpoint/store → data/langgraph.db
 │   ├── model_config.py      # 读 conf/config.toml、校验、构建模型、模型 CRUD helpers
 │   ├── admin/               # 挂在 /admin 下的管理接口（langgraph.json 的 http.app 指向 app.py）
 │   │   ├── app.py           # Starlette 子应用与路由表
 │   │   └── models.py        # /admin/models 五个端点的处理函数
-│   └── data/                # langgraph.db（gitignore，唯一持久运行产物，固定在后端包目录）
+│   └── data/                # langgraph.db（gitignore，checkpoint/store，固定在后端包目录）
 └── .agents/skills/          # langchain-skills（gitignore，需自行安装）
     └── ... 22 个 skill
 ```
@@ -312,7 +330,7 @@ stupid-code/
 - 危险命令的批准流程用 `HumanInTheLoopMiddleware` 搭；中断恢复需要的 checkpointer 由 `langgraph dev` 平台自动提供，**不要手动传给 `create_deep_agent()`**（会直接抛 ValueError）
 - **只监听 `127.0.0.1`**。`scode` 已经写死了这个地址，别改成 `0.0.0.0` —— 一个天生带 shell 执行和文件写权限的 agent 暴露到局域网，等于把整台机器交出去
 - `/directories` 这类会暴露文件系统结构的端点，用之前必须加路径白名单
-- API key 永远走环境变量 / `.env`，别硬编码
+- API key 永远走 `conf/config.toml` 或环境变量，别硬编码进代码
 
 ---
 

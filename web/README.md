@@ -20,7 +20,7 @@ pnpm dev                      # http://localhost:5173
 
 ### 没有后端也能跑
 
-后端（P0）还没做时，用内置 mock 数据体验完整交互：
+后端没起（或只想看 UI）时，用内置 mock 数据体验完整交互：
 
 ```bash
 VITE_USE_MOCK=true pnpm dev
@@ -173,17 +173,19 @@ src/
 
 ### SSE 同时兼容两套事件格式
 
-后端尚未落地，「前端能消费的流式协议」目前有两份说法：
+「前端能消费的流式协议」有两份说法：
 
 1. 设计文档 4.2 的语义事件：`messages` / `tool_call` / `tool_result` / `todos` / `error` / `end`
    （LangGraph 里用 `get_stream_writer()` 发出）
 2. LangGraph Platform `/runs/stream` 的原生事件：`metadata` / `updates` / `values` / `error` / `end`
 
-`api/events.ts` 两份都接并做了去重：优先采信显式语义事件，
-只有没收到过显式 `messages` 时才从 `updates` 里推导文本 token，
+后端现在走的是第 2 套（平台原生），但 `api/events.ts` 两份都接并做了去重：
+优先采信显式语义事件，只有没收到过显式 `messages` 时才从 `updates` 里推导文本 token，
 否则同一段话会被追加两遍。
 
 发起运行时只请求 `stream_mode: ["updates"]` —— `values` 每次都回传全量状态，噪音大。
+平台还支持 `messages-tuple` 拿 token 级增量（**事件名是 `messages`，不是 `messages-tuple`**），
+目前没切，先保证「整段到达」这条路径是通的。
 
 ### SSE 解析器必须有状态
 
@@ -243,7 +245,7 @@ Shiki 和 `react-diff-viewer-continued` 都用动态 import 拆出主 chunk。
 - 右侧文件预览面板
 - 历史消息分页加载
 - 多模型切换的真正透传（`/settings` 里的模型选择目前只写 localStorage，
-  后端模型由 `langgraph.json` 和服务端环境变量决定）
+  后端这一轮实际用哪个模型由 `conf/config.toml` 的 `default` 决定）
 - 移动端适配（本期优先桌面端）
 
 ## 已知取舍
@@ -255,5 +257,7 @@ Shiki 和 `react-diff-viewer-continued` 都用动态 import 拆出主 chunk。
   但目前没有元素挂这个类，消息列表是全量渲染。
   不走 JS 虚拟化是因为代码块和 diff 高度不定，手写高度测量容易抖动；
   等消息量上来了，把这个类加到 `MessageList` 的消息容器就行。
-- **模型下拉是写死的四项**，没有从后端拉模型列表的接口。
+- **模型下拉和后端实际用的模型不是一回事**：下拉读的是 `/admin/models` 拉来的列表
+  （不再是写死的几项），在下拉里选一个只写 localStorage；后端这一轮实际用哪个
+  模型由 `conf/config.toml` 的 `default` 决定，改完要重启后端才生效。
 - **Diff 统一视图**，分栏视图留着 `splitView` 属性没开 —— 窄栏下分栏每行只剩十几个字符。
