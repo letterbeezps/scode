@@ -12,17 +12,17 @@
   会直接以 cwd 为根）。
 - langgraph dev 必然在 cwd 下生成 `.langgraph_api/`（inmem 运行时硬编码的
   相对路径，无法通过配置改到别处）。**这个目录要保留，不要删**：checkpoint
-  确实已由 persistence.py 的 SQLite saver 接管（同名的
+  确实已由 graph/persistence.py 的 SQLite saver 接管（同名的
   `.langgraph_checkpoint.*.pckl` 是空的），但 `.langgraph_ops.pckl` 存的是
   **thread 索引**——会话列表与 metadata 的来源。删掉它，平台重启后认不出
   已有 thread：`/threads/search` 返回空、`/threads/{id}/state` 报 404，
   历史数据还躺在 SQLite 里却取不出来。
 - 持久状态有两处，缺一不可：thread 索引在工作空间的 `.langgraph_api/` 里；
-  checkpoint/store 由 persistence.py 按 __file__ 定位到
+  checkpoint/store 由 graph/persistence.py 按 __file__ 定位到
   stupid_code/data/langgraph.db，与工作空间目录无关。
 
 另外：
-- 派生配置（把 ./agent.py 等相对路径绝对化后的 langgraph.json）放系统临时目录，
+- 派生配置（把 langgraph.json 里的相对路径绝对化后）放系统临时目录，
   因为服务器一律按 cwd 解析这些相对路径，而这里的 cwd 是用户工作空间而非后端目录；
 - 子进程设 PYTHONDONTWRITEBYTECODE=1，避免在后端源码目录写 __pycache__；
 - 用 --no-reload：reload 监视 cwd，而 cwd 现在是用户的真实项目目录，
@@ -61,7 +61,7 @@ def _backend_dir() -> Path:
 
 
 def _abs_import_spec(spec: str | dict, base_dir: Path) -> str | dict:
-    """把 "./agent.py:graph" 这类相对导入串改写成绝对路径形式。
+    """把 "./graph/agent.py:graph" 这类相对导入串改写成绝对路径形式。
 
     服务器对 graphs / checkpointer / store / http.app 的路径一律按进程 cwd
     解析，而 cwd 是用户的工作空间（任意目录），所以必须转成绝对路径。

@@ -18,7 +18,7 @@ import asyncio
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from stupid_code.model_config import (
+from stupid_code.config.model import (
     ConfigError,
     add_model,
     delete_model,

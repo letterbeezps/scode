@@ -49,12 +49,13 @@ ls .agents/skills | head
 
 **后端 Agent Server 已跑通，前端已连真后端完成整轮对话（001 / 002 / 003 / 004 期均已落地）。**
 
-后端（`stupid_code/`，按职责分四块：`agent` 图 / `launcher` 起停 / `persistence` 持久化 / `model_config` + `subagent_config` + `admin` 模型与子 agent 配置、管理接口）：
+后端（`stupid_code/`，顶层只留入口和起停，实现按职责分包：`graph/` 图与持久化 / `config/` 读 conf/ 的那层 / `admin/` 管理接口）：
 
 - 依赖已装齐并锁进 `uv.lock`：`deepagents`、`langchain`、`langchain-anthropic`、`langgraph-cli[inmem]`、`langgraph-sdk`、`langgraph-runtime-inmem`、`langgraph-checkpoint-sqlite`、`httpx`、`pydantic`
-- `langgraph.json` 注册了 `code_agent` 图（`./agent.py:graph`），`agent.py` 里 `create_deep_agent()` 导出 `graph`
-- 模型配置走根目录 `conf/config.toml`（002 期）：支持 anthropic / openai 两种协议、多供应商多模型；`model_config.py` 读配置并构建模型，**不再用 `.env` 配 key**
-- 子 agent 走根目录 `conf/subagents.toml`（004 期）：`subagent_config.py` 读配置转成 deepagents 的 `SubAgent` 规格，每个子 agent 至少 `name` / `description` / `model`；`model` 复用 `config.toml` 的供应商连接信息
+- `langgraph.json` 注册了 `code_agent` 图（`./graph/agent.py:graph`），`graph/agent.py` 里 `create_deep_agent()` 导出 `graph`
+- 模型配置走根目录 `conf/config.toml`（002 期）：支持 anthropic / openai 两种协议、多供应商多模型；`config/model.py` 读配置并构建模型，**不再用 `.env` 配 key**
+- 子 agent 走根目录 `conf/subagents.toml`（004 期）：`config/subagent.py` 读配置转成 deepagents 的 `SubAgent` 规格，每个子 agent 至少 `name` / `description` / `model`；`model` 复用 `config.toml` 的供应商连接信息
+- 主 agent 的系统提示词在 `config/prompts.py`（框架 0.7.28 已不提供内置提示词，这段就是模型唯一看到的系统提示词）
 - `/admin/models` 提供模型配置的增删改查（003 期），由 `admin/app.py` 挂在 `/admin` 前缀下，与 langgraph 内置路由并行
 - `uv run scode` 以子进程拉起 `langgraph dev`（监听 `127.0.0.1:2024`），自动轮询 `GET /ok` 与 `GET /assistants/{id}/graph` 做就绪验证；`Ctrl+C` 或 SIGTERM 会连整个子进程组一起关掉，不留孤儿占端口
 - scode 把 langgraph 进程当用完即弃的本地计算进程：**在哪个目录运行 scode，那个目录就是工作空间**（子进程 cwd）；langgraph 必然生成的 `.langgraph_api/` 落在工作空间下并**保留**（里面的 `.langgraph_ops.pckl` 是 thread 索引，删了重启后会话列表就空）；派生 langgraph.json 放 `$TMPDIR/scode-config-*`（退出即删）；持久状态分两处：thread 索引在 `.langgraph_api/`，checkpoint/store 经 `persistence.py` 写入 `stupid_code/data/langgraph.db`（已 gitignore，删掉即重置历史），两者都在才能跨重启恢复对话
@@ -288,17 +289,19 @@ stupid-code/
 │   ├── README.md            # 前端说明、接口契约、工作空间与权限
 │   ├── pnpm-lock.yaml
 │   └── src/                 # api / store / components / pages
-├── stupid_code/             # 后端 Python 包，按职责分四块
+├── stupid_code/             # 后端 Python 包，按职责分包
 │   ├── README.md            # 后端启动说明
 │   ├── API.md               # 当前实际在用的端点清单
-│   ├── langgraph.json       # 图注册 + http.app + checkpointer/store 指向 persistence.py
+│   ├── langgraph.json       # 图注册 + http.app + checkpointer/store 指向 graph/persistence.py
 │   ├── __init__.py          # start() —— scode 命令的入口
 │   ├── launcher.py          # scode：cwd 即工作空间 + 派生配置 + 就绪探测 + 优雅关停
-│   ├── agent.py             # create_deep_agent()，导出 graph
-│   ├── persistence.py       # SQLite 工厂：checkpoint/store → data/langgraph.db
-│   ├── model_config.py      # 读 conf/config.toml、校验、构建模型、模型 CRUD helpers
-│   ├── subagent_config.py   # 读 conf/subagents.toml、校验、转成 deepagents 的 SubAgent 规格
-│   ├── prompts.py           # 主 agent 的系统提示词（框架不再提供内置提示词，得自己写全）
+│   ├── graph/               # 图与它的持久化
+│   │   ├── agent.py         # create_deep_agent()，导出 graph
+│   │   └── persistence.py   # SQLite 工厂：checkpoint/store → ../data/langgraph.db
+│   ├── config/              # 读项目根 conf/ 的那层（代码在这，数据在 ../../conf/）
+│   │   ├── model.py         # 读 conf/config.toml、校验、构建模型、模型 CRUD helpers
+│   │   ├── subagent.py      # 读 conf/subagents.toml、校验、转成 deepagents 的 SubAgent 规格
+│   │   └── prompts.py       # 主 agent 的系统提示词（框架不再提供内置提示词，得自己写全）
 │   ├── admin/               # 挂在 /admin 下的管理接口（langgraph.json 的 http.app 指向 app.py）
 │   │   ├── app.py           # Starlette 子应用与路由表
 │   │   └── models.py        # /admin/models 五个端点的处理函数
@@ -307,7 +310,7 @@ stupid-code/
     └── ... 22 个 skill
 ```
 
-> **工作空间语义**：在哪个目录运行 `uv run scode`，langgraph 子进程的 cwd 就是那个目录（agent 未来的文件/shell 工具以此为根）。langgraph 必然在 cwd 生成的 `.langgraph_api/` **保留不动**（里面的 ops pckl 是 thread 索引，删了重启后历史会话取不回来）；scode 自己把路径绝对化后的派生 langgraph.json 放进 `$TMPDIR/scode-config-*`（退出即删）。作者视角的配置路径仍相对 `stupid_code/` 写，别把 `langgraph.json` / `agent.py` / `persistence.py` / `admin/app.py` 挪出去——这四个路径被 `langgraph.json` 直接引用。
+> **工作空间语义**：在哪个目录运行 `uv run scode`，langgraph 子进程的 cwd 就是那个目录（agent 未来的文件/shell 工具以此为根）。langgraph 必然在 cwd 生成的 `.langgraph_api/` **保留不动**（里面的 ops pckl 是 thread 索引，删了重启后历史会话取不回来）；scode 自己把路径绝对化后的派生 langgraph.json 放进 `$TMPDIR/scode-config-*`（退出即删）。作者视角的配置路径仍相对 `stupid_code/` 写，别把 `langgraph.json` / `graph/agent.py` / `graph/persistence.py` / `admin/app.py` 挪出去——这四个路径被 `langgraph.json` 直接引用。
 
 ---
 

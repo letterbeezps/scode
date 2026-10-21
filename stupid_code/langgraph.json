@@ -1,15 +1,15 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "code_agent": "./agent.py:graph"
+    "code_agent": "./graph/agent.py:graph"
   },
   "http": {
     "app": "./admin/app.py:app"
   },
   "checkpointer": {
-    "path": "./persistence.py:checkpointer"
+    "path": "./graph/persistence.py:checkpointer"
   },
   "store": {
-    "path": "./persistence.py:store"
+    "path": "./graph/persistence.py:store"
   }
 }

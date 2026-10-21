@@ -21,10 +21,11 @@ from typing import Any, cast
 
 from deepagents import FilesystemPermission, SubAgent
 
-from stupid_code.model_config import ConfigError, build_model_by_spec, load_config
+from stupid_code.config.model import ConfigError, build_model_by_spec, load_config
 
-# 本文件位于 stupid_code/，上一级即项目根，配置统一放根下 conf/ 目录
-_CONF_DIR = Path(__file__).resolve().parent.parent / "conf"
+# 本文件位于 stupid_code/config/，往上两级才是项目根，配置统一放根下 conf/ 目录
+# （再往下挪目录时要同步改这里的层数）
+_CONF_DIR = Path(__file__).resolve().parents[2] / "conf"
 _SUBAGENTS_FILENAME = "subagents.toml"
 
 # 允许出现在 [[subagents]] 里的字段：deepagents SubAgent 规格的 TOML 可表达子集
@@ -66,7 +67,7 @@ def load_subagent_config() -> dict[str, Any]:
 def load_subagents() -> list[SubAgent]:
     """加载 conf/subagents.toml，构建 SubAgent 规格列表。
 
-    在 agent.py 导入时调用一次，改配置需重启服务。
+    在 graph/agent.py 导入时调用一次，改配置需重启服务。
     """
     config = load_subagent_config()
     if not config:

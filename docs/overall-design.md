@@ -99,14 +99,14 @@
 
 **模型**：可配置的 LLM，通过 `model` 参数传入字符串或 LangChain 模型对象。API key 从环境变量读取。
 
-**系统提示词**：`system_prompt` 参数，见 `stupid_code/prompts.py`。
+**系统提示词**：`system_prompt` 参数，见 `stupid_code/config/prompts.py`。
 
 > ⚠️ **0.7.28 已无内置基础提示词**：早期版本会在作者提示词之前垫一段框架内置提示词
 > （承载工具使用规范），但 `BASE_AGENT_PROMPT` 在 `deepagents==0.7.0` 废弃（0.9.0 移除），
 > `HarnessProfile.base_system_prompt` 默认也是 `None`，内置的几个 profile（claude-opus-4-7 /
 > sonnet-4-6 / haiku-4-5）也都没设。**实测结论：传进去的 `system_prompt` 就是模型唯一
 > 看到的系统提示词**，没有内置提示词打底。
-> 核实方式：用假模型把 `request.system_message` 打出来（见 `stupid_code/prompts.py` 的
+> 核实方式：用假模型把 `request.system_message` 打出来（见 `stupid_code/config/prompts.py` 的
 > docstring 里记的验证方法）。因此行为准则要自己写全，不能指望框架兜底。
 
 **中间件（middleware）**：Deep Agents 是"一切皆中间件"架构，按需组合：
@@ -129,7 +129,7 @@
 
 **子 Agent**：框架内置 `task` 工具与 general-purpose 子 Agent，可通过 `subagents` 参数扩展。子 Agent 会继承父 Agent 的工具限制（§5.2 的 allowlist），但**不自动继承权限档位**——见 §5.3 的注意事项。
 
-> 📌 **004 期落地**：子 agent 的声明放 `conf/subagents.toml`（`stupid_code/subagent_config.py` 解析），
+> 📌 **004 期落地**：子 agent 的声明放 `conf/subagents.toml`（`stupid_code/config/subagent.py` 解析），
 > `model` 字段复用 `config.toml` 的供应商连接信息。**框架不会把子 agent 名单写进系统提示词**，
 > 名单只出现在 `task` 工具的 description 里（跟着配置自动更新）。
 > 实测（MiniMax-M3）：光靠工具描述，主 agent 基本不会主动委派，倾向自己干；把名单点名写进
@@ -154,7 +154,7 @@ langgraph up
 {
   "dependencies": ["."],
   "graphs": {
-    "code_agent": "./stupid_code/agent.py:graph"
+    "code_agent": "./stupid_code/graph/agent.py:graph"
   },
   "env": "./.env"
 }
@@ -538,13 +538,15 @@ stupid-code/
 │   └── backend/                # 按阶段推进的后端任务文档（001 / 002 / 003 / 004）
 ├── conf/                       # 模型供应商配置（config.toml 不入库）+ 子 agent 声明（subagents.toml 入库）
 ├── stupid_code/               # 后端 Python 包
-│   ├── agent.py               # create_deep_agent 构建入口，导出 graph
 │   ├── launcher.py            # scode：拉起 langgraph dev 子进程、就绪探测、优雅关停
-│   ├── persistence.py         # SQLite 工厂：checkpoint/store → data/langgraph.db
-│   ├── model_config.py        # 读 conf/config.toml、校验、构建模型
-│   ├── subagent_config.py     # 读 conf/subagents.toml、校验、转成 deepagents 的 SubAgent 规格
-│   ├── prompts.py             # 主 agent 的系统提示词（框架已无内置提示词，见 §3.1）
 │   ├── langgraph.json         # langgraph-cli 配置（图注册 / http.app / checkpointer / store）
+│   ├── graph/                 # 图与它的持久化
+│   │   ├── agent.py           # create_deep_agent 构建入口，导出 graph
+│   │   └── persistence.py     # SQLite 工厂：checkpoint/store → ../data/langgraph.db
+│   ├── config/                # 读项目根 conf/ 的那层（代码在这，数据在 ../../conf/）
+│   │   ├── model.py           # 读 conf/config.toml、校验、构建模型
+│   │   ├── subagent.py        # 读 conf/subagents.toml、校验、转成 deepagents 的 SubAgent 规格
+│   │   └── prompts.py         # 主 agent 的系统提示词（框架已无内置提示词，见 §3.1）
 │   ├── admin/                 # 挂在 /admin 下的管理接口
 │   │   ├── app.py             # Starlette 子应用与路由表
 │   │   └── models.py          # /admin/models 端点处理

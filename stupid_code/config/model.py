@@ -4,7 +4,7 @@
 格式见同目录的 config.example.toml。
 模型选择顺序：[models].default → [models].recent → 报错。
 协议只支持 anthropic / openai，第三方端点通过 base_url 接入。
-模型在 agent.py 导入时构建一次，改配置需重启服务。
+模型在 graph/agent.py 导入时构建一次，改配置需重启服务。
 build_model_by_spec() 按显式规格建模型，conf/subagents.toml 的 subagent
 也走这里，供应商连接信息只在 config.toml 里写一遍。
 """
@@ -18,9 +18,9 @@ from typing import Any
 from langchain.chat_models import BaseChatModel, init_chat_model
 
 SUPPORTED_PROTOCOLS = ("anthropic", "openai")
-# 本文件位于 stupid_code/，上一级即项目根，配置统一放根下 conf/ 目录
-# （model_config.py 若被挪进子目录，这里要改成 .parents[1]）
-_CONF_DIR = Path(__file__).resolve().parent.parent / "conf"
+# 本文件位于 stupid_code/config/，往上两级才是项目根，配置统一放根下 conf/ 目录
+# （再往下挪目录时要同步改这里的层数）
+_CONF_DIR = Path(__file__).resolve().parents[2] / "conf"
 _CONFIG_FILENAME = "config.toml"
 
 

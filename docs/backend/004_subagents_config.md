@@ -35,7 +35,7 @@
   报出来，否则会以为配上了其实没生效
 - **`model` 必填**：deepagents 的 `SubAgent` 允许不写 model（继承父 agent 的），但
   本期要求每个子 agent 都显式指定，免得"看着配了其实用的是主模型"
-- **不改 `langgraph.json`**：子 agent 不引入新的图，`agent.py` 里 `create_deep_agent()`
+- **不改 `langgraph.json`**：子 agent 不引入新的图，`graph/agent.py` 里 `create_deep_agent()`
   多传一个 `subagents=` 就够了
 
 ---
@@ -44,13 +44,13 @@
 
 | 文件 | 动作 |
 |---|---|
-| `stupid_code/subagent_config.py` | 新建：读 `conf/subagents.toml`，校验并转成 deepagents 的 `SubAgent` 规格 |
-| `stupid_code/model_config.py` | 修改：抽出 `build_model_by_spec()`，主 agent 与子 agent 共用 |
-| `stupid_code/agent.py` | 修改：`create_deep_agent()` 多传 `subagents=load_subagents()` |
+| `stupid_code/config/subagent.py` | 新建：读 `conf/subagents.toml`，校验并转成 deepagents 的 `SubAgent` 规格 |
+| `stupid_code/config/model.py` | 修改：抽出 `build_model_by_spec()`，主 agent 与子 agent 共用 |
+| `stupid_code/graph/agent.py` | 修改：`create_deep_agent()` 多传 `subagents=load_subagents()` |
 | `conf/subagents.toml` | 新建：子 agent 声明（含全部字段的注释说明） |
 | `stupid_code/README.md` | 同步：启动说明里提一句这个文件 |
 
-### 1.1 `stupid_code/model_config.py`（修改：抽出 `build_model_by_spec`）
+### 1.1 `stupid_code/config/model.py`（修改：抽出 `build_model_by_spec`）
 
 原来 `build_model()` 一个函数干两件事：选规格（`default` → `recent`）+ 按规格建模型。
 子 agent 的 model 规格是显式给的，走不了"选"这一步，所以拆成两个：
@@ -70,12 +70,12 @@ def build_model_by_spec(config: dict[str, Any], spec: str) -> BaseChatModel:
     # ...原来的建模型逻辑，供应商/协议/models 列表校验都在这里
 ```
 
-### 1.2 `stupid_code/subagent_config.py`（新建）
+### 1.2 `stupid_code/config/subagent.py`（新建）
 
 三个公开函数，加若干个 `_` 前缀的字段解析函数：
 
 - `subagents_path()` → `conf/subagents.toml` 的路径（用 `__file__` 定位，跟
-  `model_config.py` 同一套办法）
+  `config/model.py` 同一套办法）
 - `load_subagent_config()` → 读 TOML；文件不存在返回 `{}`；语法错误抛 `ConfigError`
 - `load_subagents()` → 读配置 + 读 `config.toml` + 逐个转成 `SubAgent` 规格
 - `build_subagents(config, main_config)` → 纯函数，方便单独测
@@ -102,7 +102,7 @@ deepagents 的 `SubAgent.permissions` 要的是 `FilesystemPermission` 数据类
 开头、不能有 `..`、不能有 `~`），所以这里转成对象、把它的 `ValueError` 包成
 `ConfigError` 再抛，错误信息才是中文人话。
 
-### 1.3 `stupid_code/agent.py`（修改）
+### 1.3 `stupid_code/graph/agent.py`（修改）
 
 ```python
 graph = create_deep_agent(
@@ -147,7 +147,7 @@ graph = create_deep_agent(
 
 deepagents 的 `SubAgent` 还有 `middleware` 字段，本期**不支持**：它要的是 Python
 对象（`AgentMiddleware` 实例），TOML 表达不了。要改子 agent 的中间件栈，
-目前只能改 `stupid_code/subagent_config.py` 里写死。
+目前只能改 `stupid_code/config/subagent.py` 里写死。
 
 字段取值范围：
 
@@ -165,7 +165,7 @@ deepagents 的 `SubAgent` 还有 `middleware` 字段，本期**不支持**：它
 ```bash
 cd /path/to/stupid-code
 uv run python -c "
-from stupid_code.subagent_config import load_subagents
+from stupid_code.config.subagent import load_subagents
 for s in load_subagents():
     print(s['name'], '->', type(s['model']).__name__, s['model'].model)
 "
@@ -281,11 +281,11 @@ curl -s -N -X POST "http://127.0.0.1:2024/threads/$TID/runs/stream" \
 不在里面就报错。
 
 **改了 `conf/subagents.toml` 没生效**
-改完要重启服务。子 agent 在 `agent.py` 导入时构建一次，跟模型一样。
+改完要重启服务。子 agent 在 `graph/agent.py` 导入时构建一次，跟模型一样。
 
 **`task` 工具里只有 `general-purpose`**
 要么 `conf/subagents.toml` 不存在（那就该是这样），要么服务没重启，要么改的是
-`config.toml` 之外的另一份文件——路径是按 `stupid_code/subagent_config.py` 的位置
+`config.toml` 之外的另一份文件——路径是按 `stupid_code/config/subagent.py` 的位置
 算的（项目根的 `conf/`），不是当前工作目录。
 
 **主 agent 老是派给 `general-purpose` 不派给你的子 agent**

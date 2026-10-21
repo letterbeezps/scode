@@ -15,8 +15,10 @@ from contextlib import asynccontextmanager
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.store.sqlite import AsyncSqliteStore
 
-# 数据库文件放在本模块同级的 data/ 下，路径与启动 CWD 解耦
-_DB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+# 数据库文件放在包根的 data/ 下（stupid_code/data/），路径与启动 CWD 解耦
+_DB_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"
+)
 os.makedirs(_DB_DIR, exist_ok=True)
 # 注意：AsyncSqliteSaver / AsyncSqliteStore 把 conn_string 直接传给底层连接，
 # 这里传文件路径即可，不要加 sqlite:/// 前缀。

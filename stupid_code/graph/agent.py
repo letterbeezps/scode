@@ -1,8 +1,8 @@
 from deepagents import create_deep_agent
 
-from stupid_code.model_config import load_model
-from stupid_code.prompts import SYSTEM_PROMPT
-from stupid_code.subagent_config import load_subagents
+from stupid_code.config.model import load_model
+from stupid_code.config.prompts import SYSTEM_PROMPT
+from stupid_code.config.subagent import load_subagents
 
 graph = create_deep_agent(
     model=load_model(),
