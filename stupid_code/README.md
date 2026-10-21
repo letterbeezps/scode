@@ -51,6 +51,9 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 | [persistence.py](persistence.py) | SQLite 持久化工厂：`AsyncSqliteSaver`（checkpoint）+ `AsyncSqliteStore`（store），都指向 `data/langgraph.db` |
 | **模型配置** | |
 | [model_config.py](model_config.py) | 加载与校验 `../conf/config.toml`，构建模型实例；CRUD helpers |
+| [subagent_config.py](subagent_config.py) | 加载与校验 `../conf/subagents.toml`，转成 deepagents 的 `SubAgent` 规格 |
+| **提示词** | |
+| [prompts.py](prompts.py) | 主 agent 的系统提示词。框架 0.7.28 已不提供内置基础提示词，这段就是模型唯一看到的系统提示词 |
 | **管理接口** | |
 | [admin/app.py](admin/app.py) | 挂在 langgraph dev 的 Starlette 子应用与路由表（`langgraph.json` 的 `http.app` 指向它） |
 | [admin/models.py](admin/models.py) | `/admin/models` 路由处理函数 |
@@ -64,10 +67,16 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 > 只能待在包根这一层。
 
 > 模型供应商配置（含 api_key）改在项目根 `conf/config.toml`（从 `conf/config.example.toml` 复制，不入库）。本项目不再使用 `.env`。 |
+>
+> 子 agent 声明在项目根 `conf/subagents.toml`（入库，无密钥）：每个 `[[subagents]]` 至少要有
+> `name` / `description` / `model` 三项，`model` 写 `供应商名:模型名`，复用 `config.toml` 里
+> 该供应商的连接信息。文件不存在 = 不配置子 agent。字段说明见
+> `../docs/backend/004_subagents_config.md`。
 
 ## 注意
 
 - 不要给 `create_deep_agent()` 传 `checkpointer`：持久化由平台在 `langgraph.json` 层配置（`checkpointer`/`store` 指向 `persistence.py`），在 agent 里显式传入会启动失败。对话历史写入 `data/langgraph.db`，重启后仍可恢复；删除该文件即重置全部历史。
 - 模型供应商配置在项目根 `conf/config.toml`（从 `conf/config.example.toml` 复制），选择顺序 `default` → `recent`，协议只支持 anthropic / openai；改配置需重启服务。
+- 子 agent 配置在项目根 `conf/subagents.toml`，同样改完要重启服务（子 agent 在 `agent.py` 导入时构建一次）。`model` 必须是 `config.toml` 里配过的供应商 + 其 `models` 白名单里的模型名。
 - `langgraph.json` 的 `http.app` 字段指向 `admin/app.py:app`。本期实现的 `/admin/models` 接口改完配置后仍需重启 `scode` 才能让运行中的 graph 加载新模型实例。
-- 详细的阶段目标与验证步骤见 `../docs/backend/001_basic_agent_server.md`、`../docs/backend/002_config_toml_models.md`、`../docs/backend/003_model_admin_api.md`。
+- 详细的阶段目标与验证步骤见 `../docs/backend/001_basic_agent_server.md`、`../docs/backend/002_config_toml_models.md`、`../docs/backend/003_model_admin_api.md`、`../docs/backend/004_subagents_config.md`。

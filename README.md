@@ -47,13 +47,14 @@ ls .agents/skills | head
 
 ## 当前状态
 
-**后端 Agent Server 已跑通，前端已连真后端完成整轮对话（001 / 002 / 003 期均已落地）。**
+**后端 Agent Server 已跑通，前端已连真后端完成整轮对话（001 / 002 / 003 / 004 期均已落地）。**
 
-后端（`stupid_code/`，按职责分四块：`agent` 图 / `launcher` 起停 / `persistence` 持久化 / `model_config` + `admin` 模型配置与管理）：
+后端（`stupid_code/`，按职责分四块：`agent` 图 / `launcher` 起停 / `persistence` 持久化 / `model_config` + `subagent_config` + `admin` 模型与子 agent 配置、管理接口）：
 
 - 依赖已装齐并锁进 `uv.lock`：`deepagents`、`langchain`、`langchain-anthropic`、`langgraph-cli[inmem]`、`langgraph-sdk`、`langgraph-runtime-inmem`、`langgraph-checkpoint-sqlite`、`httpx`、`pydantic`
 - `langgraph.json` 注册了 `code_agent` 图（`./agent.py:graph`），`agent.py` 里 `create_deep_agent()` 导出 `graph`
 - 模型配置走根目录 `conf/config.toml`（002 期）：支持 anthropic / openai 两种协议、多供应商多模型；`model_config.py` 读配置并构建模型，**不再用 `.env` 配 key**
+- 子 agent 走根目录 `conf/subagents.toml`（004 期）：`subagent_config.py` 读配置转成 deepagents 的 `SubAgent` 规格，每个子 agent 至少 `name` / `description` / `model`；`model` 复用 `config.toml` 的供应商连接信息
 - `/admin/models` 提供模型配置的增删改查（003 期），由 `admin/app.py` 挂在 `/admin` 前缀下，与 langgraph 内置路由并行
 - `uv run scode` 以子进程拉起 `langgraph dev`（监听 `127.0.0.1:2024`），自动轮询 `GET /ok` 与 `GET /assistants/{id}/graph` 做就绪验证；`Ctrl+C` 或 SIGTERM 会连整个子进程组一起关掉，不留孤儿占端口
 - scode 把 langgraph 进程当用完即弃的本地计算进程：**在哪个目录运行 scode，那个目录就是工作空间**（子进程 cwd）；langgraph 必然生成的 `.langgraph_api/` 落在工作空间下并**保留**（里面的 `.langgraph_ops.pckl` 是 thread 索引，删了重启后会话列表就空）；派生 langgraph.json 放 `$TMPDIR/scode-config-*`（退出即删）；持久状态分两处：thread 索引在 `.langgraph_api/`，checkpoint/store 经 `persistence.py` 写入 `stupid_code/data/langgraph.db`（已 gitignore，删掉即重置历史），两者都在才能跨重启恢复对话
@@ -174,6 +175,22 @@ models = ["MiniMax-M3", "MiniMax-M3.1-Flash"]
 
 供应商 / 模型也可以直接在网页端的「设置 → 模型管理」里改（走 `/admin/models`），改完按提示重启后端生效。
 
+### 3.1 配子 agent（可选）
+
+**建在根目录 `conf/subagents.toml`**（004 期，无密钥，可以直接提交）。每个 `[[subagents]]` 至少要有 `name` / `description` / `model` 三项：
+
+```toml
+[[subagents]]
+name = "reviewer"                          # task(subagent_type="reviewer") 用它
+description = "代码审查员：读改动、找缺陷，只输出问题清单"   # 主 agent 靠它决定何时委派
+model = "minimax:MiniMax-M3.1-Flash"       # "供应商名:模型名"，复用 config.toml 的连接信息
+system_prompt = "你是一个严格的代码审查员。"
+```
+
+`model` 的供应商和模型名必须在 `config.toml` 里配过（`models` 白名单）。
+文件不存在 = 不配置子 agent，deepagents 自带的 `general-purpose` 照常可用。
+完整字段表见 [`docs/backend/004_subagents_config.md`](docs/backend/004_subagents_config.md)。
+
 ### 4. 跑起来
 
 ```bash
@@ -258,14 +275,15 @@ stupid-code/
 ├── uv.lock                  # 依赖锁定
 ├── .python-version          # 3.12
 ├── skills-lock.json         # langchain-skills 的安装记录与 hash
-├── conf/                    # 模型配置：config.toml 不入库（放 key），config.example.toml 是模板
+├── conf/                    # 模型配置：config.toml 不入库（放 key），config.example.toml 是模板；subagents.toml 是子 agent 声明（入库）
 ├── docs/                    # 设计文档
 │   ├── overall-design.md    # 目标架构与前后端接口契约
 │   ├── frontend-design.md   # 网页前端的界面与交互设计
 │   └── backend/             # 按阶段推进的后端任务文档
 │       ├── 001_basic_agent_server.md
 │       ├── 002_config_toml_models.md
-│       └── 003_model_admin_api.md
+│       ├── 003_model_admin_api.md
+│       └── 004_subagents_config.md
 ├── web/                     # 网页前端（Vite + React，与 Python 相互独立）
 │   ├── README.md            # 前端说明、接口契约、工作空间与权限
 │   ├── pnpm-lock.yaml
@@ -279,6 +297,8 @@ stupid-code/
 │   ├── agent.py             # create_deep_agent()，导出 graph
 │   ├── persistence.py       # SQLite 工厂：checkpoint/store → data/langgraph.db
 │   ├── model_config.py      # 读 conf/config.toml、校验、构建模型、模型 CRUD helpers
+│   ├── subagent_config.py   # 读 conf/subagents.toml、校验、转成 deepagents 的 SubAgent 规格
+│   ├── prompts.py           # 主 agent 的系统提示词（框架不再提供内置提示词，得自己写全）
 │   ├── admin/               # 挂在 /admin 下的管理接口（langgraph.json 的 http.app 指向 app.py）
 │   │   ├── app.py           # Starlette 子应用与路由表
 │   │   └── models.py        # /admin/models 五个端点的处理函数
