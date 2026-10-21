@@ -6,6 +6,9 @@ dist/
 wheels/
 *.egg-info
 
+# macOS / 编辑器自动生成
+.DS_Store
+
 # Virtual environments
 .venv
 .claude
