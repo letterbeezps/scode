@@ -1,0 +1,69 @@
+# conf/subagents.toml —— 子 agent（subagent）声明
+#
+# 每个 [[subagents]] 至少要有 name / description / model 三项：
+#   name        subagent 标识，主 agent 用 task(subagent_type="<name>") 调用
+#   description 能力描述，主 agent 据此决定什么时候委派给它
+#   model       "供应商名:模型名"，写法与 config.toml 的 [models] 一致；
+#               解析时复用 config.toml 里该供应商的 base_url / api_key
+#
+# 其余可选字段（对应 deepagents 的 SubAgent 规格）：
+#   system_prompt   给 subagent 的系统提示词；fork 模式下是追加而非替换
+#   mode            "isolated"（默认，只看得到委派任务）/ "fork"（接着父对话跑）
+#   skills          skill 目录列表；mode="fork" 时不能写（直接继承父 agent 的）
+#   tools           供应商内置工具列表；不写则继承父 agent 传给 create_deep_agent 的 tools
+#   interrupt_on    哪些工具调用要人工确认，命中就挂起等审批
+#   permissions     文件访问规则；不写则继承父 agent 的
+#   response_format 结构化输出的 JSON schema
+#
+# 文件不存在 = 不配置任何 subagent，此时 deepagents 自带的 general-purpose
+# subagent 照常可用。改完要重启服务（scode）才生效。
+#
+# 本文件不含密钥（密钥都在 config.toml 里），可以放心入库。
+
+# 代码审查员：只读，找问题不改代码
+[[subagents]]
+name = "reviewer"
+description = "代码审查员：读改动、找缺陷和安全问题，只输出问题清单，绝不修改代码。适合提交前自查。"
+model = "minimax:MiniMax-M3.1-Flash"
+system_prompt = """
+你是一个严格但务实的代码审查员。
+
+工作方式：
+1. 先读清楚相关文件再下结论，不要凭文件名猜。
+2. 按严重程度排序输出问题：阻塞性 > 逻辑错误 > 可维护性 > 风格。
+3. 每个问题给出文件路径、行号、问题原因、修改建议。
+4. 没发现真问题就直接说没有，不要凑数。
+5. 你只读不写：不要调用任何写文件的工具。
+"""
+# 只读：所有写操作直接被拒（工具层拦截，不是靠提示词自觉）
+permissions = [{ operations = ["write"], paths = ["/**"], mode = "deny" }]
+
+# 修复者：可以改代码，但写文件前要人工确认
+[[subagents]]
+name = "fixer"
+description = "修复者：按明确的指令修改代码并验证。写文件前会暂停等人工确认。"
+model = "minimax:MiniMax-M3"
+system_prompt = """
+你是一个执行指令的修复者。改完要说明改了哪些文件、为什么这么改。
+"""
+# 命中这些工具就挂起，等人点头再执行
+interrupt_on = { write_file = { allowed_decisions = ["approve", "reject"] }, edit_file = true }
+
+# 摘要员：结构化输出，固定 schema
+[[subagents]]
+name = "summarizer"
+description = "摘要员：把一段材料压缩成结构化的要点清单，用于归档或交接。"
+model = "minimax:MiniMax-M3.1-Flash"
+system_prompt = """
+你是摘要员。提炼要点，不要添加材料里没有的信息。
+"""
+response_format = { type = "object", properties = { title = { type = "string" }, points = { type = "array", items = { type = "string" } } }, required = ["title", "points"] }
+
+# 接着父对话往下跑的 subagent（deepagents 的实验特性，启动时会有 beta 警告）。
+# fork 会继承父 agent 的对话历史和状态，skills 也会继承，所以这里不能写 skills。
+# [[subagents]]
+# name = "continuer"
+# description = "接力者：带着当前对话上下文继续处理后续任务。"
+# model = "minimax:MiniMax-M3.1-Flash"
+# mode = "fork"
+# system_prompt = "沿着刚才的思路继续做，做完汇报进展。"

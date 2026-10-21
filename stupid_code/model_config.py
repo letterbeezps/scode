@@ -5,6 +5,8 @@
 模型选择顺序：[models].default → [models].recent → 报错。
 协议只支持 anthropic / openai，第三方端点通过 base_url 接入。
 模型在 agent.py 导入时构建一次，改配置需重启服务。
+build_model_by_spec() 按显式规格建模型，conf/subagents.toml 的 subagent
+也走这里，供应商连接信息只在 config.toml 里写一遍。
 """
 
 import os
@@ -69,11 +71,25 @@ def _require_api_key(provider_name: str, provider: dict[str, Any]) -> str:
 
 
 def build_model(config: dict[str, Any]) -> BaseChatModel:
+    """按 [models].default → recent 的顺序构建主 agent 的模型。"""
     models = config.get("models")
     if not isinstance(models, dict):
         raise ConfigError("config.toml 缺少 [models] 段")
 
-    spec = _pick_model_spec(models)
+    return build_model_by_spec(config, _pick_model_spec(models))
+
+
+def build_model_by_spec(config: dict[str, Any], spec: str) -> BaseChatModel:
+    """按 "供应商名:模型名" 规格构建模型实例。
+
+    主 agent 与 subagent 共用这一套解析：subagent 的 model 字段写法与
+    config.toml 的 [models] 一致，base_url / api_key 仍取自 config.toml，
+    不需要再写一遍连接信息。
+    """
+    models = config.get("models")
+    if not isinstance(models, dict):
+        raise ConfigError("config.toml 缺少 [models] 段")
+
     provider_name, _, model_id = spec.partition(":")
     provider_name = provider_name.strip()
     model_id = model_id.strip()
