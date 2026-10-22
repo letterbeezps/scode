@@ -50,6 +50,7 @@ Python 侧**没有** ruff / black / mypy 配置，**整个仓库没有测试、�
 9. **deepagents 0.7.28 不再提供内置系统提示词**。`BASE_AGENT_PROMPT` 在 0.7.0 废弃（0.9.0 移除），`HarnessProfile.base_system_prompt` 默认 `None`，内置的几个 claude profile 也没设。**`create_deep_agent(system_prompt=...)` 传进去的就是模型唯一看到的系统提示词**——别以为框架会垫底，行为准则要自己写全（见 `stupid_code/config/prompts.py`）。验证方法：用假模型把 `request.system_message` 打出来。
 10. **长期记忆用 `middleware=` 挂 `MemoryMiddleware`，别用 `create_deep_agent(memory=...)`**。两者是同一个中间件，但 `memory=` 只能用框架默认的 backend——默认是 StateBackend（虚拟文件系统），**读不到磁盘上的 `.scode-memory.md`**。自己挂才能给 `FilesystemBackend`（见 `stupid_code/graph/memory.py`）。另外记忆**只在会话开始时读一次**，改完文件要开新会话才生效。记忆文件名是 `.scode-memory.md` 而不是框架默认的 `AGENTS.md`：后者是"写给编码 agent 看的项目约定"（本项目根目录那份就是），和 agent 自己攒的长期记忆语义不同，混用会把开发者的项目说明当记忆注入。
 11. **端口被占时 `scode` 会误报"已就绪"**。就绪检查只轮询 2024，而 `langgraph dev` 在 2024 被占时会自动换端口（日志里 `Port 2024 is already in use, using port NNNNN instead`），launcher 却还在对着旧服务做验证。**测试时以启动日志里那个真实端口为准**，别被"已就绪"骗了。
+12. **backend 是真实磁盘 + 本机 shell**（007 期）。`graph/backend.py` 构造 `CompositeBackend(default=LocalShellBackend)`：agent 的 `write_file` / `edit_file` 改的是工作空间里的真文件，`execute` 能跑任意命令。**框架有条硬限制**：backend 支持命令执行时，`FilesystemMiddleware` 不接受 `permissions`（直接抛 `NotImplementedError`）——shell 能绕过任何文件权限，权限和 shell 不能共存。所以 `graph/backend.py` 的 `apply_permission_backend()` 会给**声明了 `permissions` 的子 agent** 换成无 shell 的 `FilesystemBackend`，`conf/subagents.toml` 里 `reviewer` 的只读就是靠这个保证的。改子 agent 配置时别把 `permissions` 直接塞回规格里。
 
 ## Code style
 
@@ -78,4 +79,5 @@ Python 侧**没有** ruff / black / mypy 配置，**整个仓库没有测试、�
 - 后端**只监听 `127.0.0.1`**。绝不要绑 `0.0.0.0`——这个 agent 天生带 shell 执行和文件写权限，暴露到 `0.0.0.0` 是设计文档里列为「影响极高」的风险
 - deepagents 是 "trust the LLM" 模型：agent **不会自我约束**，边界必须在工具层/沙箱层强制执行，别指望模型自觉
 - 危险操作走人工确认（`HumanInTheLoopMiddleware` + checkpointer），边界条件必须落盘持久化，不能重算
+- **shell 目前还没有人工确认**（007 期引入真实 backend 后的缺口）：agent 能读工作空间里的任何文件（包括 `conf/config.toml` 里的 api_key）、能跑任意命令，**没有 HITL 拦截**——前端还没有批准/拒绝 UI。补法是给 `execute` 加 `interrupt_on` + 前端审批按钮，别指望提示词里的"破坏性命令先问"能当护栏
 - `/directories` 会暴露文件系统结构——需要路径白名单，且只允许本地监听

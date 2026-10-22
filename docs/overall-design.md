@@ -126,6 +126,12 @@
 
 > ⚠️ **默认配置不满足本项目需求**。必须显式配置为真实本地磁盘后端，否则模型读写的是状态里的虚拟文件，改动不落盘，编码场景直接失效。这是 P0 阶段的第一个坑。
 > 核实方式：配置完成后跑一个最小用例——让 Agent 写一个临时文件，检查磁盘上是否真的出现该文件。
+>
+> 📌 **007 期落地**：`stupid_code/graph/backend.py` 构造 `CompositeBackend(default=LocalShellBackend)`
+> ——真实磁盘 + 本机 shell（`execute` 由此而来），`/tmp/` 路由到 `StateBackend`。
+> 框架的硬限制：**backend 支持命令执行时不能同时用 `permissions`**（shell 能绕过任何权限），
+> 所以声明了 `permissions` 的子 agent 会被换成无 shell 的 `FilesystemBackend`。
+> 详见 `docs/backend/007_real_backend.md`。
 
 **子 Agent**：框架内置 `task` 工具与 general-purpose 子 Agent，可通过 `subagents` 参数扩展。子 Agent 会继承父 Agent 的工具限制（§5.2 的 allowlist），但**不自动继承权限档位**——见 §5.3 的注意事项。
 
@@ -535,13 +541,14 @@ stupid-code/
 │   ├── overall-design.md      # 本文档
 │   ├── overall-design-review.md  # v0.1 评审意见（历史存档）
 │   ├── frontend-design.md     # 前端设计文档
-│   └── backend/                # 按阶段推进的后端任务文档（001 / 002 / 003 / 004）
+│   └── backend/                # 按阶段推进的后端任务文档（001 ~ 007）
 ├── conf/                       # 模型供应商配置（config.toml 不入库）+ 子 agent 声明（subagents.toml 入库）
 ├── stupid_code/               # 后端 Python 包
 │   ├── launcher.py            # scode：拉起 langgraph dev 子进程、就绪探测、优雅关停
 │   ├── langgraph.json         # langgraph-cli 配置（图注册 / http.app / checkpointer / store）
 │   ├── graph/                 # 图与它的持久化
 │   │   ├── agent.py           # create_deep_agent 构建入口，导出 graph
+│   │   ├── backend.py         # 真实 backend：CompositeBackend(default=LocalShellBackend)
 │   │   ├── memory.py          # 长期记忆：工作空间根的 .scode-memory.md（不存在则创建）
 │   │   └── persistence.py     # SQLite 工厂：checkpoint/store → ../data/langgraph.db
 │   ├── config/                # 读项目根 conf/ 的那层（代码在这，数据在 ../../conf/）
@@ -590,10 +597,15 @@ stupid-code/
 
 ### 11.1 待核实项
 
-- `[待核实]` deepagents 的本地磁盘 backend 具体配置方式 —— 核实方式：查锁定版本的官方文档 / 读包内 backend 实现
-- `[待核实]` deepagents 默认配置的 filesystem 是否为真实磁盘 —— 核实方式：跑最小用例，检查写文件是否落盘
+- ~~`[待核实]` deepagents 的本地磁盘 backend 具体配置方式~~ —— **已核实并落地**（007 期）：
+  `CompositeBackend(default=LocalShellBackend(root_dir=工作空间, virtual_mode=True, inherit_env=True))`，
+  见 `docs/backend/007_real_backend.md`
+- ~~`[待核实]` deepagents 默认配置的 filesystem 是否为真实磁盘~~ —— **已核实**：默认是
+  `StateBackend`（虚拟 FS，写操作不落盘）；必须显式传 `backend=`
 - `[待核实]` `TodoListMiddleware` 是否在本项目锁定版本中仍为 opt-in —— 核实方式：查官方 changelog
 - `[待核实]` `per_call` 中断模式所需的 langchain 版本下限是否满足 —— 核实方式：查本项目锁定的 langchain 版本号
+- `[待核实]` **shell 的人工确认**：真实 backend 带 `execute` 之后没有 HITL 拦截，
+  前端也还没有批准/拒绝 UI —— 核实/实现方式见 `docs/backend/007_real_backend.md` 的「待核实」
 - `[待核实]` 重连 join 接口能否补齐错过的历史事件 —— 核实方式：P1 联调实测
 - `[待核实]` 各模型官方定价（用于 token → 成本换算）
 - `[待核实]` `stream_mode: ['updates']` 的文本到达粒度 —— 核实方式：P0 联调观察

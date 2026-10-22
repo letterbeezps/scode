@@ -13,21 +13,28 @@
 记忆"是两回事，混在一起会把开发者的项目说明当成 agent 的记忆注入进去。换成
 独立文件名后两者的语义就分开了。
 
-两个要注意的点：
+三个要注意的点：
 
 1. **只在会话开始时读一次**。MemoryMiddleware 的 before_agent 钩子见到 state 里
    已经有 `memory_contents` 就不重复读——改了文件要开新会话才生效。
-2. **只用 FilesystemBackend 读这一个文件**。deepagents 默认给 agent 的文件工具
-   用的还是 StateBackend（虚拟文件系统，不落磁盘），所以 agent 的 `edit_file`
-   写不进真实的记忆文件——记忆提示词里虽然写着"可以调用 edit_file 保存新知识"，
-   但在接真实磁盘 backend 之前，那句话是不成立的。
+2. **和 agent 的文件工具指向同一个真实文件**。中间件自己持有一个以工作空间
+   为根的 FilesystemBackend，agent 的 `write_file` / `edit_file` 走
+   `graph/backend.py` 那个 CompositeBackend（真实磁盘）——两边解析出来的真实
+   路径都是 `<工作空间>/.scode-memory.md`，所以"把新知识写进记忆文件"是真的
+   能落盘，框架记忆提示词里那句"可以调用 edit_file 保存新知识"到这才成立。
+   （早先用 StateBackend 时，agent 的写操作只改虚拟 FS，记忆文件永远不变。）
+3. **文件操作锁在工作空间内**。backend 用 `virtual_mode=True`，路径越不出
+   工作空间根。
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.memory import MemoryMiddleware
+
+from stupid_code.graph.backend import workspace_dir
 
 MEMORY_FILENAME = ".scode-memory.md"
 """记忆文件名。点开头 = 本地状态文件，不属于项目代码，通常进 .gitignore。"""
@@ -66,15 +73,6 @@ _TEMPLATE = f"""# {MEMORY_FILENAME}
 """
 
 
-def workspace_dir() -> Path:
-    """工作空间目录 = 当前进程 cwd。
-
-    launcher 起 langgraph 子进程时把 cwd 设成用户的工作空间，graph 也在那个
-    进程里导入，所以这里拿到的就是工作空间。
-    """
-    return Path.cwd()
-
-
 def memory_path() -> Path:
     """记忆文件在工作空间里的真实路径。"""
     return workspace_dir() / MEMORY_FILENAME
@@ -98,12 +96,19 @@ def ensure_memory_file() -> Path:
 def build_memory_middleware() -> MemoryMiddleware:
     """构造 MemoryMiddleware：读工作空间根的记忆文件。
 
-    backend 用 FilesystemBackend（虚拟模式，路径限定在工作空间内），
-    因为 MemoryMiddleware 是通过 backend.download_files() 读源文件的——
-    默认的 StateBackend 里没有真实文件，读出来是空的。
+    中间件是通过 `backend.download_files()` 读源文件的，默认 StateBackend 里
+    没有真实文件，读出来是空的，所以这里给它一个 FilesystemBackend。
+
+    不用主 agent 那个 CompositeBackend：记忆只需要"工作空间里那一个文件"，
+    自己拿一个以工作空间为根的 FilesystemBackend 更直白。两者解析出来的
+    真实路径是同一个（`<工作空间>/.scode-memory.md`），所以 agent 用
+    `write_file` / `edit_file` 写进这个文件的内容，下次开新会话就会被读进来。
     """
     ensure_memory_file()
-    backend = FilesystemBackend(root_dir=workspace_dir(), virtual_mode=True)
+    backend = FilesystemBackend(
+        root_dir=workspace_dir(),
+        virtual_mode=True,
+    )
     return MemoryMiddleware(
         backend=backend,
         sources=[_MEMORY_SOURCE],

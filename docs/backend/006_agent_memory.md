@@ -13,8 +13,9 @@
 
 ### 本期不做
 
-- **不解决"agent 写不进真实 .scode-memory.md"**：deepagents 给 agent 的文件工具用的还是
-  StateBackend（虚拟文件系统），`edit_file` 写的是虚拟 FS，落不了磁盘。记忆目前是**只读**的
+- ~~**不解决"agent 写不进真实 .scode-memory.md"**~~：**007 期已解决**——agent 的
+  backend 换成了真实磁盘（`CompositeBackend` + `LocalShellBackend`），`edit_file`
+  写进去的就是磁盘上那个文件，记忆不再只读。见 `007_real_backend.md`
 - 不做记忆的运行时更新（改完 `.scode-memory.md` 要开新会话才生效，见「关键取舍」）
 - 不做多来源记忆（`~/.deepagents/` 之类的全局记忆目录）
 - 不做前端展示记忆内容
@@ -24,10 +25,13 @@
 - **用 `middleware=` 而不是 `create_deep_agent(memory=...)`**。两者最终都是同一个
   `MemoryMiddleware`，但 `memory=` 只能用框架默认的 backend——而默认是 StateBackend，
   **读不到磁盘上的文件**。显式挂载才能自己指定 `FilesystemBackend`。
-- **backend 只给记忆用，不给 agent 的文件工具用**。`FilesystemBackend` 的 docstring
-  明确写了"Web 服务器 / HTTP API 不适用"（agent 能读任何文件，包括 `conf/config.toml`
-  里的 api_key）。所以只让中间件用它读那一个文件，agent 的文件工具仍走 StateBackend。
-  用 `virtual_mode=True`（默认），路径越不出工作空间根。
+- **backend 只给记忆用，不给 agent 的文件工具用**（006 期的做法）。`FilesystemBackend`
+  的 docstring 明确写了"Web 服务器 / HTTP API 不适用"（agent 能读任何文件，包括
+  `conf/config.toml` 里的 api_key），所以 006 期只让中间件用它读那一个文件，
+  agent 的文件工具仍走 StateBackend。
+  **007 期改掉了这条**：agent 的 backend 换成了真实磁盘（带 shell），中间件这边
+  仍然自己持有一个 `FilesystemBackend` 读那一个文件——两边的真实路径是同一个，
+  所以 agent 写得进记忆文件。见 `007_real_backend.md`
 - **工作空间 = `Path.cwd()`**。launcher 把 langgraph 子进程的 cwd 设成用户的工作空间，
   graph 也在那个进程里导入，所以 `cwd()` 就是工作空间。跟项目既有的"cwd 即工作空间"语义一致。
 - **记忆只在会话开始时读一次**。`MemoryMiddleware.before_agent` 见到 state 里已有
@@ -47,10 +51,10 @@
 
 ### 1.1 `stupid_code/graph/memory.py`（新建）
 
-四个公开函数：
+三个公开函数（`workspace_dir()` 在 007 期挪到了 `graph/backend.py`）：
 
 ```python
-workspace_dir() -> Path        # Path.cwd()，即工作空间
+workspace_dir() -> Path        # Path.cwd()，即工作空间（006 期在本文件，007 期挪到 graph/backend.py）
 memory_path() -> Path          # workspace_dir() / ".scode-memory.md"
 ensure_memory_file() -> Path   # 不存在就用模板创建；失败抛 MemorySetupError
 build_memory_middleware() -> MemoryMiddleware
@@ -71,6 +75,8 @@ return MemoryMiddleware(
   `root_dir` 下，即 `<工作空间>/.scode-memory.md`
 - `add_cache_control=True` 与框架自己挂 `MemoryMiddleware` 时的行为一致：给记忆块加
   缓存断点，记忆内容变了也不会把整个前缀缓存打穿
+- 这个 `FilesystemBackend` 和 agent 的 backend 是两个对象，但**指向同一个真实文件**：
+  agent 的 backend 解析 `/.scode-memory.md` 也得到 `<工作空间>/.scode-memory.md`（007 期）
 
 ### 1.2 `stupid_code/graph/agent.py`（修改）
 
@@ -181,11 +187,10 @@ curl -s "http://127.0.0.1:<port>/assistants/$AID/graph"
   所以 `memory_contents` 这个 channel 存在，私有状态不进入输出 state
 - 不传 `memory=` 参数时，框架不会自己挂 `MemoryMiddleware`——本项目是自己挂的，
   图里能查到节点
+- 007 期换成真实 backend 后复验：agent 的 `write_file` 把内容写进了磁盘上那个
+  `.scode-memory.md`（标记 `SCODE_E2E2_WRITTEN_MARKER_4`），记忆不再是只读的
 
 ## 5. 待核实
 
-- **记忆是只读的**：agent 的 `edit_file` 走 StateBackend，写不进真实的 `.scode-memory.md`，
-  而框架的记忆提示词里写着"可以调用 `edit_file` 保存新知识"——在接真实磁盘 backend
-  之前，这句话对用户是误导
 - 记忆内容不参与"哪些文件可以读"的权限判断（`permissions` 管的是文件工具，不是中间件）
 - launcher 的端口占用误报问题（见「常见问题」）本期没改

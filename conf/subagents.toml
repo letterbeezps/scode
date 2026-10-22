@@ -12,7 +12,10 @@
 #   skills          skill 目录列表；mode="fork" 时不能写（直接继承父 agent 的）
 #   tools           供应商内置工具列表；不写则继承父 agent 传给 create_deep_agent 的 tools
 #   interrupt_on    哪些工具调用要人工确认，命中就挂起等审批
-#   permissions     文件访问规则；不写则继承父 agent 的
+#   permissions     文件访问规则；不写则继承父 agent 的。
+#                   注意：声明了 permissions 的子 agent 会被自动换成**无 shell**的
+#                   磁盘 backend——框架不允许「能跑命令」和「文件权限」共存
+#                   （shell 能绕过任何权限），详见 stupid_code/graph/backend.py
 #   response_format 结构化输出的 JSON schema
 #
 # 文件不存在 = 不配置任何 subagent，此时 deepagents 自带的 general-purpose
@@ -35,7 +38,8 @@ system_prompt = """
 4. 没发现真问题就直接说没有，不要凑数。
 5. 你只读不写：不要调用任何写文件的工具。
 """
-# 只读：所有写操作直接被拒（工具层拦截，不是靠提示词自觉）
+# 只读：所有写操作直接被拒（工具层拦截，不是靠提示词自觉）。
+# 这个子 agent 拿不到 execute 工具（没有 shell），所以"只读"是硬约束。
 permissions = [{ operations = ["write"], paths = ["/**"], mode = "deny" }]
 
 # 修复者：可以改代码，但写文件前要人工确认
