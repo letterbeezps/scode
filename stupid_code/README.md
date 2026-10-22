@@ -4,17 +4,24 @@
 
 ## 启动
 
-在项目根 `uv sync` 后，**切到要让 agent 操作的目录**再启动（那个目录就是工作空间）：
+在项目根 `uv sync` 后启动（在项目根运行则项目根就是工作空间）：
 
 ```bash
 uv run scode
 ```
 
+要让 agent 操作别的目录，**切到那个目录**，用 `--project` 指回本项目：
+
+```bash
+cd /path/to/workspace
+uv run --project /path/to/stupid-code scode
+```
+
 `scode`（入口见 [launcher.py](launcher.py)）把 langgraph 服务器当成「用完即弃」的本地计算进程：
 
 1. **工作空间 = 当前目录**：langgraph 子进程的 cwd 就是你运行 scode 的目录，
-   未来 agent 的 shell / 文件工具以它为根（当前 deepagents 默认 StateBackend，
-   文件还在 graph state 的虚拟文件系统里，与 cwd 无关）；
+   agent 的 shell / 文件工具以它为根（backend 是真实磁盘 + 本机 shell，见
+   [graph/backend.py](graph/backend.py)）；
 2. **`.langgraph_api/` 保留不动**：langgraph inmem 运行时必然在 cwd 下生成它
    （路径硬编码，无法配置改位）。里面的 `.langgraph_ops.pckl` 是 **thread 索引**——
    会话列表与 metadata 的来源。删掉它，平台重启后认不出已有 thread：
@@ -35,7 +42,7 @@ uv run scode
 `Ctrl+C` / SIGTERM / SIGINT 都会关闭整个子进程组并清理临时配置目录，不残留进程占用端口。
 scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件会自我触发重启），改后端代码后请重启 scode。
 
-前端联调另开终端：`cd ../web && pnpm dev`（http://localhost:5173）。
+前端联调另开终端：`cd <项目根>/web && pnpm dev`（http://localhost:5173）。
 
 ## 文件
 
