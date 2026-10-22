@@ -9,12 +9,22 @@ import { createEventNormalizer } from './events'
 import { readSseStream } from './sse'
 import { mockRuns } from './mock'
 import { PERMISSIONS_KEY, WORKSPACE_KEY } from '../lib/permissions'
-import type { RunOptions, Todo, ToolCall, ToolResult } from './types'
+import type {
+  ApprovalDecision,
+  ApprovalRequest,
+  RunOptions,
+  Todo,
+  ToolCall,
+  ToolResult,
+} from './types'
 
 const ASSISTANT_ID = (import.meta.env.VITE_ASSISTANT_ID as string | undefined) ?? 'code_agent'
 
 /** onToolResult 需要能定位到对应的调用，故把 id 一并放进 payload */
 export type ToolResultEvent = ToolResult & { id: string; error?: string }
+
+/** 人工确认的决定（字段名与框架的 Decision 一致，见 api/types.ts） */
+export type { ApprovalDecision }
 
 export interface RunHandlers {
   onToken: (text: string) => void
@@ -25,6 +35,8 @@ export interface RunHandlers {
   onEnd: () => void
   /** LangGraph 的 metadata 事件里带着 run_id，取消运行需要 */
   onRunId?: (runId: string) => void
+  /** 图挂起等人工确认（后端命中 HITL） */
+  onInterrupt?: (requests: ApprovalRequest[]) => void
 }
 
 /**
@@ -40,28 +52,6 @@ export function streamRun(
   handlers: RunHandlers,
 ): () => void {
   if (isMockMode) return mockRuns.stream(threadId, message, options, handlers)
-
-  const controller = new AbortController()
-  const normalizer = createEventNormalizer()
-  let runId: string | undefined
-  let settled = false
-
-  const cancel = () => {
-    if (settled) return
-    settled = true
-    controller.abort()
-    // 断流之后后端可能仍在跑，拿到 run_id 就通知它真正中止
-    if (runId) void cancelRun(threadId, runId).catch(() => {})
-    // 必须主动收尾：abort 之后循环和 catch 都会被 settled 短路，
-    // 不在这里补一次 onEnd，UI 会一直卡在“生成中”
-    handlers.onEnd()
-  }
-
-  const finish = () => {
-    if (settled) return
-    settled = true
-    handlers.onEnd()
-  }
 
   const body = JSON.stringify({
     assistant_id: ASSISTANT_ID,
@@ -84,6 +74,82 @@ export function streamRun(
       },
     },
   })
+
+  return runStream(threadId, body, handlers)
+}
+
+/**
+ * 恢复一次挂起的运行（后端在 HITL 上挂起了，等人批准/拒绝）。
+ *
+ * 走的是同一个端点，只是把 `command.resume` 带上决定：
+ *   {"decisions": [{"type": "approve"}]} 或
+ *   {"decisions": [{"type": "reject", "message": "..."}]}
+ * 平台会把 command 转成 LangGraph 的 Command(resume=...) 作为这次运行的输入，
+ * 图从挂起点继续往下跑。
+ *
+ * **decisions 的个数必须和挂起时的 action_requests 一样多**：框架在
+ * `HumanInTheLoopMiddleware.after_model` 里校验数量，对不上直接抛
+ * `Number of human decisions (N) does not match number of hanging tool calls (M)`，
+ * 整个运行报错。所以这里收数组，不收单个决定。
+ *
+ * **档位必须原样带回去**：后端的拦截判定在恢复时会再跑一次，档位变了结论就
+ * 可能变（批准后变成"这条命令要拦"，就永远批不掉了）。
+ */
+export function resumeRun(
+  threadId: string,
+  decisions: ApprovalDecision[],
+  options: RunOptions,
+  handlers: RunHandlers,
+): () => void {
+  if (isMockMode) {
+    // mock 模式没有真的图，直接把流收掉
+    handlers.onEnd()
+    return () => {}
+  }
+
+  const body = JSON.stringify({
+    assistant_id: ASSISTANT_ID,
+    command: {
+      resume: {
+        decisions,
+      },
+    },
+    stream_mode: ['updates'],
+    on_disconnect: 'continue',
+    config: {
+      configurable: {
+        [WORKSPACE_KEY]: options.workspace,
+        [PERMISSIONS_KEY]: options.permissions,
+      },
+    },
+  })
+
+  return runStream(threadId, body, handlers)
+}
+
+/** 跑一次流式请求并把事件分发给 handlers，返回取消函数。 */
+function runStream(threadId: string, body: string, handlers: RunHandlers): () => void {
+  const controller = new AbortController()
+  const normalizer = createEventNormalizer()
+  let runId: string | undefined
+  let settled = false
+
+  const cancel = () => {
+    if (settled) return
+    settled = true
+    controller.abort()
+    // 断流之后后端可能仍在跑，拿到 run_id 就通知它真正中止
+    if (runId) void cancelRun(threadId, runId).catch(() => {})
+    // 必须主动收尾：abort 之后循环和 catch 都会被 settled 短路，
+    // 不在这里补一次 onEnd，UI 会一直卡在“生成中”
+    handlers.onEnd()
+  }
+
+  const finish = () => {
+    if (settled) return
+    settled = true
+    handlers.onEnd()
+  }
 
   void (async () => {
     try {
@@ -135,6 +201,9 @@ export function streamRun(
               break
             case 'todos':
               handlers.onTodos(event.todos)
+              break
+            case 'interrupt':
+              handlers.onInterrupt?.(event.requests)
               break
             case 'error':
               handlers.onError(event.message)

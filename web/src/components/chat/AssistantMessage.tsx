@@ -8,6 +8,7 @@ import { Ban } from 'lucide-react'
 import type { Message } from '../../api/types'
 import { MarkdownContent } from './markdown/MarkdownContent'
 import { ToolCallCard } from './tools/ToolCallCard'
+import { ApprovalCard } from './ApprovalCard'
 import { CodeBlock } from './markdown/CodeBlock'
 
 interface Props {
@@ -34,6 +35,16 @@ export function AssistantMessage({ message, streaming }: Props) {
               <div key={index} className={isLast && streaming ? 'after:animate-blink after:ml-0.5 after:inline-block after:h-4 after:w-[2px] after:translate-y-0.5 after:bg-accent after:content-[""]' : undefined}>
                 <MarkdownContent content={part.text} />
               </div>
+            )
+          }
+          if (part.kind === 'approval') {
+            return (
+              <ApprovalCard
+                key={`approval-${part.id}`}
+                id={part.id}
+                requests={part.requests}
+                status={part.status}
+              />
             )
           }
           return <ToolCallCard key={`tool-${part.call.id}`} call={part.call} />

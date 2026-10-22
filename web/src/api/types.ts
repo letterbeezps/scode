@@ -57,6 +57,32 @@ export interface ToolCall {
 export type MessageRole = 'user' | 'assistant' | 'tool'
 
 /**
+ * 一条待人工确认的工具调用。
+ *
+ * 后端命中 HITL（图挂起等人批准）时，通过 LangGraph 的 `__interrupt__` 事件
+ * 把要审的动作发过来。批准/拒绝之后前端用 `command.resume` 把决定送回去。
+ */
+export interface ApprovalRequest {
+  /** 工具名，如 execute */
+  name: string
+  /** 工具参数（如 execute 的 command） */
+  args: Record<string, unknown>
+  /** 后端给的说明，命中危险模式时会写明原因 */
+  description?: string
+}
+
+/**
+ * 人工确认的决定。
+ *
+ * 字段名必须和框架的 `RejectDecision` 一致：拒绝理由叫 `message`，
+ * 叫 `feedback` 的话框架认不出来，理由会被静默丢掉，模型只看到
+ * 「用户拒绝了这次工具调用」。
+ */
+export type ApprovalDecision =
+  | { type: 'approve' }
+  | { type: 'reject'; message?: string }
+
+/**
  * 一条助手消息内部的有序片段。
  *
  * 设计文档 4.1 要求 AssistantMessage 按“文本 + 代码块 + 工具调用混合排列”渲染，
@@ -67,6 +93,15 @@ export type MessageRole = 'user' | 'assistant' | 'tool'
 export type MessagePart =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; call: ToolCall }
+  /**
+   * 一次待确认的动作组。
+   *
+   * 一次 interrupt 里可能含多个 action_request（模型一轮里发了多条命令），
+   * 框架要求 resume 时给出**同样数量**的 decision，少一个就报
+   * `Number of human decisions (N) does not match number of hanging tool calls (M)`。
+   * 所以卡片存的是一组，不是一条。
+   */
+  | { kind: 'approval'; id: string; requests: ApprovalRequest[]; status: 'pending' | 'approved' | 'rejected' }
 
 export interface Message {
   id: string

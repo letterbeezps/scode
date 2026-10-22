@@ -8,16 +8,38 @@
 import { create } from 'zustand'
 import * as threadApi from '../api/thread'
 import { ApiError, errorMessage } from '../api/client'
-import { streamRun } from '../api/run'
+import { resumeRun, streamRun, type RunHandlers } from '../api/run'
 import { useTodoStore } from './todoStore'
 import { useTaskStore } from './taskStore'
-import type { Message, Thread, Todo, ToolCall } from '../api/types'
+import type {
+  ApprovalDecision,
+  ApprovalRequest,
+  Message,
+  Thread,
+  Todo,
+  ToolCall,
+} from '../api/types'
 
 /** streamRun 返回的取消函数不放进 state：它不是数据，进 state 会白白触发渲染 */
 let cancelCurrentRun: (() => void) | null = null
 
 let msgSeq = 0
 const nextId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${++msgSeq}`
+
+/**
+ * 一组待人工确认的动作。
+ *
+ * 一次 interrupt 里可能含多条 action_request（模型一轮里发了多条命令）。
+ * 框架要求 resume 时给出同样数量的 decision，所以整组一起存、一起恢复。
+ */
+export interface PendingApproval {
+  /** 卡片 id，用来定位要改状态的那一段 */
+  id: string
+  /** 属于哪个线程（恢复时要用它发请求） */
+  threadId: string
+  /** 待确认的动作组，空数组没有意义 */
+  requests: ApprovalRequest[]
+}
 
 export interface ConversationState {
   threads: Thread[]
@@ -35,6 +57,8 @@ export interface ConversationState {
   error: string | null
   /** 用户点过停止：onEnd 落位时据此标记 interrupted */
   cancelRequested: boolean
+  /** 图挂起等人工确认时的待办动作 */
+  pendingApproval: PendingApproval | null
 
   loadThreads: () => Promise<void>
   createThread: () => Promise<string | null>
@@ -42,7 +66,120 @@ export interface ConversationState {
   deleteThread: (id: string) => Promise<void>
   sendMessage: (content: string) => Promise<void>
   cancelRun: () => void
+  /** 批准/拒绝一条待确认的动作，并把决定送回后端继续跑 */
+  decideApproval: (decision: 'approve' | 'reject') => void
   clearError: () => void
+}
+
+/** 只改 pendingMessage，不动 messages */
+function patchPending(fn: (msg: Message) => Message): void {
+  useConversationStore.setState((prev) =>
+    prev.pendingMessage ? { pendingMessage: fn(prev.pendingMessage) } : prev,
+  )
+}
+
+/**
+ * 一次运行的事件处理。
+ *
+ * 发消息和恢复挂起的运行走同一套处理：恢复后模型接着往下说，token / 工具调用
+ * 继续追加到同一条 pendingMessage 上。
+ */
+function createRunHandlers(threadId: string): RunHandlers {
+  return {
+    onToken(chunk) {
+      patchPending((msg) => {
+        const parts = [...msg.parts]
+        const last = parts[parts.length - 1]
+        // token 只会接在上一个文本片段后面，接在工具卡片后面说明该起新段了
+        if (last && last.kind === 'text') {
+          parts[parts.length - 1] = { kind: 'text', text: last.text + chunk }
+        } else {
+          parts.push({ kind: 'text', text: chunk })
+        }
+        return { ...msg, content: msg.content + chunk, parts }
+      })
+    },
+
+    onToolCall(call: ToolCall) {
+      patchPending((msg) => ({
+        ...msg,
+        parts: [...msg.parts, { kind: 'tool', call }],
+        tool_calls: [...(msg.tool_calls ?? []), call],
+      }))
+    },
+
+    onToolResult({ id, output, diff, files, error }) {
+      patchPending((msg) => {
+        const parts = msg.parts.map((part) => {
+          if (part.kind !== 'tool' || part.call.id !== id) return part
+          return {
+            kind: 'tool' as const,
+            call: {
+              ...part.call,
+              status: error ? ('error' as const) : ('success' as const),
+              result: { output, diff, files },
+              error,
+            },
+          }
+        })
+        const toolCalls = (msg.tool_calls ?? []).map((call) =>
+          call.id === id
+            ? { ...call, status: error ? ('error' as const) : ('success' as const), result: { output, diff, files }, error }
+            : call,
+        )
+        return { ...msg, parts, tool_calls: toolCalls }
+      })
+    },
+
+    onTodos(todos: Todo[]) {
+      // 侧边栏任务列表由 todoStore 独立维护，这里不重复存一份
+      useTodoStore.getState().updateTodos(threadId, todos)
+    },
+
+    onError(message) {
+      patchPending((msg) => ({ ...msg, error: message }))
+      useConversationStore.setState({ error: message })
+    },
+
+    onInterrupt(requests) {
+      // 整组存：框架要求 resume 的 decision 数量和 action_requests 一样多，
+      // 丢掉任何一个，恢复时就会报数量不匹配。
+      if (requests.length === 0) return
+      const id = nextId('approval')
+      patchPending((msg) => ({
+        ...msg,
+        parts: [...msg.parts, { kind: 'approval', id, requests, status: 'pending' }],
+      }))
+      useConversationStore.setState({ pendingApproval: { id, threadId, requests } })
+    },
+
+    onEnd() {
+      cancelCurrentRun = null
+      const state = useConversationStore.getState()
+
+      // 图挂起等人确认：消息先不落位，等批准/拒绝后继续往这条消息上追加
+      if (state.pendingApproval) {
+        useConversationStore.setState({ isGenerating: false })
+        return
+      }
+
+      useConversationStore.setState((prev) => {
+        const pid = prev.pendingThreadId
+        const pendingMsg = prev.pendingMessage
+        if (!pid || !pendingMsg) return { pendingMessage: null, pendingThreadId: null, isGenerating: false }
+
+        // 用户中途停止：内容留着，标一个中断状态
+        const interrupted = prev.cancelRequested ? { ...pendingMsg, interrupted: true } : pendingMsg
+        return {
+          messages: { ...prev.messages, [pid]: [...(prev.messages[pid] ?? []), interrupted] },
+          pendingMessage: null,
+          pendingThreadId: null,
+          isGenerating: false,
+          cancelRequested: false,
+        }
+      })
+    },
+  }
 }
 
 /** 后端不返回 title，用首条用户消息兜底（设计文档 7.4） */
@@ -78,6 +215,7 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
   loading: false,
   error: null,
   cancelRequested: false,
+  pendingApproval: null,
 
   async loadThreads() {
     set({ loading: true })
@@ -223,92 +361,51 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
     // 工作空间与权限按任务存；发送这一刻读一次快照，跑完之前再改不影响本次运行
     const runOptions = useTaskStore.getState().resolve(threadId)
 
-    /** 只改 pendingMessage，不动 messages */
-    const patchPending = (fn: (msg: Message) => Message) =>
-      set((prev) => (prev.pendingMessage ? { pendingMessage: fn(prev.pendingMessage) } : prev))
-
-    cancelCurrentRun = streamRun(threadId, text, runOptions, {
-      onToken(chunk) {
-        patchPending((msg) => {
-          const parts = [...msg.parts]
-          const last = parts[parts.length - 1]
-          // token 只会接在上一个文本片段后面，接在工具卡片后面说明该起新段了
-          if (last && last.kind === 'text') {
-            parts[parts.length - 1] = { kind: 'text', text: last.text + chunk }
-          } else {
-            parts.push({ kind: 'text', text: chunk })
-          }
-          return { ...msg, content: msg.content + chunk, parts }
-        })
-      },
-
-      onToolCall(call: ToolCall) {
-        patchPending((msg) => ({
-          ...msg,
-          parts: [...msg.parts, { kind: 'tool', call }],
-          tool_calls: [...(msg.tool_calls ?? []), call],
-        }))
-      },
-
-      onToolResult({ id, output, diff, files, error }) {
-        patchPending((msg) => {
-          const parts = msg.parts.map((part) => {
-            if (part.kind !== 'tool' || part.call.id !== id) return part
-            return {
-              kind: 'tool' as const,
-              call: {
-                ...part.call,
-                status: error ? ('error' as const) : ('success' as const),
-                result: { output, diff, files },
-                error,
-              },
-            }
-          })
-          const toolCalls = (msg.tool_calls ?? []).map((call) =>
-            call.id === id
-              ? { ...call, status: error ? ('error' as const) : ('success' as const), result: { output, diff, files }, error }
-              : call,
-          )
-          return { ...msg, parts, tool_calls: toolCalls }
-        })
-      },
-
-      onTodos(todos: Todo[]) {
-        // 侧边栏任务列表由 todoStore 独立维护，这里不重复存一份
-        useTodoStore.getState().updateTodos(threadId, todos)
-      },
-
-      onError(message) {
-        patchPending((msg) => ({ ...msg, error: message }))
-        set({ error: message })
-      },
-
-      onEnd() {
-        cancelCurrentRun = null
-        set((prev) => {
-          const pid = prev.pendingThreadId
-          const pendingMsg = prev.pendingMessage
-          if (!pid || !pendingMsg) return { pendingMessage: null, pendingThreadId: null, isGenerating: false }
-
-          // 用户中途停止：内容留着，标一个中断状态
-          const interrupted = prev.cancelRequested ? { ...pendingMsg, interrupted: true } : pendingMsg
-          return {
-            messages: { ...prev.messages, [pid]: [...(prev.messages[pid] ?? []), interrupted] },
-            pendingMessage: null,
-            pendingThreadId: null,
-            isGenerating: false,
-            cancelRequested: false,
-          }
-        })
-      },
-    })
+    cancelCurrentRun = streamRun(threadId, text, runOptions, createRunHandlers(threadId))
   },
 
   cancelRun() {
     if (!get().isGenerating) return
     set({ cancelRequested: true })
+    // 图挂起等确认时也要能停：待确认状态先清掉，否则卡片一直亮着
+    set({ pendingApproval: null })
     // run.ts 的 cancel 会同步触发 onEnd，由它负责把 pendingMessage 落位
     cancelCurrentRun?.()
+  },
+
+  decideApproval(decision) {
+    const pending = get().pendingApproval
+    if (!pending) return
+
+    // 先把卡片状态落定，防止连点两次发两次恢复请求
+    set({ pendingApproval: null })
+    patchPending((msg) => ({
+      ...msg,
+      parts: msg.parts.map((part) =>
+        part.kind === 'approval' && part.id === pending.id
+          ? { ...part, status: decision === 'approve' ? ('approved' as const) : ('rejected' as const) }
+          : part,
+      ),
+    }))
+
+    // 档位要原样带回去：后端的拦截判定在恢复时会再跑一次，档位变了结论就可能变
+    const runOptions = useTaskStore.getState().resolve(pending.threadId)
+
+    // decision 的个数必须和挂起时的 action_requests 一样多，否则框架直接抛
+    // 「Number of human decisions (N) does not match number of hanging tool calls (M)」。
+    // 整组一起批准或一起拒绝——卡片上也是把这一组当成一个整体展示的。
+    const decisions: ApprovalDecision[] = pending.requests.map(() =>
+      decision === 'approve'
+        ? { type: 'approve' }
+        : { type: 'reject', message: '用户拒绝执行这条命令' },
+    )
+
+    cancelCurrentRun = resumeRun(
+      pending.threadId,
+      decisions,
+      runOptions,
+      createRunHandlers(pending.threadId),
+    )
   },
 
   clearError() {

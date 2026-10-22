@@ -28,7 +28,7 @@ Python 侧**没有** ruff / black / mypy 配置，**整个仓库没有测试、�
 
 ## Project layout
 
-- `stupid_code/` — 后端包。顶层只放入口与起停，实现按职责分包：`__init__.py` 是 `start()` 入口、`launcher.py` 是 `scode` 的启动/就绪/关停逻辑、`langgraph.json` 是框架读的配置；`graph/`（`agent.py` 导出 `graph`，`memory.py` 装配长期记忆中间件，`persistence.py` 把 checkpoint/store 落到 `data/langgraph.db`）、`config/`（`model.py` 读 `conf/config.toml`、`subagent.py` 读 `conf/subagents.toml`、`prompts.py` 是主 agent 的系统提示词）、`admin/` 是挂在 `/admin` 下的管理接口
+- `stupid_code/` — 后端包。顶层只放入口与起停，实现按职责分包：`__init__.py` 是 `start()` 入口、`launcher.py` 是 `scode` 的启动/就绪/关停逻辑、`langgraph.json` 是框架读的配置；`graph/`（`agent.py` 导出 `graph`，`memory.py` 装配长期记忆中间件，`permissions.py` 是 shell 人工确认的档位与危险判定，`backend.py` 装真实磁盘+shell 的 backend，`persistence.py` 把 checkpoint/store 落到 `data/langgraph.db`）、`config/`（`model.py` 读 `conf/config.toml`、`subagent.py` 读 `conf/subagents.toml`、`prompts.py` 是主 agent 的系统提示词）、`admin/` 是挂在 `/admin` 下的管理接口
 - `stupid_code/README.md` — 后端启动说明；`stupid_code/API.md` — 当前实际可用的端点清单
 - `web/src/api/` — 后端通信层，`mock/` 用**与真实后端完全相同的签名**实现假数据；`web/src/store/` Zustand 状态；`components/`、`pages/`、`lib/`
 - `docs/overall-design.md` — 目标架构与前后端契约；`docs/frontend-design.md` — 前端交互设计
@@ -79,5 +79,7 @@ Python 侧**没有** ruff / black / mypy 配置，**整个仓库没有测试、�
 - 后端**只监听 `127.0.0.1`**。绝不要绑 `0.0.0.0`——这个 agent 天生带 shell 执行和文件写权限，暴露到 `0.0.0.0` 是设计文档里列为「影响极高」的风险
 - deepagents 是 "trust the LLM" 模型：agent **不会自我约束**，边界必须在工具层/沙箱层强制执行，别指望模型自觉
 - 危险操作走人工确认（`HumanInTheLoopMiddleware` + checkpointer），边界条件必须落盘持久化，不能重算
-- **shell 目前还没有人工确认**（007 期引入真实 backend 后的缺口）：agent 能读工作空间里的任何文件（包括 `conf/config.toml` 里的 api_key）、能跑任意命令，**没有 HITL 拦截**——前端还没有批准/拒绝 UI。补法是给 `execute` 加 `interrupt_on` + 前端审批按钮，别指望提示词里的"破坏性命令先问"能当护栏
+- **shell 已有人工确认**（009 期）：`graph/permissions.py` 按运行期 `configurable.permissions` 的档位决定拦不拦（`auto` 全放行 / `manual` 每条都问 / `normal` 只问命中危险模式的），拦下时图挂起，前端弹确认卡片，批准/拒绝后用 `command.resume` 让图继续。**只拦 `execute`**，文件类工具（`write_file`/`edit_file`/`delete`）不拦——那是 code agent 的日常。agent 仍能读工作空间里的任何文件（包括 `conf/config.toml` 里的 api_key），这**没有**被 HITL 覆盖
+- **恢复挂起的运行有两个硬约束**：① 请求体要带同一个 `configurable.permissions`（后端判定在恢复时会再跑一次，档位变了结论就变）；② `command.resume.decisions` 的个数必须和挂起时的 `action_requests` 一样多，否则框架直接抛 `Number of human decisions (N) does not match number of hanging tool calls (M)`，整个运行报错
+- **框架的 reject 理由字段叫 `message`，不叫 `feedback`**（`RejectDecision` 的定义）。写错名字理由被静默丢掉，模型只看到"用户拒绝了这次工具调用"
 - `/directories` 会暴露文件系统结构——需要路径白名单，且只允许本地监听

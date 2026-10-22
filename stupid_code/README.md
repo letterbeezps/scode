@@ -72,6 +72,7 @@ stupid_code/
 | [graph/agent.py](graph/agent.py) | `code_agent` 图：`create_deep_agent()`，导出 `graph` |
 | [graph/backend.py](graph/backend.py) | 真实 backend：`CompositeBackend(default=LocalShellBackend)`（真实磁盘 + 本机 shell，`/tmp/` 走虚拟 FS）；声明了 `permissions` 的子 agent 换成无 shell 的 backend |
 | [graph/memory.py](graph/memory.py) | 长期记忆：读工作空间根的 `.scode-memory.md`（不存在就创建），装成 `MemoryMiddleware` 挂进 `middleware=` |
+| [graph/permissions.py](graph/permissions.py) | shell 人工确认：权限档位解析（manual/normal/auto）+ 危险命令识别 + `interrupt_on` 的 `when` 谓词 |
 | [graph/persistence.py](graph/persistence.py) | SQLite 持久化工厂：`AsyncSqliteSaver`（checkpoint）+ `AsyncSqliteStore`（store），都指向 `../data/langgraph.db` |
 | **配置解析**（`config/`） | |
 | [config/model.py](config/model.py) | 加载与校验 `../../conf/config.toml`，构建模型实例；CRUD helpers |
@@ -103,6 +104,10 @@ stupid_code/
 > agent 的文件操作落在工作空间的**真实磁盘**上，`execute` 直接在本机跑 shell：
 > backend 是 `CompositeBackend(default=LocalShellBackend)`，见
 > `../docs/backend/007_real_backend.md`。
+>
+> `execute` 有**人工确认**（009 期）：按运行期传来的权限档位决定拦不拦，拦下时图挂起，
+> 前端弹确认卡片，批准/拒绝后用 `command.resume` 让图继续。见
+> `../docs/backend/009_shell_hitl.md`。
 
 ## 注意
 
@@ -112,14 +117,22 @@ stupid_code/
 - 长期记忆用 `middleware=` 挂 `MemoryMiddleware`，**不要用 `create_deep_agent(memory=...)`**：后者只能用框架默认的 StateBackend，读不到磁盘上的 `.scode-memory.md`。
 - 记忆**只在会话开始时读一次**：改了 `.scode-memory.md` 要开新会话（新建 thread）才生效。
 - **backend 是真实磁盘 + 本机 shell**（`graph/backend.py`）。agent 能读工作空间里的任何文件
-  （包括 `conf/config.toml` 里的 api_key），`execute` 能跑任意命令，且**没有人工确认**——
-  前端还没有批准/拒绝的 UI，加 HITL 会让每条命令都挂起。
+  （包括 `conf/config.toml` 里的 api_key），`execute` 能跑任意命令——所以**执行命令前有人工确认**
+  （`graph/permissions.py`，009 期）：按 `configurable.permissions` 的档位决定拦不拦
+  （`auto` 全放行 / `manual` 每条都问 / `normal` 只问命中危险模式的），拦下时图挂起等前端决定。
+  **文件类工具（write_file / edit_file / delete）不拦**——那是 code agent 的日常。
+- **恢复挂起的运行必须原样带回档位**：`command.resume` 的请求体要带同一个
+  `configurable.permissions`，否则后端的拦截判定在恢复时结论会变（批准后变成"还要拦"，
+  就永远批不掉了）。`decisions` 的个数必须和挂起时的 `action_requests` 一样多，
+  否则框架直接抛 `Number of human decisions (N) does not match number of hanging tool calls (M)`。
 - **声明了 `permissions` 的子 agent 会被换成无 shell 的 backend**：框架不允许
   「能跑命令」和「文件权限」共存（shell 能绕过任何权限），不换的话建图时直接抛
   `NotImplementedError`。`conf/subagents.toml` 里 `reviewer` 的只读就是靠这个保证的。
+- **没声明 `permissions` 的子 agent 会继承顶层 `interrupt_on`**（deepagents 的合并规则），
+  所以它们执行命令同样会挂起等人确认。
 - `langgraph.json` 的 `http.app` 字段指向 `admin/app.py:app`。本期实现的 `/admin/models` 接口改完配置后仍需重启 `scode` 才能让运行中的 graph 加载新模型实例。
 - **端口锁死 2024，被占用就直接启动失败**（008 期）：早期版本端口被占时会误报"已就绪"
   ——`langgraph dev` 自己换了端口，而就绪检查只轮询 2024，打到的是旧服务，前端连的是
   旧代码。现在启动前先探端口，占用就报错并告诉你怎么查占用进程，**绝不自动换端口**
   （前端默认就连 2024）。
-- 详细的阶段目标与验证步骤见 `../docs/backend/001_basic_agent_server.md`、`../docs/backend/002_config_toml_models.md`、`../docs/backend/003_model_admin_api.md`、`../docs/backend/004_subagents_config.md`、`../docs/backend/005_backend_package_layout.md`、`../docs/backend/006_agent_memory.md`、`../docs/backend/007_real_backend.md`、`../docs/backend/008_launcher_port_and_shutdown.md`。
+- 详细的阶段目标与验证步骤见 `../docs/backend/001_basic_agent_server.md`、`../docs/backend/002_config_toml_models.md`、`../docs/backend/003_model_admin_api.md`、`../docs/backend/004_subagents_config.md`、`../docs/backend/005_backend_package_layout.md`、`../docs/backend/006_agent_memory.md`、`../docs/backend/007_real_backend.md`、`../docs/backend/008_launcher_port_and_shutdown.md`、`../docs/backend/009_shell_hitl.md`。

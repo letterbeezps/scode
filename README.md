@@ -58,6 +58,7 @@ ls .agents/skills | head
 - 主 agent 的系统提示词在 `config/prompts.py`（框架 0.7.28 已不提供内置提示词，这段就是模型唯一看到的系统提示词）
 - 长期记忆走 `graph/memory.py`：读工作空间根的 `.scode-memory.md`（没有就自动创建带模板的一份），用 `MemoryMiddleware` 经 `middleware=` 参数挂进 `create_deep_agent()`；每次新会话读一次
 - backend 是**真实磁盘**（007 期）：`graph/backend.py` 构造 `CompositeBackend(default=LocalShellBackend)`，agent 的文件读写落在工作空间的真文件上，`execute` 直接在本机跑 shell——所以记忆文件也真的写得进去
+- `execute` 有**人工确认**（009 期）：`graph/permissions.py` 按运行期传来的权限档位决定拦不拦（`auto` 全放行 / `manual` 每条都问 / `normal` 只问命中危险模式的），拦下时图挂起，前端弹确认卡片，批准/拒绝后用 `command.resume` 让图继续。文件类工具（`write_file` / `edit_file` / `delete`）不拦——那是 code agent 的日常
 - `/admin/models` 提供模型配置的增删改查（003 期），由 `admin/app.py` 挂在 `/admin` 前缀下，与 langgraph 内置路由并行
 - `uv run scode` 以子进程拉起 `langgraph dev`（监听 `127.0.0.1:2024`），自动轮询 `GET /ok` 与 `GET /assistants/{id}/graph` 做就绪验证；`Ctrl+C` 或 SIGTERM 会连整个子进程组一起关掉，不留孤儿占端口（启动途中 Ctrl+C 也一样）
 - 端口**锁死 2024**：被占用时 `scode` 直接启动失败并说明是谁占着，不会自动换端口——自动换端口会让就绪检查打到旧服务上误报"已就绪"，前端连的是旧代码
@@ -70,13 +71,14 @@ ls .agents/skills | head
 - 会话标题存平台的 `metadata.title`（平台没有独立的 title 字段），刷新页面后侧栏标题还在
 - 模型管理界面直连 `/admin/models`，可切供应商 / 换模型 / 改 key
 - 输入区下方有**工作空间**（文件夹浏览器）和**权限**（`manual` / `normal` / `auto` 三级确认策略）
+- 命中人工确认时，助手消息里会插入一张**确认卡片**（显示要执行的命令、为什么被拦），批准/拒绝后图继续往下跑
 - `VITE_USE_MOCK=false` 下直连真后端；mock 只是后端没跑时演示 UI 用的
 
 还没做的（按阶段推进，文档在 `docs/backend/`）：
 
 - `GET /directories` **未实现** —— 工作空间选择器在真后端下报 404 属预期，见 [`stupid_code/API.md`](stupid_code/API.md)
-- 工作空间 / 权限目前只是前端随请求发过去的参数（`config.configurable`），**后端还没在工具入口读它、也没按档位拦截**
-- 危险操作确认（HumanInTheLoop）、写文件落真实磁盘、路径逃逸拦截、运行护栏 —— 都还没做
+- 工作空间只是前端随请求发过去的参数（`config.configurable`），**后端还没在工具入口读它**
+- 写文件落真实磁盘（**已做**，007 期）、路径逃逸拦截（文件工具已锁在工作空间内，shell 不受此限）—— 后者仍待补
 - 流式回复目前是「整段到达」而非 token 级增量（平台两种模式都支持，`messages-tuple` 事件名是 `messages`）
 - 全仓库**没有自动化测试、没有 CI**，验证靠各阶段文档里的手工步骤
 

@@ -13,7 +13,7 @@
  * 才从 `updates` 里推导文本 token，避免同一段话被追加两遍。
  */
 import type { SseEvent } from './sse'
-import type { Todo, ToolCall, ToolResult } from './types'
+import type { ApprovalRequest, Todo, ToolCall, ToolResult } from './types'
 
 export type NormalizedEvent =
   | { type: 'metadata'; runId?: string }
@@ -21,6 +21,8 @@ export type NormalizedEvent =
   | { type: 'tool_call'; call: ToolCall }
   | { type: 'tool_result'; id: string; result: ToolResult; error?: string }
   | { type: 'todos'; todos: Todo[] }
+  /** 图挂起等人工确认（LangGraph 的 __interrupt__） */
+  | { type: 'interrupt'; requests: ApprovalRequest[] }
   | { type: 'error'; message: string }
   | { type: 'end' }
 
@@ -93,6 +95,35 @@ function roleOf(msg: Record<string, unknown>): 'human' | 'ai' | 'tool' | 'system
   return 'ai'
 }
 
+/**
+ * 从 LangGraph 的 interrupt 事件里取出要人工确认的动作。
+ *
+ * 平台把挂起的运行放在 chunk 的 `__interrupt__` 键下：
+ *   {"__interrupt__": [{"value": {"action_requests": [{"name","args","description"}],
+ *                                "review_configs": [...]}}]}
+ * action_requests 里没有工具调用 id，只有名字和参数——够前端画卡片了。
+ */
+function parseInterrupts(payload: Record<string, unknown>): ApprovalRequest[] | null {
+  const raw = payload['__interrupt__']
+  if (!Array.isArray(raw) || raw.length === 0) return null
+
+  const requests: ApprovalRequest[] = []
+  for (const item of raw) {
+    const value = asRecord(asRecord(item).value)
+    const actionRequests = Array.isArray(value.action_requests) ? value.action_requests : []
+    for (const rawRequest of actionRequests) {
+      const rec = asRecord(rawRequest)
+      const name = typeof rec.name === 'string' ? rec.name : 'unknown'
+      requests.push({
+        name,
+        args: normalizeArgs(rec.args),
+        description: typeof rec.description === 'string' ? rec.description : undefined,
+      })
+    }
+  }
+  return requests.length > 0 ? requests : null
+}
+
 export interface Normalizer {
   push: (evt: SseEvent) => NormalizedEvent[]
   reset: () => void
@@ -161,6 +192,10 @@ export function createEventNormalizer(): Normalizer {
 
   /** LangGraph 原生 updates：{ 节点名: { messages: [...] } } */
   function fromUpdates(payload: Record<string, unknown>): NormalizedEvent[] {
+    // interrupt 单独占一个 chunk，键就是 __interrupt__
+    const requests = parseInterrupts(payload)
+    if (requests) return [{ type: 'interrupt', requests }]
+
     const out: NormalizedEvent[] = []
     for (const nodeUpdate of Object.values(payload)) {
       const messages = asRecord(nodeUpdate).messages
@@ -172,6 +207,10 @@ export function createEventNormalizer(): Normalizer {
 
   /** LangGraph 原生 values：完整状态，只用于补 todo 这类幂等快照 */
   function fromValues(payload: Record<string, unknown>): NormalizedEvent[] {
+    // 平台在某些模式下会把 interrupt 放进 values
+    const requests = parseInterrupts(payload)
+    if (requests) return [{ type: 'interrupt', requests }]
+
     const messages = payload.messages
     if (!Array.isArray(messages)) return []
 

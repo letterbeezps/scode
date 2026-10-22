@@ -18,7 +18,7 @@
 | 前端 | DELETE | [`/threads/{id}`](#deletethreadsid) | 删除会话 | ✅ |
 | 前端 | PATCH | [`/threads/{id}`](#patch-threadsid) | 改 metadata（存标题） | ✅ |
 | 前端 | GET | [`/threads/{id}/state`](#get-threadsidstate) | 历史消息 | ✅ |
-| 前端 | POST | [`/threads/{id}/runs/stream`](#post-threadsidrunsstream) | 流式运行 | ✅ |
+| 前端 | POST | [`/threads/{id}/runs/stream`](#post-threadsidrunsstream) | 流式运行 / 恢复挂起的运行 | ✅ |
 | 前端 | POST | [`/threads/{id}/runs/{runId}/cancel`](#post-threadsidrunsrunidcancel) | 停止运行 | ✅ |
 | 前端 | GET | [`/directories`](#get-directories未实现) | 浏览目录（工作空间） | ❌ 未实现 |
 | 管理端 | GET | [`/admin/models`](#get-adminmodels) | 列出全部模型 | ✅（003 起） |
@@ -254,7 +254,9 @@ Accept: text/event-stream
 - `assistant_id`：来自 `VITE_ASSISTANT_ID`，默认 `code_agent`
 - `stream_mode`：只取 `updates`（`values` 会回传全量状态，噪音大）
 - `on_disconnect: "continue"`：浏览器断开后后端继续跑完，避免脏状态
-- `config.configurable.workspace` / `permissions`：工作空间路径与权限档位，后端工具入口读取；001 期未启用拦截，仅透传
+- `config.configurable.workspace` / `permissions`：工作空间路径与权限档位。
+  `workspace` 目前只是透传（`GET /directories` 未实现，前端的工作空间选择器在真后端下报错是预期的）；
+  `permissions` 已被后端读取（009 期），决定 `execute` 要不要先问人——见 `stupid_code/graph/permissions.py`
 
 **响应 `200`** — SSE 流，事件类型：
 
@@ -262,11 +264,48 @@ Accept: text/event-stream
 |---|---|---|
 | `metadata` | `{"run_id": "..."}` | 运行 ID，取消时需要 |
 | `updates` | `{节点名: {"messages": [...]}}` | 增量状态，前端从中提取 token / tool_call / tool_result |
+| `updates` | `{"__interrupt__": [{"value": {"action_requests": [...], "review_configs": [...]}}]}` | 图挂起等人工确认（009 期） |
 | `values` | `{"messages": [...]}` | 全量状态快照 |
 | `error` | `{"message": "..."}` | 运行出错 |
 | `end` | — | 运行结束 |
 
 > 前端的 [events.ts](file:///Users/1token/Desktop/project/stupid-code/web/src/api/events.ts) 同时兼容 LangGraph 原生事件（`updates`/`values`）和自定义语义事件（`messages`/`tool_call`/`tool_result`/`todos`），001 期只依赖原生 `updates`。
+
+### 恢复一次挂起的运行（009 期）
+
+图因为人工确认挂起时，用**同一个端点**把决定送回去，图从挂起点继续：
+
+```http
+POST /threads/{thread_id}/runs/stream
+Content-Type: application/json
+Accept: text/event-stream
+
+{
+  "assistant_id": "code_agent",
+  "command": {
+    "resume": {
+      "decisions": [{"type": "approve"}]
+    }
+  },
+  "stream_mode": ["updates"],
+  "on_disconnect": "continue",
+  "config": {
+    "configurable": {
+      "workspace": "/abs/path",
+      "permissions": "normal"
+    }
+  }
+}
+```
+
+- `command.resume.decisions`：**个数必须和挂起时的 `action_requests` 一样多**。框架在
+  `HumanInTheLoopMiddleware.after_model` 里校验，对不上直接抛
+  `Number of human decisions (N) does not match number of hanging tool calls (M)`，整个运行报错
+- 拒绝的决定是 `{"type": "reject", "message": "理由"}`——字段叫 `message`，
+  **不是 `feedback`**（框架 `RejectDecision` 的定义）。写错名字理由被静默丢掉
+- `config.configurable.permissions`：**必须原样带回同一个档位**。后端的拦截判定在
+  恢复时会再跑一次，档位变了结论就变（批准后变成"还要拦"，就永远批不掉了）
+- 不带 `input`：平台把 `command` 转成 LangGraph 的 `Command(resume=...)` 当作本次运行的输入
 
 ### `POST /threads/{thread_id}/runs/{run_id}/cancel`
 
@@ -505,6 +544,24 @@ Content-Type: application/json
   说明 checkpoint 确实只走 SQLite）
 - 附带结论：thread 索引按**工作空间**分（跟着 cwd 走），checkpoint 按**代码文件**定位
   （全局一份）。两者不在同一个工作空间时索引会与 checkpoint 失配
+
+### 2026-10-22 实测（HITL 人工确认，009 期）
+
+- 平台把挂起的运行放在 **`updates` 事件**的 `__interrupt__` 键下，形状是
+  `{"__interrupt__": [{"value": {"action_requests": [{"name","args","description"}],
+  "review_configs": [{"action_name","allowed_decisions"}]}}]}`。
+  注意 `action_requests` 里**没有工具调用 id**，只有名字和参数
+- `command.resume` 能让图从挂起点继续：平台把它转成 `Command(resume=...)` 当作
+  本次运行的输入（平台侧的实现是 `langgraph_api/command.py` 的 `map_cmd`）
+- **`decisions` 的个数必须和 `action_requests` 一样多**。对不上平台不报错，
+  是框架在 `HumanInTheLoopMiddleware.after_model` 里抛
+  `ValueError: Number of human decisions (N) does not match number of hanging tool calls (M)`，
+  SSE 里表现为一个 `error` 事件
+- **一次 interrupt 可能含多个 `action_request`**（模型一轮里发了多条命令），
+  不是"一次一条"
+- reject 决定的理由字段是 **`message`**，不是 `feedback`
+- `config.configurable` 里的档位能到达后端的 `when` 谓词（`when` 拿到的
+  `ToolRuntime.config` 就是 `get_config()` 的结果，含 `configurable`）
 
 ### 官方文档
 

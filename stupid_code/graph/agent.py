@@ -5,6 +5,7 @@ from stupid_code.config.prompts import SYSTEM_PROMPT
 from stupid_code.config.subagent import load_subagents
 from stupid_code.graph.backend import apply_permission_backend, build_backend
 from stupid_code.graph.memory import build_memory_middleware
+from stupid_code.graph.permissions import build_interrupt_on
 
 # 真实 backend：文件操作落工作空间的真实磁盘，execute 直接在本机跑 shell。
 backend = build_backend()
@@ -21,4 +22,7 @@ graph = create_deep_agent(
     # 走 middleware 参数而不是 create_deep_agent 的 memory 参数，
     # 这样能自己指定读文件的 backend——见 graph/memory.py 的说明
     middleware=[build_memory_middleware()],
+    # 执行命令前的人工确认：按运行期传来的权限档位决定拦不拦，
+    # 拦下时图挂起等前端批准/拒绝——见 graph/permissions.py
+    interrupt_on=build_interrupt_on(),
 )
