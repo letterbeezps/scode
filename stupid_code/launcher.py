@@ -7,9 +7,7 @@
 
 工作空间语义：
 - 在哪个目录运行 scode，那个目录就是 agent 的工作空间（子进程 cwd 不搬动）；
-  未来 agent 的 shell / 文件工具（deepagents 现在默认 StateBackend，
-  即 graph state 里的虚拟文件系统，与 cwd 无关；将来接真实磁盘 backend 时
-  会直接以 cwd 为根）。
+  agent 的 shell / 文件工具以这里为根（backend 是真实磁盘，见 graph/backend.py）。
 - langgraph dev 必然在 cwd 下生成 `.langgraph_api/`（inmem 运行时硬编码的
   相对路径，无法通过配置改到别处）。**这个目录要保留，不要删**：checkpoint
   确实已由 graph/persistence.py 的 SQLite saver 接管（同名的
@@ -26,15 +24,20 @@
   因为服务器一律按 cwd 解析这些相对路径，而这里的 cwd 是用户工作空间而非后端目录；
 - 子进程设 PYTHONDONTWRITEBYTECODE=1，避免在后端源码目录写 __pycache__；
 - 用 --no-reload：reload 监视 cwd，而 cwd 现在是用户的真实项目目录，
-  agent 将来在工作空间写文件会自我触发重启，且后端源码不在 cwd，热重载本来就没意义。
-
-Ctrl+C 时关闭整个子进程组（含 uvicorn 进程），不留孤儿进程。
+  agent 在工作空间写文件会自我触发重启，且后端源码不在 cwd，热重载本来就没意义；
+- **端口锁死 2024**：被占用时直接启动失败，不自动换端口（见 `_resolve_port`）。
+  早期版本让 `langgraph dev` 自己换端口，而就绪检查只轮询 2024——不锁定端口
+  的话，就绪检查会打到**占着 2024 的旧服务**上误报"已就绪"，前端连的是旧
+  代码，看起来就像"改了没生效"；
+- Ctrl+C 时关闭整个子进程组（含 uvicorn 进程），不留孤儿进程——**启动阶段
+  同样如此**（早期版本在启动阶段按 Ctrl+C 会漏掉清理，留下占端口的孤儿）。
 """
 
 import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -44,9 +47,7 @@ from pathlib import Path
 import httpx
 
 HOST = "127.0.0.1"
-PORT = 2024
-BASE_URL = f"http://{HOST}:{PORT}"
-OK_URL = f"{BASE_URL}/ok"
+DEFAULT_PORT = 2024
 GRAPH_ID = "code_agent"
 CONFIG_NAME = "langgraph.json"
 RUNTIME_DIR_PREFIX = "scode-config-"
@@ -117,6 +118,46 @@ def _graph_node_count(client: httpx.Client) -> int | None:
     return len(nodes) or None
 
 
+def _is_port_free(port: int) -> bool:
+    """端口能不能拿来监听。
+
+    只探 127.0.0.1——服务本来就只监听本机。
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        # 允许绑定 TIME_WAIT 状态的端口（那不是"被占用"）
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((HOST, port))
+        except OSError:
+            return False
+    return True
+
+
+def _resolve_port() -> int:
+    """端口锁死 2024，被占用就直接报错。
+
+    **不做自动换端口**，有两个原因：
+
+    1. `langgraph dev` 在端口被占时会自己换一个（日志里写
+       `Port 2024 is already in use, using port NNNNN instead`），但就绪检查
+       只轮询 2024——不把端口定死的话，就绪检查打到的是**占着 2024 的旧
+       服务**：它当然"已就绪"，但跑的是旧代码；真正的新服务在另一个端口上，
+       前端连的是旧代码，看起来就像"改了没生效"。
+    2. 前端默认连 2024（`VITE_LANGGRAPH_URL`）。自动换端口的话前端得跟着
+       改，一改就漏；而且旧服务还占着 2024，改了也是错的。
+
+    所以端口被占时宁可启动失败，也不能"看起来启动成功"。
+    """
+    if _is_port_free(DEFAULT_PORT):
+        return DEFAULT_PORT
+    raise RuntimeError(
+        f"端口 {DEFAULT_PORT} 已被占用。"
+        f"多半是有个旧服务没退干净——用 "
+        f"`lsof -nP -iTCP:{DEFAULT_PORT} -sTCP:LISTEN` 看是谁占着，"
+        f"关掉它（给它发 SIGTERM，或 `pkill -f langgraph_cli dev`）再启动。"
+    )
+
+
 def _wait_until_ready(client: httpx.Client, proc: subprocess.Popen) -> int:
     """轮询直到 /ok 可用且 code_agent 图正常；返回图节点数。"""
     deadline = time.monotonic() + READY_TIMEOUT_SECONDS
@@ -135,7 +176,7 @@ def _wait_until_ready(client: httpx.Client, proc: subprocess.Popen) -> int:
         time.sleep(POLL_INTERVAL_SECONDS)
     raise TimeoutError(
         f"等待服务就绪超时（{READY_TIMEOUT_SECONDS:.0f}s）："
-        f"{OK_URL} 或 {GRAPH_ID} 图未正常加载"
+        f"{client.base_url}/ok 或 {GRAPH_ID} 图未正常加载"
     )
 
 
@@ -190,6 +231,14 @@ def main() -> None:
     workspace = Path.cwd()
     backend_dir = _backend_dir()
 
+    # 端口锁死 2024：被占用就启动失败（见 _resolve_port 的理由）
+    try:
+        port = _resolve_port()
+    except RuntimeError as exc:
+        print(f"启动失败：{exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    base_url = f"http://{HOST}:{port}"
+
     # 派生配置只放临时目录（退出即删），不污染工作空间
     runtime_dir = Path(tempfile.mkdtemp(prefix=RUNTIME_DIR_PREFIX))
     config_path = _build_runtime_config(backend_dir, runtime_dir)
@@ -206,7 +255,7 @@ def main() -> None:
         "--host",
         HOST,
         "--port",
-        str(PORT),
+        str(port),
     ]
 
     # cwd = 用户工作空间：agent 未来的 shell / 文件工具以这里为根。
@@ -226,26 +275,35 @@ def main() -> None:
         start_new_session=True,
     )
 
+    # 整个生命周期只有一个 finally：不管启动失败、启动途中 Ctrl+C，还是
+    # 正常运行后 Ctrl+C，子进程组都一定会被收掉（早期版本在启动阶段按
+    # Ctrl+C 会漏掉清理，留下占端口的孤儿——KeyboardInterrupt 是
+    # BaseException，except Exception 抓不住）。
     try:
-        print(f"正在启动 LangGraph Agent Server（{HOST}:{PORT}）...")
+        print(f"正在启动 LangGraph Agent Server（{HOST}:{port}）...")
         print(f"工作空间：{workspace}")
-        with httpx.Client(base_url=BASE_URL) as client:
-            node_count = _wait_until_ready(client, proc)
-    except Exception as exc:
-        print(f"启动失败：{exc}", file=sys.stderr)
-        _cleanup_runtime(runtime_dir, proc)
-        raise SystemExit(1) from exc
+        try:
+            with httpx.Client(base_url=base_url) as client:
+                node_count = _wait_until_ready(client, proc)
+        except Exception as exc:
+            print(f"启动失败：{exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
 
-    print(f"✅ Agent Server 已就绪：{OK_URL}")
-    print(f"✅ 图 {GRAPH_ID} 已注册并可加载（{node_count} 个节点）")
-    print(f"📚 API Docs：{BASE_URL}/docs")
-    print("前端启动：cd web && pnpm dev（http://localhost:5173）")
-    print("提示：已关闭热重载，修改后端代码后请重启 scode")
-    print("按 Ctrl+C 停止服务")
+        print(f"✅ Agent Server 已就绪：{base_url}/ok")
+        print(f"✅ 图 {GRAPH_ID} 已注册并可加载（{node_count} 个节点）")
+        print(f"📚 API Docs：{base_url}/docs")
+        print("前端启动：cd web && pnpm dev（http://localhost:5173）")
+        print(f"前端连后端：VITE_LANGGRAPH_URL={base_url}")
+        print("提示：已关闭热重载，修改后端代码后请重启 scode")
+        print("按 Ctrl+C 停止服务")
 
-    try:
-        proc.wait()
+        try:
+            proc.wait()
+        except KeyboardInterrupt:
+            print("\n正在停止服务...")
     except KeyboardInterrupt:
-        print("\n正在停止服务...")
+        # 启动途中被 Ctrl+C：正常退出，别甩一段 traceback 给用户
+        print("\n启动被中断，正在停止服务...", file=sys.stderr)
+        raise SystemExit(130) from None
     finally:
         _cleanup_runtime(runtime_dir, proc)

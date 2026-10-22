@@ -59,7 +59,8 @@ ls .agents/skills | head
 - 长期记忆走 `graph/memory.py`：读工作空间根的 `.scode-memory.md`（没有就自动创建带模板的一份），用 `MemoryMiddleware` 经 `middleware=` 参数挂进 `create_deep_agent()`；每次新会话读一次
 - backend 是**真实磁盘**（007 期）：`graph/backend.py` 构造 `CompositeBackend(default=LocalShellBackend)`，agent 的文件读写落在工作空间的真文件上，`execute` 直接在本机跑 shell——所以记忆文件也真的写得进去
 - `/admin/models` 提供模型配置的增删改查（003 期），由 `admin/app.py` 挂在 `/admin` 前缀下，与 langgraph 内置路由并行
-- `uv run scode` 以子进程拉起 `langgraph dev`（监听 `127.0.0.1:2024`），自动轮询 `GET /ok` 与 `GET /assistants/{id}/graph` 做就绪验证；`Ctrl+C` 或 SIGTERM 会连整个子进程组一起关掉，不留孤儿占端口
+- `uv run scode` 以子进程拉起 `langgraph dev`（监听 `127.0.0.1:2024`），自动轮询 `GET /ok` 与 `GET /assistants/{id}/graph` 做就绪验证；`Ctrl+C` 或 SIGTERM 会连整个子进程组一起关掉，不留孤儿占端口（启动途中 Ctrl+C 也一样）
+- 端口**锁死 2024**：被占用时 `scode` 直接启动失败并说明是谁占着，不会自动换端口——自动换端口会让就绪检查打到旧服务上误报"已就绪"，前端连的是旧代码
 - scode 把 langgraph 进程当用完即弃的本地计算进程：**在哪个目录运行 scode，那个目录就是工作空间**（子进程 cwd）；langgraph 必然生成的 `.langgraph_api/` 落在工作空间下并**保留**（里面的 `.langgraph_ops.pckl` 是 thread 索引，删了重启后会话列表就空）；派生 langgraph.json 放 `$TMPDIR/scode-config-*`（退出即删）；持久状态分两处：thread 索引在 `.langgraph_api/`，checkpoint/store 经 `persistence.py` 写入 `stupid_code/data/langgraph.db`（已 gitignore，删掉即重置历史），两者都在才能跨重启恢复对话
 
 前端（`web/`）：

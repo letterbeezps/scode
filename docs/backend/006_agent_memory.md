@@ -165,9 +165,8 @@ curl -s "http://127.0.0.1:<port>/assistants/$AID/graph"
 工作空间不可写（创建不了 `.scode-memory.md`）。把工作空间换成可写目录。
 
 **2024 端口被占，`scode` 却报"已就绪"**
-**launcher 的就绪检查只轮询 2024**。端口被占时 `langgraph dev` 会自动换端口（看启动日志里
-`Port 2024 is already in use, using port NNNNN instead`），但 launcher 还在对着旧服务做
-就绪验证，于是**误报就绪**——新服务其实在另一个端口上。测试时务必看日志里那个真实端口。
+**008 期已修**：launcher 现在启动前先探 2024，被占用就**直接启动失败**并告诉你
+怎么查占用进程，不会再误报就绪。见 `008_launcher_port_and_shutdown.md`。
 
 ---
 

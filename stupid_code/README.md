@@ -118,7 +118,8 @@ stupid_code/
   「能跑命令」和「文件权限」共存（shell 能绕过任何权限），不换的话建图时直接抛
   `NotImplementedError`。`conf/subagents.toml` 里 `reviewer` 的只读就是靠这个保证的。
 - `langgraph.json` 的 `http.app` 字段指向 `admin/app.py:app`。本期实现的 `/admin/models` 接口改完配置后仍需重启 `scode` 才能让运行中的 graph 加载新模型实例。
-- **端口被占时 `scode` 会误报"已就绪"**：就绪检查只轮询 2024，而 `langgraph dev` 会在 2024
-  被占时自动换端口（日志里写 `Port 2024 is already in use, using port NNNNN instead`）。
-  测试时以日志里那个真实端口为准。
-- 详细的阶段目标与验证步骤见 `../docs/backend/001_basic_agent_server.md`、`../docs/backend/002_config_toml_models.md`、`../docs/backend/003_model_admin_api.md`、`../docs/backend/004_subagents_config.md`、`../docs/backend/005_backend_package_layout.md`、`../docs/backend/006_agent_memory.md`、`../docs/backend/007_real_backend.md`。
+- **端口锁死 2024，被占用就直接启动失败**（008 期）：早期版本端口被占时会误报"已就绪"
+  ——`langgraph dev` 自己换了端口，而就绪检查只轮询 2024，打到的是旧服务，前端连的是
+  旧代码。现在启动前先探端口，占用就报错并告诉你怎么查占用进程，**绝不自动换端口**
+  （前端默认就连 2024）。
+- 详细的阶段目标与验证步骤见 `../docs/backend/001_basic_agent_server.md`、`../docs/backend/002_config_toml_models.md`、`../docs/backend/003_model_admin_api.md`、`../docs/backend/004_subagents_config.md`、`../docs/backend/005_backend_package_layout.md`、`../docs/backend/006_agent_memory.md`、`../docs/backend/007_real_backend.md`、`../docs/backend/008_launcher_port_and_shutdown.md`。
