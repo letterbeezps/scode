@@ -1,22 +1,22 @@
-# 006 agent 长期记忆（工作空间 AGENTS.md）
+# 006 agent 长期记忆（工作空间 .scode-memory.md）
 
 ## 目标
 
-让主 agent 有长期记忆：每次新会话开始时，把工作空间里的 `AGENTS.md` 读进系统提示词。
+让主 agent 有长期记忆：每次新会话开始时，把工作空间里的 `.scode-memory.md` 读进系统提示词。
 
 ### 成功标准
 
 - 用 deepagents 的 `MemoryMiddleware`，通过 `create_deep_agent` 的 **`middleware` 参数**挂上去
-- 记忆来源默认是**工作空间根目录的 `AGENTS.md`**；文件不存在时自动创建一份带模板的
-- 记忆内容真的进了系统提示词（模型能原样念出 `AGENTS.md` 的内容）
+- 记忆来源默认是**工作空间根目录的 `.scode-memory.md`**；文件不存在时自动创建一份带模板的
+- 记忆内容真的进了系统提示词（模型能原样念出 `.scode-memory.md` 的内容）
 - 不影响已有的 subagent / 提示词 / 管理接口
 
 ### 本期不做
 
-- **不解决"agent 写不进真实 AGENTS.md"**：deepagents 给 agent 的文件工具用的还是
+- **不解决"agent 写不进真实 .scode-memory.md"**：deepagents 给 agent 的文件工具用的还是
   StateBackend（虚拟文件系统），`edit_file` 写的是虚拟 FS，落不了磁盘。记忆目前是**只读**的
-- 不做记忆的运行时更新（改完 `AGENTS.md` 要开新会话才生效，见「关键取舍」）
-- 不做多来源记忆（`~/.deepagents/AGENTS.md` 之类的全局记忆）
+- 不做记忆的运行时更新（改完 `.scode-memory.md` 要开新会话才生效，见「关键取舍」）
+- 不做多来源记忆（`~/.deepagents/` 之类的全局记忆目录）
 - 不做前端展示记忆内容
 
 ### 关键取舍
@@ -32,9 +32,14 @@
   graph 也在那个进程里导入，所以 `cwd()` 就是工作空间。跟项目既有的"cwd 即工作空间"语义一致。
 - **记忆只在会话开始时读一次**。`MemoryMiddleware.before_agent` 见到 state 里已有
   `memory_contents` 就不重复读——这是框架的设计（记忆块要参与 prompt 缓存）。
-  代价是**改完 `AGENTS.md` 要开新会话才生效**，不能热更新。
-- **没有 `AGENTS.md` 就创建**，而不是静默跳过。deepagents 遇到读不到的文件会
+  代价是**改完 `.scode-memory.md` 要开新会话才生效**，不能热更新。
+- **没有 `.scode-memory.md` 就创建**，而不是静默跳过。deepagents 遇到读不到的文件会
   `continue` 跳过（不报错），那样用户根本不知道记忆为什么是空的。
+- **记忆文件叫 `.scode-memory.md`，不用框架默认的 `AGENTS.md`**。deepagents 的约定是读
+  `AGENTS.md`（跟 Claude Code 等工具一致），但那通常是"写给编码 agent 看的项目约定"——
+  本项目根目录那份就是——和"agent 自己攒的长期记忆"是两回事。工作空间正好是项目根时，
+  沿用默认名会把开发者的项目说明原样注入 agent 的提示词，语义错位。换成独立文件名后
+  两边分开：点开头表示它是本地状态文件，通常进 `.gitignore`。
 
 ---
 
@@ -46,7 +51,7 @@
 
 ```python
 workspace_dir() -> Path        # Path.cwd()，即工作空间
-memory_path() -> Path          # workspace_dir() / "AGENTS.md"
+memory_path() -> Path          # workspace_dir() / ".scode-memory.md"
 ensure_memory_file() -> Path   # 不存在就用模板创建；失败抛 MemorySetupError
 build_memory_middleware() -> MemoryMiddleware
 ```
@@ -57,13 +62,13 @@ build_memory_middleware() -> MemoryMiddleware
 backend = FilesystemBackend(root_dir=workspace_dir(), virtual_mode=True)
 return MemoryMiddleware(
     backend=backend,
-    sources=["/AGENTS.md"],
+    sources=["/.scode-memory.md"],
     add_cache_control=True,
 )
 ```
 
-- `sources` 用虚拟路径 `/AGENTS.md`：`FilesystemBackend` 在 virtual 模式下把它解析到
-  `root_dir` 下，即 `<工作空间>/AGENTS.md`
+- `sources` 用虚拟路径 `/.scode-memory.md`：`FilesystemBackend` 在 virtual 模式下把它解析到
+  `root_dir` 下，即 `<工作空间>/.scode-memory.md`
 - `add_cache_control=True` 与框架自己挂 `MemoryMiddleware` 时的行为一致：给记忆块加
   缓存断点，记忆内容变了也不会把整个前缀缓存打穿
 
@@ -80,7 +85,7 @@ graph = create_deep_agent(
 
 ### 1.3 模板内容
 
-新建的 `AGENTS.md` 带一份中文模板，分四块：项目约定 / 常用命令 / 经验与坑 / 杂项。
+新建的 `.scode-memory.md` 带一份中文模板，分四块：项目约定 / 常用命令 / 经验与坑 / 杂项。
 
 ---
 
@@ -123,13 +128,13 @@ class SpyModel(BaseChatModel):
 ### 步骤 3：真实服务里模型能念出记忆内容
 
 ```bash
-# 在工作空间里放一个带标记的 AGENTS.md，然后在该目录下启动 scode
+# 在工作空间里放一个带标记的 .scode-memory.md，然后在该目录下启动 scode
 curl -s -N -X POST "http://127.0.0.1:<port>/threads/$TID/runs/stream" \
   -H 'Content-Type: application/json' -H 'Accept: text/event-stream' \
   -d '{"assistant_id":"...","input":{"messages":[{"role":"user","content":"请把 <agent_memory> 块里的内容原样念出来"}]},"stream_mode":["updates"],"on_disconnect":"continue"}'
 ```
 
-模型应当原样念出 `AGENTS.md` 的内容。
+模型应当原样念出 `.scode-memory.md` 的内容。
 
 ### 步骤 4：图里能看到中间件节点
 
@@ -143,15 +148,15 @@ curl -s "http://127.0.0.1:<port>/assistants/$AID/graph"
 
 ## 3. 常见问题
 
-**模型说"工作区里没有 AGENTS.md"**
+**模型说"工作区里没有 .scode-memory.md"**
 它多半是用 `glob` 工具在虚拟 FS 里找的——文件工具是 StateBackend，看不到真实磁盘。
 记忆本身是通过中间件注入的，与文件工具无关。可以直接问它"把 `<agent_memory>` 块念出来"。
 
-**改了 `AGENTS.md` 没生效**
+**改了 `.scode-memory.md` 没生效**
 记忆只在会话开始时读一次，开个新会话（新建 thread）即可。
 
 **启动报 `MemorySetupError`**
-工作空间不可写（创建不了 `AGENTS.md`）。把工作空间换成可写目录。
+工作空间不可写（创建不了 `.scode-memory.md`）。把工作空间换成可写目录。
 
 **2024 端口被占，`scode` 却报"已就绪"**
 **launcher 的就绪检查只轮询 2024**。端口被占时 `langgraph dev` 会自动换端口（看启动日志里
@@ -162,12 +167,15 @@ curl -s "http://127.0.0.1:<port>/assistants/$AID/graph"
 
 ## 4. 已验证的事实
 
-- 空工作空间里 `ensure_memory_file()` 会创建带模板的 `AGENTS.md`（584 字节）
-- `MemoryMiddleware` 的 `backend.download_files(["/AGENTS.md"])` 能读到真实文件内容
+- 空工作空间里 `ensure_memory_file()` 会创建带模板的 `.scode-memory.md`（709 字节）
+- `MemoryMiddleware` 的 `backend.download_files(["/.scode-memory.md"])` 能读到真实文件内容
   （`FilesystemBackend` + `virtual_mode=True`，路径限定在工作空间内）
 - 用假模型抓 `request.system_message`：记忆内容确实在系统提示词的 `<agent_memory>` 块里
 - 真实服务里发"请把 `<agent_memory>` 块原样念出来"，模型原样念出了工作空间
-  `AGENTS.md` 的内容（标记 `WORKSPACE_MEMORY_MARKER_99`）
+  `.scode-memory.md` 的内容（标记 `WORKSPACE_MEMORY_MARKER_99`）
+- 记忆文件从 `AGENTS.md` 改名为 `.scode-memory.md` 后复验过：假模型的系统提示词里
+  `<agent_memory>` 块指向 `/.scode-memory.md` 且带文件内容；真实服务里模型念出了
+  改名后文件里的标记 `SCODE_E2E_MEMORY_MARKER_77`
 - 服务端的图节点列表出现 `MemoryMiddleware.before_agent`
 - `create_agent` 会把中间件的 `state_schema`（`MemoryState`）合并进图的状态 schema，
   所以 `memory_contents` 这个 channel 存在，私有状态不进入输出 state
@@ -176,11 +184,8 @@ curl -s "http://127.0.0.1:<port>/assistants/$AID/graph"
 
 ## 5. 待核实
 
-- **记忆是只读的**：agent 的 `edit_file` 走 StateBackend，写不进真实的 `AGENTS.md`，
+- **记忆是只读的**：agent 的 `edit_file` 走 StateBackend，写不进真实的 `.scode-memory.md`，
   而框架的记忆提示词里写着"可以调用 `edit_file` 保存新知识"——在接真实磁盘 backend
   之前，这句话对用户是误导
 - 记忆内容不参与"哪些文件可以读"的权限判断（`permissions` 管的是文件工具，不是中间件）
-- 工作空间就是项目根时，`<工作空间>/AGENTS.md` 是**开发者自己写的项目说明文件**
-  （本项目的那份是给编码 agent 看的约定），会被原样注入 agent 的提示词。语义上有点错位，
-  但也正是 AGENTS.md 这个约定的本意
 - launcher 的端口占用误报问题（见「常见问题」）本期没改

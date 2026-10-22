@@ -29,4 +29,7 @@ conf/config.toml
 # SQLite 持久化数据（checkpoint + store）
 stupid_code/data/
 
+# agent 长期记忆（工作空间本地状态文件，点开头不进版本库）
+.scode-memory.md
+
 

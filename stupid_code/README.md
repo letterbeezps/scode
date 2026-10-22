@@ -50,7 +50,7 @@ stupid_code/
 ├── langgraph.json    # 图注册（框架读的配置）
 ├── graph/            # 图与它的持久化
 │   ├── agent.py           # create_deep_agent()，导出 graph
-│   ├── memory.py          # 长期记忆：工作空间根的 AGENTS.md（没有就创建）
+│   ├── memory.py          # 长期记忆：工作空间根的 .scode-memory.md（没有就创建）
 │   └── persistence.py     # SQLite 工厂：checkpoint/store → ../data/langgraph.db
 ├── config/           # 读项目根 conf/ 的那层（代码在这里，数据在 ../../conf/）
 │   ├── model.py           # conf/config.toml → 模型实例 + CRUD helpers
@@ -69,7 +69,7 @@ stupid_code/
 | [launcher.py](launcher.py) | cwd 即工作空间、生成临时派生配置、就绪探测、生命周期管理（`.langgraph_api` 保留不清理） |
 | **图与持久化**（`graph/`） | |
 | [graph/agent.py](graph/agent.py) | `code_agent` 图：`create_deep_agent()`，导出 `graph` |
-| [graph/memory.py](graph/memory.py) | 长期记忆：读工作空间根的 `AGENTS.md`（不存在就创建），装成 `MemoryMiddleware` 挂进 `middleware=` |
+| [graph/memory.py](graph/memory.py) | 长期记忆：读工作空间根的 `.scode-memory.md`（不存在就创建），装成 `MemoryMiddleware` 挂进 `middleware=` |
 | [graph/persistence.py](graph/persistence.py) | SQLite 持久化工厂：`AsyncSqliteSaver`（checkpoint）+ `AsyncSqliteStore`（store），都指向 `../data/langgraph.db` |
 | **配置解析**（`config/`） | |
 | [config/model.py](config/model.py) | 加载与校验 `../../conf/config.toml`，构建模型实例；CRUD helpers |
@@ -95,7 +95,7 @@ stupid_code/
 > 该供应商的连接信息。文件不存在 = 不配置子 agent。字段说明见
 > `../docs/backend/004_subagents_config.md`。
 >
-> 长期记忆在工作空间根的 `AGENTS.md`（没有就自动创建一份带模板的）：每次新会话开始时
+> 长期记忆在工作空间根的 `.scode-memory.md`（没有就自动创建一份带模板的）：每次新会话开始时
 > 由 `MemoryMiddleware` 读进系统提示词。细节见 `../docs/backend/006_agent_memory.md`。
 
 ## 注意
@@ -103,8 +103,8 @@ stupid_code/
 - 不要给 `create_deep_agent()` 传 `checkpointer`：持久化由平台在 `langgraph.json` 层配置（`checkpointer`/`store` 指向 `graph/persistence.py`），在 agent 里显式传入会启动失败。对话历史写入 `data/langgraph.db`，重启后仍可恢复；删除该文件即重置全部历史。
 - 模型供应商配置在项目根 `conf/config.toml`（从 `conf/config.example.toml` 复制），选择顺序 `default` → `recent`，协议只支持 anthropic / openai；改配置需重启服务。
 - 子 agent 配置在项目根 `conf/subagents.toml`，同样改完要重启服务（子 agent 在 `graph/agent.py` 导入时构建一次）。`model` 必须是 `config.toml` 里配过的供应商 + 其 `models` 白名单里的模型名。
-- 长期记忆用 `middleware=` 挂 `MemoryMiddleware`，**不要用 `create_deep_agent(memory=...)`**：后者只能用框架默认的 StateBackend，读不到磁盘上的 `AGENTS.md`。记忆目前是**只读**的——agent 的 `edit_file` 走 StateBackend 写不进真实文件。
-- 记忆**只在会话开始时读一次**：改了 `AGENTS.md` 要开新会话（新建 thread）才生效。
+- 长期记忆用 `middleware=` 挂 `MemoryMiddleware`，**不要用 `create_deep_agent(memory=...)`**：后者只能用框架默认的 StateBackend，读不到磁盘上的 `.scode-memory.md`。记忆目前是**只读**的——agent 的 `edit_file` 走 StateBackend 写不进真实文件。
+- 记忆**只在会话开始时读一次**：改了 `.scode-memory.md` 要开新会话（新建 thread）才生效。
 - `langgraph.json` 的 `http.app` 字段指向 `admin/app.py:app`。本期实现的 `/admin/models` 接口改完配置后仍需重启 `scode` 才能让运行中的 graph 加载新模型实例。
 - **端口被占时 `scode` 会误报"已就绪"**：就绪检查只轮询 2024，而 `langgraph dev` 会在 2024
   被占时自动换端口（日志里写 `Port 2024 is already in use, using port NNNNN instead`）。

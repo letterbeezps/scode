@@ -1,4 +1,4 @@
-"""agent 的长期记忆：工作空间根目录的 AGENTS.md。
+"""agent 的长期记忆：工作空间根目录的 `.scode-memory.md`。
 
 用 deepagents 的 `MemoryMiddleware`，通过 `create_deep_agent` 的 **middleware 参数**
 挂上去，不用它自带的 `memory` 参数——两者最终是同一个中间件，但显式挂载能自己
@@ -6,15 +6,20 @@
 
 工作空间 = 运行 `uv run scode` 时所在的目录：launcher 把 langgraph 子进程的 cwd
 设成它，graph 也就在那儿被导入，所以 `Path.cwd()` 就是工作空间。
-AGENTS.md 不存在就创建一份带模板的。
+`.scode-memory.md` 不存在就创建一份带模板的。
+
+**为什么不用 `AGENTS.md`**：deepagents 的默认约定是读 `AGENTS.md`，但那通常是
+"写给编码 agent 看的项目约定"（本项目根目录那份就是），跟"agent 自己攒的长期
+记忆"是两回事，混在一起会把开发者的项目说明当成 agent 的记忆注入进去。换成
+独立文件名后两者的语义就分开了。
 
 两个要注意的点：
 
 1. **只在会话开始时读一次**。MemoryMiddleware 的 before_agent 钩子见到 state 里
-   已经有 `memory_contents` 就不重复读——改了 AGENTS.md 要开新会话才生效。
+   已经有 `memory_contents` 就不重复读——改了文件要开新会话才生效。
 2. **只用 FilesystemBackend 读这一个文件**。deepagents 默认给 agent 的文件工具
    用的还是 StateBackend（虚拟文件系统，不落磁盘），所以 agent 的 `edit_file`
-   写不进真实的 AGENTS.md——内存提示词里虽然写着"可以调用 edit_file 保存新知识"，
+   写不进真实的记忆文件——记忆提示词里虽然写着"可以调用 edit_file 保存新知识"，
    但在接真实磁盘 backend 之前，那句话是不成立的。
 """
 from __future__ import annotations
@@ -24,8 +29,8 @@ from pathlib import Path
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.memory import MemoryMiddleware
 
-MEMORY_FILENAME = "AGENTS.md"
-"""记忆文件名。deepagents 的约定就是 AGENTS.md（与 Claude Code 等工具一致）。"""
+MEMORY_FILENAME = ".scode-memory.md"
+"""记忆文件名。点开头 = 本地状态文件，不属于项目代码，通常进 .gitignore。"""
 
 
 class MemorySetupError(Exception):
@@ -38,8 +43,10 @@ _MEMORY_SOURCE = f"/{MEMORY_FILENAME}"
 
 _TEMPLATE = f"""# {MEMORY_FILENAME}
 
-这是 agent 的长期记忆。每次新会话开始时，agent 会把本文件的内容读进上下文。
+这是 agent 自己的长期记忆。每次新会话开始时，agent 会把本文件的内容读进上下文。
 写给 agent 看的内容用中文，命令、路径、标识符保持原样。
+
+（这个文件和项目里的 `AGENTS.md` 是两回事：那份是写给编码 agent 看的项目约定。）
 
 ## 项目约定
 
@@ -74,7 +81,7 @@ def memory_path() -> Path:
 
 
 def ensure_memory_file() -> Path:
-    """确保工作空间里有 AGENTS.md，不存在就用模板创建一份。返回文件路径。"""
+    """确保工作空间里有记忆文件，不存在就用模板创建一份。返回文件路径。"""
     path = memory_path()
     if path.exists():
         return path
@@ -89,7 +96,7 @@ def ensure_memory_file() -> Path:
 
 
 def build_memory_middleware() -> MemoryMiddleware:
-    """构造 MemoryMiddleware：读工作空间根的 AGENTS.md。
+    """构造 MemoryMiddleware：读工作空间根的记忆文件。
 
     backend 用 FilesystemBackend（虚拟模式，路径限定在工作空间内），
     因为 MemoryMiddleware 是通过 backend.download_files() 读源文件的——

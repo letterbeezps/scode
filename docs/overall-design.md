@@ -542,7 +542,7 @@ stupid-code/
 │   ├── langgraph.json         # langgraph-cli 配置（图注册 / http.app / checkpointer / store）
 │   ├── graph/                 # 图与它的持久化
 │   │   ├── agent.py           # create_deep_agent 构建入口，导出 graph
-│   │   ├── memory.py          # 长期记忆：工作空间根的 AGENTS.md（不存在则创建）
+│   │   ├── memory.py          # 长期记忆：工作空间根的 .scode-memory.md（不存在则创建）
 │   │   └── persistence.py     # SQLite 工厂：checkpoint/store → ../data/langgraph.db
 │   ├── config/                # 读项目根 conf/ 的那层（代码在这，数据在 ../../conf/）
 │   │   ├── model.py           # 读 conf/config.toml、校验、构建模型

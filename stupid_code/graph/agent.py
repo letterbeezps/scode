@@ -11,7 +11,7 @@ graph = create_deep_agent(
     # 来自 conf/subagents.toml；文件不存在时为空列表，
     # deepagents 自带的 general-purpose subagent 照常可用
     subagents=load_subagents(),
-    # 长期记忆：读工作空间根的 AGENTS.md（没有就创建）。
+    # 长期记忆：读工作空间根的 .scode-memory.md（没有就创建）。
     # 走 middleware 参数而不是 create_deep_agent 的 memory 参数，
     # 这样能自己指定读文件的 backend——见 graph/memory.py 的说明
     middleware=[build_memory_middleware()],
