@@ -200,13 +200,15 @@ def _handle_sigterm(*_) -> None:
     raise KeyboardInterrupt()
 
 
-def _cleanup_runtime(runtime_dir: Path, proc: subprocess.Popen) -> None:
+def _cleanup_runtime(runtime_dir: Path, proc: subprocess.Popen | None) -> None:
     """停止子进程并清掉临时配置目录。
 
+    proc 可能还没创建（派生配置生成失败、Popen 抛错），这时只删临时目录。
     工作空间里的 .langgraph_api **不删**：它是 langgraph dev 的 thread 索引
     （.langgraph_ops.pckl），删掉等于每次重启都把会话列表清零。
     """
-    _terminate(proc)
+    if proc is not None:
+        _terminate(proc)
     # 子进程停手后再删临时配置，避免与它的 flush 线程竞争
     shutil.rmtree(runtime_dir, ignore_errors=True)
 
@@ -239,47 +241,50 @@ def main() -> None:
         raise SystemExit(1) from exc
     base_url = f"http://{HOST}:{port}"
 
-    # 派生配置只放临时目录（退出即删），不污染工作空间
+    # 派生配置只放临时目录（退出即删），不污染工作空间。
+    # runtime_dir 一创建就进入下面的 try：配置生成失败或 Popen 抛错时也要清掉它。
     runtime_dir = Path(tempfile.mkdtemp(prefix=RUNTIME_DIR_PREFIX))
-    config_path = _build_runtime_config(backend_dir, runtime_dir)
-
-    command = [
-        sys.executable,
-        "-m",
-        "langgraph_cli",
-        "dev",
-        "--config",
-        str(config_path),
-        "--no-browser",
-        "--no-reload",
-        "--host",
-        HOST,
-        "--port",
-        str(port),
-    ]
-
-    # cwd = 用户工作空间：agent 未来的 shell / 文件工具以这里为根。
-    # .langgraph_api 生成在工作空间下并**保留**：里面的 ops pckl 是 thread 索引，
-    # 删了重启后会话列表就空了（checkpoint 本身在 SQLite，不受影响）。
-    # PYTHONDONTWRITEBYTECODE：后端源码按绝对路径加载，不在源码目录留 __pycache__。
-    # start_new_session=True：子进程成为新进程组组长，退出时可整组清理，
-    # 同时 Ctrl+C 的 SIGINT 只发给父进程，由我们统一控制关闭顺序。
-    child_env = {
-        **os.environ,
-        "PYTHONDONTWRITEBYTECODE": "1",
-    }
-    proc = subprocess.Popen(
-        command,
-        cwd=workspace,
-        env=child_env,
-        start_new_session=True,
-    )
+    proc: subprocess.Popen | None = None
 
     # 整个生命周期只有一个 finally：不管启动失败、启动途中 Ctrl+C，还是
     # 正常运行后 Ctrl+C，子进程组都一定会被收掉（早期版本在启动阶段按
     # Ctrl+C 会漏掉清理，留下占端口的孤儿——KeyboardInterrupt 是
     # BaseException，except Exception 抓不住）。
     try:
+        config_path = _build_runtime_config(backend_dir, runtime_dir)
+
+        command = [
+            sys.executable,
+            "-m",
+            "langgraph_cli",
+            "dev",
+            "--config",
+            str(config_path),
+            "--no-browser",
+            "--no-reload",
+            "--host",
+            HOST,
+            "--port",
+            str(port),
+        ]
+
+        # cwd = 用户工作空间：agent 未来的 shell / 文件工具以这里为根。
+        # .langgraph_api 生成在工作空间下并**保留**：里面的 ops pckl 是 thread 索引，
+        # 删了重启后会话列表就空了（checkpoint 本身在 SQLite，不受影响）。
+        # PYTHONDONTWRITEBYTECODE：后端源码按绝对路径加载，不在源码目录留 __pycache__。
+        # start_new_session=True：子进程成为新进程组组长，退出时可整组清理，
+        # 同时 Ctrl+C 的 SIGINT 只发给父进程，由我们统一控制关闭顺序。
+        child_env = {
+            **os.environ,
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+        proc = subprocess.Popen(
+            command,
+            cwd=workspace,
+            env=child_env,
+            start_new_session=True,
+        )
+
         print(f"正在启动 LangGraph Agent Server（{HOST}:{port}）...")
         print(f"工作空间：{workspace}")
         try:
