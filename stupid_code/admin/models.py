@@ -1,7 +1,7 @@
 """模型 CRUD 的请求处理函数。
 
 每个函数接收 Starlette Request，返回 Response。
-错误用 ConfigError 抛，路由层捕获后转 400。
+配置层的 ConfigError 在处理器内捕获并转成 400。
 
 注意：langgraph dev 装了 blockbuster，async 函数里直接调同步阻塞 IO
 （os.mkdir / open / os.replace 等）会被拦截报 500。
@@ -59,7 +59,7 @@ async def get_one(request: Request) -> JSONResponse:
 
 async def create(request: Request) -> JSONResponse:
     """POST /admin/models — 新增模型。
-    body 必含 name/protocol/provider/base_url/api_key，display_name 可选。
+    body 必含 name/protocol/provider/api_key，base_url / display_name 可选。
     若 provider 不存在则自动创建供应商段。
     """
     try:

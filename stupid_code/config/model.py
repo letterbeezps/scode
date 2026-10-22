@@ -70,6 +70,20 @@ def _require_api_key(provider_name: str, provider: dict[str, Any]) -> str:
     return api_key
 
 
+def _optional_str(body: dict[str, Any], key: str) -> str | None:
+    """读取可选字符串字段。
+
+    缺省与显式 null 都返回 None（调用方据此省略字段或删除）；类型不对报 ConfigError。
+    TOML 没有 null，写回前必须把 None 过滤掉，否则 tomli_w 会抛 TypeError。
+    """
+    value = body.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ConfigError(f"{key} 必须是字符串")
+    return value
+
+
 def build_model(config: dict[str, Any]) -> BaseChatModel:
     """按 [models].default → recent 的顺序构建主 agent 的模型。"""
     models = config.get("models")
@@ -139,12 +153,16 @@ def load_model() -> BaseChatModel:
 
 def save_config(config: dict[str, Any]) -> None:
     """原子写回 conf/config.toml。先写临时文件再 os.replace，
-    避免半截写入导致下一次启动解析失败。注释会丢失（tomli_w 不保留注释）。"""
+    避免半截写入导致下一次启动解析失败。注释会丢失（tomli_w 不保留注释）。
+
+    文件里有明文 api_key，落盘后收紧到 0600（仅当前用户可读写）。
+    """
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".toml.tmp")
     with tmp.open("wb") as fp:
         tomli_w.dump(config, fp)
+    tmp.chmod(0o600)
     os.replace(tmp, path)
 
 
@@ -233,7 +251,8 @@ def add_model(config: dict[str, Any], body: dict[str, Any]) -> str:
     if not isinstance(provider_name, str) or not provider_name:
         raise ConfigError("provider 必填（供应商名）")
 
-    base_url = body.get("base_url")
+    base_url = _optional_str(body, "base_url")
+    display_name = _optional_str(body, "display_name")
     api_key = body.get("api_key")
     if not isinstance(api_key, str) or not api_key:
         raise ConfigError(f"api_key 必填（模型 {name}）")
@@ -242,14 +261,16 @@ def add_model(config: dict[str, Any], body: dict[str, Any]) -> str:
     existing = providers.get(provider_name)
 
     if existing is None:
-        # 新建供应商段
-        providers[provider_name] = {
-            "protocol": protocol,
-            "display_name": body.get("display_name"),
-            "base_url": base_url,
-            "api_key": api_key,
-            "models": [name],
-        }
+        # 新建供应商段。可选字段缺省时不要写进 dict——TOML 不能表达 None，
+        # tomli_w 遇到 None 会直接抛 TypeError（前端新增模型时 display_name 通常为空）。
+        new_provider: dict[str, Any] = {"protocol": protocol}
+        if display_name is not None:
+            new_provider["display_name"] = display_name
+        if base_url is not None:
+            new_provider["base_url"] = base_url
+        new_provider["api_key"] = api_key
+        new_provider["models"] = [name]
+        providers[provider_name] = new_provider
         return f"{provider_name}:{name}"
 
     # 已存在的供应商段：连接字段必须一致
@@ -275,6 +296,7 @@ def update_model(
 ) -> tuple[bool, list[str]]:
     """改模型属性。可改：protocol、base_url、api_key、display_name。
     model_name 自身不可改（要改请删后增）。
+    base_url / display_name 传 null 表示删除该字段（TOML 没有 null）。
 
     返回 (是否成功, 受影响的其他同级模型 id 列表)。
     注意：toml 按 provider 分组，这些字段属于整个供应商段，所以会
@@ -296,13 +318,21 @@ def update_model(
             )
         p["protocol"] = body["protocol"]
     if "base_url" in body:
-        p["base_url"] = body["base_url"]
+        base_url = _optional_str(body, "base_url")
+        if base_url is None:
+            p.pop("base_url", None)
+        else:
+            p["base_url"] = base_url
     if "api_key" in body:
         if not isinstance(body["api_key"], str) or not body["api_key"]:
             raise ConfigError("api_key 不能为空")
         p["api_key"] = body["api_key"]
     if "display_name" in body:
-        p["display_name"] = body["display_name"]
+        display_name = _optional_str(body, "display_name")
+        if display_name is None:
+            p.pop("display_name", None)
+        else:
+            p["display_name"] = display_name
 
     co_affected = [f"{provider_name}:{m}" for m in p.get("models", []) if m != model_name]
     return True, co_affected
