@@ -32,8 +32,8 @@
 
 | 部分 | 文档描述 | 代码现状 |
 |---|---|---|
-| 前端 `web/` | 完整实现 | ✅ 已完成 4335 行 TS/TSX，跑在 mock 模式 |
-| 后端 Agent | §3 完整设计 | ⚠️ `create_deep_agent()` 默认配置跑通（001–004 期），护栏 / 工作空间校验等自研中间件仍未做 |
+| 前端 `web/` | 完整实现 | ✅ 已完成 5920 行 TS/TSX，mock 与真后端两套都能跑 |
+| 后端 Agent | §3 完整设计 | ⚠️ 001–009 期均已落地（真实磁盘 + shell、长期记忆、shell 人工确认、子 agent 配置）。工作空间校验、运行护栏等自研中间件仍未做 |
 | 后端依赖 | Deep Agents + LangGraph | ✅ 已装齐并锁进 `uv.lock` |
 | `langgraph.json` | §3.2 已给出 | ✅ 在 `stupid_code/` 目录（不是根目录），图注册 + http.app + checkpointer/store 都已配 |
 | 模型配置 | §4 多供应商 | ✅ `conf/config.toml` + `/admin/models` 管理接口（002 / 003 期） |
@@ -131,7 +131,7 @@
 > ——真实磁盘 + 本机 shell（`execute` 由此而来），`/tmp/` 路由到 `StateBackend`。
 > 框架的硬限制：**backend 支持命令执行时不能同时用 `permissions`**（shell 能绕过任何权限），
 > 所以声明了 `permissions` 的子 agent 会被换成无 shell 的 `FilesystemBackend`。
-> 详见 `docs/backend/007_real_backend.md`。
+> 详见 `docs/backend/PROGRESS.md` 的「007 · 真实 backend」一节。
 
 **子 Agent**：框架内置 `task` 工具与 general-purpose 子 Agent，可通过 `subagents` 参数扩展。子 Agent 会继承父 Agent 的工具限制（§5.2 的 allowlist），但**不自动继承权限档位**——见 §5.3 的注意事项。
 
@@ -140,7 +140,7 @@
 > 名单只出现在 `task` 工具的 description 里（跟着配置自动更新）。
 > 实测（MiniMax-M3）：光靠工具描述，主 agent 基本不会主动委派，倾向自己干；把名单点名写进
 > 提示词也**没有**明显改变。起决定作用的是用户请求里明确要求委派。详见
-> `docs/backend/004_subagents_config.md`。
+> `docs/backend/PROGRESS.md` 的「004 · 子 agent 配置」一节。
 
 ### 3.2 服务启动
 
@@ -541,7 +541,8 @@ stupid-code/
 │   ├── overall-design.md      # 本文档
 │   ├── overall-design-review.md  # v0.1 评审意见（历史存档）
 │   ├── frontend-design.md     # 前端设计文档
-│   └── backend/                # 按阶段推进的后端任务文档（001 ~ 007）
+│   └── backend/                # 后端进度快照（001–009 期合并成一份）
+│       └── PROGRESS.md         # 进度 / 取舍 / 已验证事实 / 已知缺口
 ├── conf/                       # 模型供应商配置（config.toml 不入库）+ 子 agent 声明（subagents.toml 入库）
 ├── stupid_code/               # 后端 Python 包
 │   ├── launcher.py            # scode：拉起 langgraph dev 子进程、就绪探测、优雅关停
@@ -599,13 +600,14 @@ stupid-code/
 
 - ~~`[待核实]` deepagents 的本地磁盘 backend 具体配置方式~~ —— **已核实并落地**（007 期）：
   `CompositeBackend(default=LocalShellBackend(root_dir=工作空间, virtual_mode=True, inherit_env=True))`，
-  见 `docs/backend/007_real_backend.md`
+  见 `docs/backend/PROGRESS.md`
 - ~~`[待核实]` deepagents 默认配置的 filesystem 是否为真实磁盘~~ —— **已核实**：默认是
   `StateBackend`（虚拟 FS，写操作不落盘）；必须显式传 `backend=`
 - `[待核实]` `TodoListMiddleware` 是否在本项目锁定版本中仍为 opt-in —— 核实方式：查官方 changelog
 - `[待核实]` `per_call` 中断模式所需的 langchain 版本下限是否满足 —— 核实方式：查本项目锁定的 langchain 版本号
-- `[待核实]` **shell 的人工确认**：真实 backend 带 `execute` 之后没有 HITL 拦截，
-  前端也还没有批准/拒绝 UI —— 核实/实现方式见 `docs/backend/007_real_backend.md` 的「待核实」
+- ~~`[待核实]` **shell 的人工确认**~~ —— **已核实并落地**（009 期）：后端按
+  `configurable.permissions` 的档位决定拦不拦，图挂起等前端批准/拒绝。
+  见 `docs/backend/PROGRESS.md` 的「009 · shell 的人工确认（HITL）」一节
 - `[待核实]` 重连 join 接口能否补齐错过的历史事件 —— 核实方式：P1 联调实测
 - `[待核实]` 各模型官方定价（用于 token → 成本换算）
 - `[待核实]` `stream_mode: ['updates']` 的文本到达粒度 —— 核实方式：P0 联调观察

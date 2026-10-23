@@ -47,7 +47,10 @@ ls .agents/skills | head
 
 ## 当前状态
 
-**后端 Agent Server 已跑通，前端已连真后端完成整轮对话（001 / 002 / 003 / 004 期均已落地）。**
+**后端 Agent Server 已跑通，前端已连真后端完成整轮对话（001–009 期均已落地）。**
+
+进度快照见 [`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md)——做了什么、为什么这么做、
+还欠什么，都在里面。
 
 后端（`stupid_code/`，顶层只留入口和起停，实现按职责分包：`graph/` 图与持久化 / `config/` 读 conf/ 的那层 / `admin/` 管理接口）：
 
@@ -195,7 +198,7 @@ system_prompt = "你是一个严格的代码审查员。"
 
 `model` 的供应商和模型名必须在 `config.toml` 里配过（`models` 白名单）。
 文件不存在 = 不配置子 agent，deepagents 自带的 `general-purpose` 照常可用。
-完整字段表见 [`docs/backend/004_subagents_config.md`](docs/backend/004_subagents_config.md)。
+完整字段表见 [`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md) 的「004 · 子 agent 配置」一节。
 
 ### 4. 跑起来
 
@@ -218,7 +221,7 @@ uv run scode
 uv run langgraph validate --config stupid_code/langgraph.json   # Configuration file ... is valid. (1 graph found)
 ```
 
-排查见 [`stupid_code/README.md`](stupid_code/README.md) 和 [`docs/backend/001_basic_agent_server.md`](docs/backend/001_basic_agent_server.md)。
+排查见 [`stupid_code/README.md`](stupid_code/README.md) 和 [`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md)。
 
 > ⚠️ **别给 `create_deep_agent()` 传 `checkpointer`。** `langgraph dev` 会直接抛 ValueError（持久化由平台接管，不需要你配）。
 
@@ -285,11 +288,8 @@ stupid-code/
 ├── docs/                    # 设计文档
 │   ├── overall-design.md    # 目标架构与前后端接口契约
 │   ├── frontend-design.md   # 网页前端的界面与交互设计
-│   └── backend/             # 按阶段推进的后端任务文档
-│       ├── 001_basic_agent_server.md
-│       ├── 002_config_toml_models.md
-│       ├── 003_model_admin_api.md
-│       └── 004_subagents_config.md
+│   └── backend/             # 后端进度快照（001–009 期合并成一份）
+│       └── PROGRESS.md
 ├── web/                     # 网页前端（Vite + React，与 Python 相互独立）
 │   ├── README.md            # 前端说明、接口契约、工作空间与权限
 │   ├── pnpm-lock.yaml

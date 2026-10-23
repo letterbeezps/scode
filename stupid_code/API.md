@@ -507,7 +507,7 @@ Content-Type: application/json
 }
 ```
 
-`langgraph dev` 不提供该端点，001 期前端调用会报 404（属预期，见 [001 指南常见问题](file:///Users/1token/Desktop/project/stupid-code/docs/backend/001_basic_agent_server.md)），留到 002 及以后实现。
+`langgraph dev` 不提供该端点，前端调用会报 404（属预期，见 [进度快照的已知缺口](file:///Users/1token/Desktop/project/stupid-code/docs/backend/PROGRESS.md)），留到后续实现。
 
 ---
 

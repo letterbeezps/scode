@@ -103,18 +103,19 @@ stupid_code/
 > 子 agent 声明在项目根 `conf/subagents.toml`（入库，无密钥）：每个 `[[subagents]]` 至少要有
 > `name` / `description` / `model` 三项，`model` 写 `供应商名:模型名`，复用 `config.toml` 里
 > 该供应商的连接信息。文件不存在 = 不配置子 agent。字段说明见
-> `../docs/backend/004_subagents_config.md`。
+> `../docs/backend/PROGRESS.md` 的「004 · 子 agent 配置」一节。
 >
 > 长期记忆在工作空间根的 `.scode-memory.md`（没有就自动创建一份带模板的）：每次新会话开始时
-> 由 `MemoryMiddleware` 读进系统提示词。细节见 `../docs/backend/006_agent_memory.md`。
+> 由 `MemoryMiddleware` 读进系统提示词。细节见 `../docs/backend/PROGRESS.md` 的
+> 「006 · agent 长期记忆」一节。
 >
 > agent 的文件操作落在工作空间的**真实磁盘**上，`execute` 直接在本机跑 shell：
 > backend 是 `CompositeBackend(default=LocalShellBackend)`，见
-> `../docs/backend/007_real_backend.md`。
+> `../docs/backend/PROGRESS.md` 的「007 · 真实 backend」一节。
 >
 > `execute` 有**人工确认**（009 期）：按运行期传来的权限档位决定拦不拦，拦下时图挂起，
 > 前端弹确认卡片，批准/拒绝后用 `command.resume` 让图继续。见
-> `../docs/backend/009_shell_hitl.md`。
+> `../docs/backend/PROGRESS.md` 的「009 · shell 的人工确认（HITL）」一节。
 
 ## 注意
 
@@ -142,4 +143,4 @@ stupid_code/
   ——`langgraph dev` 自己换了端口，而就绪检查只轮询 2024，打到的是旧服务，前端连的是
   旧代码。现在启动前先探端口，占用就报错并告诉你怎么查占用进程，**绝不自动换端口**
   （前端默认就连 2024）。
-- 详细的阶段目标与验证步骤见 `../docs/backend/001_basic_agent_server.md`、`../docs/backend/002_config_toml_models.md`、`../docs/backend/003_model_admin_api.md`、`../docs/backend/004_subagents_config.md`、`../docs/backend/005_backend_package_layout.md`、`../docs/backend/006_agent_memory.md`、`../docs/backend/007_real_backend.md`、`../docs/backend/008_launcher_port_and_shutdown.md`、`../docs/backend/009_shell_hitl.md`。
+- 详细的阶段目标与验证步骤见 `../docs/backend/PROGRESS.md`（001–009 期合并成一份进度快照）。

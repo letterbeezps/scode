@@ -32,7 +32,7 @@ Python 侧**没有** ruff / black / mypy 配置，**整个仓库没有测试、�
 - `stupid_code/README.md` — 后端启动说明；`stupid_code/API.md` — 当前实际可用的端点清单
 - `web/src/api/` — 后端通信层，`mock/` 用**与真实后端完全相同的签名**实现假数据；`web/src/store/` Zustand 状态；`components/`、`pages/`、`lib/`
 - `docs/overall-design.md` — 目标架构与前后端契约；`docs/frontend-design.md` — 前端交互设计
-- `docs/backend/001_*.md` — 按阶段推进的后端任务文档（见「测试与验证」）
+- `docs/backend/PROGRESS.md` — 后端进度快照（001–009 期合并成一份，见「测试与验证」）
 - `skills-lock.json` — langchain-skills 安装记录与 hash，**已入库**，用来追踪参考资料版本
 
 ## 动手前必须知道的几件事
@@ -61,7 +61,7 @@ Python 侧**没有** ruff / black / mypy 配置，**整个仓库没有测试、�
 
 ## 测试与验证
 
-没有自动化测试。验证靠文档里的手工步骤，照 `docs/backend/001_basic_agent_server.md` 的结构写新的阶段文档：**目标 / 成功标准 / 本期不做 / 关键取舍 / 验证步骤（带 curl）/ 常见问题 / 已验证的事实**。最后一节很重要——把踩过的坑固化下来，别让下一个人重新踩。
+没有自动化测试。验证靠文档里的手工步骤，照 `docs/backend/PROGRESS.md` 的结构续写新一期的内容：**目标 / 成功标准 / 本期不做 / 关键取舍 / 验证步骤（带 curl）/ 常见问题 / 已验证的事实**。最后一节很重要——把踩过的坑固化下来，别让下一个人重新踩。
 
 ## 文档会滞后于代码
 
