@@ -4,10 +4,14 @@
  * 数据源从写死的四项换成后端的 /admin/models —— 真实供应商配在
  * conf/config.toml 里，这里只是它的一张视图 + 增删改入口。
  *
- * 关于「选中哪个模型」：这里存的 modelId 是**本地偏好**，只决定下拉框显示。
- * 后端实际用哪个模型由 config.toml 的 [models].default 决定，没有任何端点
- * 能改它，所以不能把选中态说成「切换了模型」。selectedId 与 defaultId 不一致时
- * UI 要显式提示这一点，别让用户以为选了就算切了。
+ * 关于「选中哪个模型」：selectedId 是**真正生效**的选择。每次发消息时它随
+ * configurable 一起发给后端，后端在每次模型调用前把模型换成它
+ * （见后端 `stupid_code/graph/model_switch.py`），所以切换不需要重启后端，
+ * 下一条消息就用新供应商的 base_url / api_key / protocol。
+ *
+ * 选中值存在 localStorage 里，刷新页面、换会话都还在。defaultId 是后端启动
+ * 时带的默认模型（config.toml 的 [models].default）；两者不一致正是「切过去了」
+ * 的状态，UI 要如实显示当前用的是哪个。
  */
 import { create } from 'zustand'
 import { errorMessage } from '../api/client'
@@ -27,11 +31,12 @@ import type {
   ModelUpdateResult,
 } from '../api/types'
 
-const MODEL_KEY = 'stupid-code:model'
+const STORAGE_KEY = 'stupid-code:model'
+/** localStorage 里的键。与 lib/model.ts 的 MODEL_KEY（configurable 的键）不是一回事。 */
 
 function readStoredModel(): string {
   try {
-    return localStorage.getItem(MODEL_KEY) ?? ''
+    return localStorage.getItem(STORAGE_KEY) ?? ''
   } catch {
     // 隐私模式下 localStorage 可能抛异常
     return ''
@@ -40,11 +45,11 @@ function readStoredModel(): string {
 
 export interface SettingsState {
   models: AdminModel[]
-  /** config.toml 的 [models].default，后端真正在用的模型 */
+  /** config.toml 的 [models].default，后端启动时带的模型 */
   defaultId: string | null
   /** config.toml 的 [models].recent，default 缺省时的回退 */
   recentId: string | null
-  /** 本地偏好：下拉框选中的模型 id。不影响后端 */
+  /** 当前选中的模型 id。会被随每次运行发给后端，真正决定用哪个模型 */
   selectedId: string
   /** api_key 是否已按 reveal=true 取回明文 */
   reveal: boolean
@@ -89,7 +94,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       set({ models: res.models, defaultId: res.default, recentId: res.recent, selectedId })
       if (selectedId && selectedId !== current) {
         try {
-          localStorage.setItem(MODEL_KEY, selectedId)
+          localStorage.setItem(STORAGE_KEY, selectedId)
         } catch {
           /* 隐私模式下忽略 */
         }
@@ -101,9 +106,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }
   },
 
+  /**
+   * 选中一个模型：从下一条消息起就用它。
+   *
+   * 只改本地状态，不发请求——后端每次运行都从 configurable 拿到当前选中的
+   * 模型，所以这里存下就等于「下一次运行会用它」。
+   */
   select: (id) => {
     try {
-      localStorage.setItem(MODEL_KEY, id)
+      localStorage.setItem(STORAGE_KEY, id)
     } catch {
       /* 隐私模式下忽略 */
     }
@@ -138,7 +149,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     try {
       const res = await createModel(input)
       await get().load()
-      set({ notice: `已新增模型 ${res.id}。配置写在 conf/config.toml，重启 scode 后生效。` })
+      set({ notice: `已新增模型 ${res.id}。在侧边栏切换过去即可使用，不用重启后端。` })
       return res
     } catch (err) {
       set({ error: errorMessage(err) })
@@ -157,7 +168,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const affected =
         res.co_affected.length > 0 ? `同时影响 ${res.co_affected.join('、')}。` : ''
       set({
-        notice: `已保存 ${res.id}。${affected}重启 scode 后生效。`,
+        notice:
+          `已保存 ${res.id}。${affected}切换过去的模型下一次运行就用新配置；` +
+          `后端启动时带的默认模型仍需重启 scode。`,
       })
       return res
     } catch (err) {
@@ -181,7 +194,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         : ''
       const peers =
         res.remaining_peers.length > 0 ? `剩余同级模型 ${res.remaining_peers.join('、')}。` : ''
-      set({ notice: `已删除 ${res.id}。${peers}${warn}重启 scode 后生效。` })
+      set({ notice: `已删除 ${res.id}。${peers}${warn}侧边栏选到已删的模型会退回默认模型。` })
       return res
     } catch (err) {
       set({ error: errorMessage(err) })

@@ -4,9 +4,14 @@
 格式见同目录的 config.example.toml。
 模型选择顺序：[models].default → [models].recent → 报错。
 协议只支持 anthropic / openai，第三方端点通过 base_url 接入。
-模型在 graph/agent.py 导入时构建一次，改配置需重启服务。
+启动时的默认模型在 graph/agent.py 导入时构建一次，改它要重启服务。
 build_model_by_spec() 按显式规格建模型，conf/subagents.toml 的 subagent
 也走这里，供应商连接信息只在 config.toml 里写一遍。
+
+**运行期切换模型**（见 graph/model_switch.py）也会调 build_model_by_spec()：
+那条路径每次调用都重新读本文件，所以新增模型、改 base_url、改 api_key
+都不用重启后端就能生效。构建结果按连接信息缓存，键里带 api_key，
+改 key 后缓存自然失效。
 """
 
 import os
@@ -22,6 +27,13 @@ SUPPORTED_PROTOCOLS = ("anthropic", "openai")
 # （再往下挪目录时要同步改这里的层数）
 _CONF_DIR = Path(__file__).resolve().parents[2] / "conf"
 _CONFIG_FILENAME = "config.toml"
+
+_MODEL_CACHE: dict[tuple[str, str, str | None, str], BaseChatModel] = {}
+"""已构建的模型实例。键是 (protocol, model_id, base_url, api_key)。
+
+改了 api_key 或 base_url 之后键就变了，缓存自然失效；删掉的模型会留下一条
+没人再用的记录，条目数只随配置改动增长，不回收也不影响正确性。
+"""
 
 
 class ConfigError(Exception):
@@ -99,6 +111,12 @@ def build_model_by_spec(config: dict[str, Any], spec: str) -> BaseChatModel:
     主 agent 与 subagent 共用这一套解析：subagent 的 model 字段写法与
     config.toml 的 [models] 一致，base_url / api_key 仍取自 config.toml，
     不需要再写一遍连接信息。
+
+    **结果按连接信息缓存**：同一个 (protocol, model, base_url, api_key)
+    只建一次实例。缓存键里带 api_key 和 base_url，所以在设置页改了 key
+    或地址之后，缓存自然失效、新建实例，不会拿着旧 key 去请求。
+    之所以要缓存：模型实例内部持有 HTTP 客户端，每次调用新建一个会白白
+    建一堆连接池；运行期切模型会频繁触发构建。
     """
     models = config.get("models")
     if not isinstance(models, dict):
@@ -142,9 +160,16 @@ def build_model_by_spec(config: dict[str, Any], spec: str) -> BaseChatModel:
         kwargs["base_url"] = base_url
     kwargs["api_key"] = _require_api_key(provider_name, provider)
 
+    cache_key = (protocol, model_id, base_url, kwargs["api_key"])
+    cached = _MODEL_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     # init_chat_model 按 protocol 懒加载对应集成包：
     # anthropic → langchain-anthropic，openai → langchain-openai
-    return init_chat_model(model_id, model_provider=protocol, **kwargs)
+    model = init_chat_model(model_id, model_provider=protocol, **kwargs)
+    _MODEL_CACHE[cache_key] = model
+    return model
 
 
 def load_model() -> BaseChatModel:

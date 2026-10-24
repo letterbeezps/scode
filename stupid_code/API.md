@@ -245,7 +245,8 @@ Accept: text/event-stream
   "config": {
     "configurable": {
       "workspace": "/abs/path",
-      "permissions": "normal"
+      "permissions": "normal",
+      "model": "minimax:MiniMax-M3"
     }
   }
 }
@@ -257,6 +258,11 @@ Accept: text/event-stream
 - `config.configurable.workspace` / `permissions`：工作空间路径与权限档位。
   `workspace` 目前只是透传（`GET /directories` 未实现，前端的工作空间选择器在真后端下报错是预期的）；
   `permissions` 已被后端读取（009 期），决定 `execute` 要不要先问人——见 `stupid_code/graph/permissions.py`
+- `config.configurable.model`：**选中的对话模型 id**（`供应商名:模型名`，010 期）。
+  后端在**每次模型调用前**按这个 id 把模型换掉——用该供应商在 `conf/config.toml` 里的
+  `base_url` / `api_key` / `protocol`——所以**切换不需要重启后端**。
+  不传或传空串表示用后端启动时带的默认模型（`[models].default`）。
+  见 `stupid_code/graph/model_switch.py`
 
 **响应 `200`** — SSE 流，事件类型：
 
@@ -292,7 +298,8 @@ Accept: text/event-stream
   "config": {
     "configurable": {
       "workspace": "/abs/path",
-      "permissions": "normal"
+      "permissions": "normal",
+      "model": "minimax:MiniMax-M3"
     }
   }
 }
@@ -305,6 +312,8 @@ Accept: text/event-stream
   **不是 `feedback`**（框架 `RejectDecision` 的定义）。写错名字理由被静默丢掉
 - `config.configurable.permissions`：**必须原样带回同一个档位**。后端的拦截判定在
   恢复时会再跑一次，档位变了结论就变（批准后变成"还要拦"，就永远批不掉了）
+- `config.configurable.model`：同理**建议原样带回**。恢复时后端同样按它换模型，
+  带空了就退回默认模型，跟批准前用的不是同一个模型
 - 不带 `input`：平台把 `command` 转成 LangGraph 的 `Command(resume=...)` 当作本次运行的输入
 
 ### `POST /threads/{thread_id}/runs/{run_id}/cancel`
@@ -320,6 +329,11 @@ Accept: text/event-stream
 ## 模型管理
 
 由 `stupid_code/admin/app.py` 提供的自定义 ASGI 路由，通过 `langgraph.json` 的 `http.app` 字段挂载到 langgraph dev 服务。操作对象是项目根 `conf/config.toml`（不入库）。**改完配置需重启 `scode` 才能让运行中的 graph 加载新模型实例**——所有响应里的 `restart_required: true` 就是这个意思。
+
+> **010 期起有一条例外**：运行期切换模型那条路径（`configurable.model`）**每次调用都
+> 重新读 `conf/config.toml`**，所以新增模型、改 `base_url`、改 `api_key` 在**下一次运行**
+> 就生效，不用重启。`restart_required` 指的是「后端启动时带的那个默认模型实例」——
+> 改它仍然要重启。
 
 接口对外细粒度是**模型**：每个模型自带全部连接字段（`name` / `protocol` / `provider` / `base_url` / `api_key`）。toml 内部按 `provider` 分组只是为了避免重复写 `key` / `base_url`，接口层不暴露该结构。
 

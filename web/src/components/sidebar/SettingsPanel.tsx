@@ -3,9 +3,14 @@
  *
  * 模型列表来自后端 /admin/models（conf/config.toml），不再是写死的四项。
  *
- * 注意这里的下拉框只是**本地偏好**：后端实际用哪个模型由 config.toml 的
- * [models].default 决定，没有任何端点能改它。所以选中态与 default 不一致时
- * 要显式提示，不能让人以为「选了就算切了」。
+ * **选中即生效，不用重启后端**：选中值存在 localStorage 里，每次发消息时随
+ * 运行配置（configurable）一起发给后端；后端在每次模型调用前把模型换成它
+ * （见后端 stupid_code/graph/model_switch.py）。所以这里显示的「当前模型」
+ * 就是下一条消息真正会用的模型。
+ *
+ * defaultId 是后端启动时带的默认模型（config.toml 的 [models].default）。
+ * 选中的跟它不一样时，说明已经切过去了——如实显示当前用的是哪个，别再提示
+ * 「仅本地选中」那种误导的话。
  */
 import { useEffect } from 'react'
 import { Link } from 'react-router-dom'
@@ -28,6 +33,9 @@ export function SettingsPanel() {
     void load()
   }, [load])
 
+  // 没选中的话（列表还没加载、或一个模型都没有）就退回后端默认模型
+  const effectiveId = selectedId || defaultId || ''
+
   return (
     <div className="space-y-2">
       <label className="block">
@@ -47,13 +55,12 @@ export function SettingsPanel() {
         </select>
       </label>
 
-      {selectedId && defaultId && selectedId !== defaultId && (
+      {effectiveId && (
         <p className="text-[11px] leading-relaxed text-fg-muted">
-          仅本地选中；后端实际用的是 <code className="font-mono">{defaultId}</code>。
-          改默认模型请到{' '}
-          <Link to="/settings" className="text-accent hover:underline">
-            设置 → 模型管理
-          </Link>
+          后续对话用 <code className="font-mono">{effectiveId}</code>
+          {defaultId && defaultId !== effectiveId && (
+            <>（后端默认 {defaultId}）</>
+          )}
           。
         </p>
       )}

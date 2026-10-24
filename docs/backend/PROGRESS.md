@@ -1,6 +1,6 @@
-# 后端进度快照（001–009 合并版）
+# 后端进度快照（001–010 合并版）
 
-> **这份文档是什么**：项目后端从第 001 期到第 009 期的**进度快照**。
+> **这份文档是什么**：项目后端从第 001 期到第 010 期的**进度快照**。
 > 它把原先散在 `001_*.md` ~ `009_*.md` 九份阶段文档里的内容合并成一份，
 > 回答三个问题：**现在做到了哪一步 / 为什么这么做 / 接下来还欠什么**。
 >
@@ -35,6 +35,7 @@
 | 007 | 真实 backend（磁盘 + shell） | ✅ 已落地 | `stupid_code/graph/backend.py` |
 | 008 | launcher 端口锁定与关停 | ✅ 已落地 | `stupid_code/launcher.py` |
 | 009 | shell 人工确认（HITL） | ✅ 已落地 | `stupid_code/graph/permissions.py` + 前端 `ApprovalCard.tsx` |
+| 010 | 运行期切换对话模型 | ✅ 已落地 | `stupid_code/graph/model_switch.py` + 前端侧边栏模型下拉框 |
 
 ### 1.3 前端完成度
 
@@ -46,6 +47,7 @@
 - 权限档位选择器（`manual` / `normal` / `auto`）
 - 人工确认卡片（显示命令 + 为什么被拦，批准 / 拒绝）
 - 模型管理界面（直连 `/admin/models`）
+- **对话模型切换**（侧边栏下拉框，选中即生效，不用重启后端——010 期）
 - mock 模式（`VITE_USE_MOCK=true`，签名与真实后端完全一致）
 
 ### 1.4 验证方式
@@ -76,6 +78,7 @@ stupid-code/
 │   │   ├── agent.py            # create_deep_agent()，导出 graph
 │   │   ├── backend.py          # 真实磁盘 + shell 的 backend
 │   │   ├── memory.py           # 长期记忆中间件
+│   │   ├── model_switch.py     # 运行期切换对话模型的中间件
 │   │   ├── permissions.py      # 人工确认的档位与危险判定
 │   │   └── persistence.py      # SQLite 工厂：checkpoint/store → ../data/langgraph.db
 │   ├── config/
@@ -399,6 +402,68 @@ CompositeBackend(
   （如 `fixer`）执行命令也会走 HITL；声明了 `permissions` 的子 agent（`reviewer`）
   被换成无 shell 的 backend，压根没有 `execute` 工具，不受影响。
 
+### 010 · 运行期切换对话模型
+
+**做了什么**：侧边栏下拉框换一个模型，**下一条消息就用新供应商的 base_url / api_key /
+protocol**，不用重启后端。
+
+**为什么不能靠改 config.toml**：模型实例在 `graph/agent.py` 导入时建一次，改配置就得
+重启服务——而重启会丢掉正在跑的东西，用户每换一个模型都要重启一次是不能接受的。
+
+**为什么是中间件**：deepagents 把模型实例交给 `create_agent()` 之后就不管了，但框架在
+**每次**模型调用前都会组装一个 `ModelRequest`，其中 `request.model` 就是那次要用的模型。
+中间件的 `wrap_model_call` / `awrap_model_call` 拿到它，`request.override(model=...)`
+换掉——而框架最终是拿 `request.model.bind_tools(...)` 去发请求的
+（`langchain/agents/factory.py` 的 `_get_bound_model`），所以换了就是真换了。
+
+**数据流**
+
+```
+侧边栏下拉框（localStorage）
+  → 每次发消息时随 configurable 一起发：configurable.model = "供应商名:模型名"
+  → 后端 graph/model_switch.py 读 configurable["model"]
+  → 重新读 conf/config.toml，按该 id 建模型实例（base_url / api_key / protocol）
+  → request.override(model=那个实例) → 框架用它发请求
+```
+
+**关键取舍**
+
+- **每次调用都重新读 `config.toml`**：新增模型、改 base_url、改 api_key 都立刻生效，
+  不用重启。这条路径和「启动时建默认模型」是两条独立的路。
+- **模型实例按连接信息缓存**（`config/model.py` 的 `_MODEL_CACHE`，键含 api_key），
+  避免每次调用新建 HTTP 客户端；改了 key 键就变了，缓存自然失效。
+- **取不到就退回默认模型**：选了一个不存在的模型时记 warning、继续用默认模型，
+  而不是让整个对话挂掉。**模型调用阶段的失败不兜底**（401、限流、上下文超长
+  直接抛给用户看）——那是真实错误，不该藏。
+- **模型是全局偏好，不是任务级参数**：`workspace` / `permissions` 按 `threadId` 存，
+  因为同任务内前后两条消息可能针对不同目录；模型没有这种语义，选了就是全局切。
+  选中值存 localStorage，每次运行都随请求带过去，所以刷新页面、后端重启都还在。
+- **只切主 agent，子 agent 不跟着切**。子 agent 用哪个模型是**配置**出来的——
+  本项目 `reviewer` / `summarizer` 刻意用便宜的 `MiniMax-M3.1-Flash`，
+  主 agent 用 `MiniMax-M3`，「主对话用强模型、委派出去用便宜模型」是这个结构
+  的一部分。用户在下拉框选模型，意图是「**这段对话**用这个模型」。
+  让子 agent 跟着切，等于把委派出去的活偷偷挪到新选（可能很贵）的模型上，
+  把配置好的成本结构打乱。
+  - `conf/subagents.toml` 里声明了 model 的子 agent：一律用它自己写的那个
+  - deepagents 自动加的 `general-purpose`：用建图时继承来的那个（即启动时的默认模型）
+  - 要改某个子 agent 用哪个模型，去 `conf/subagents.toml` 写死——那才是「显式配置」该待的地方
+
+  （框架层面做得到：子 agent 的中间件也能拿到父图的 `configurable`。这里选择不用。）
+- **中间件的顺序有意义**：切换中间件放在 `middleware=` 列表最前 → 在最终栈里位于
+  core 中间件之后、prompt-caching / memory / HITL 这些尾部之前，也就是**比它们更外层**。
+  这样 `AnthropicPromptCachingMiddleware` 和 `MemoryMiddleware` 看到的是换过的模型，
+  缓存断点才会按新模型决定加不加。
+
+**已知边界**（不重启后端换模型的固有代价）
+
+| 边界 | 说明 |
+|---|---|
+| harness profile 不跟着换 | deepagents 按**启动时**的模型决定系统提示词附加内容、工具描述改写、排除哪些工具 |
+| 摘要阈值不跟着换 | 压缩历史的触发阈值按启动时模型的上下文窗口算；切到窗口更小的模型可能触发偏晚 |
+| 摘要用的还是旧模型 | 压缩历史会另发一次模型请求，那次走建图时的模型实例 |
+| 子 agent 不跟着换 | 子 agent 用哪个模型是**配置**出来的（`conf/subagents.toml`），切换只影响主对话 |
+| 选了不存在的模型 | 静默退回默认模型（后端有 warning 日志，界面上看不出来） |
+
 ---
 
 ## 4. 关键机制速查
@@ -407,13 +472,15 @@ CompositeBackend(
 
 ```python
 backend = build_backend()
+default_model = load_model()
 
 graph = create_deep_agent(
-    model=load_model(),
+    model=default_model,
     system_prompt=SYSTEM_PROMPT,
     subagents=[apply_permission_backend(spec) for spec in load_subagents()],
     backend=backend,
-    middleware=[build_memory_middleware()],
+    # 切换中间件放最前 → 在最终栈里比 prompt-caching / memory 更外层
+    middleware=[ChatModelSwitchMiddleware(default_model), build_memory_middleware()],
     interrupt_on=build_interrupt_on(),
 )
 ```
@@ -437,15 +504,20 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 提示词里**不写子 agent 名单**——名单由 deepagents 自动写进 `task` 工具的 description，
 再抄一份就是两份真相。想提高委派率，去改 `conf/subagents.toml` 里的 `description`。
 
-### 4.4 任务级参数（`config.configurable`）
+### 4.4 运行参数（`config.configurable`）
 
 | key | 前端常量 | 语义 | 后端读取情况 |
 |---|---|---|---|
 | `workspace` | `WORKSPACE_KEY` | 工作空间绝对路径 | ⚠️ **后端还没在工具入口读它**，目前只是透传 |
 | `permissions` | `PERMISSIONS_KEY` | 确认档位 manual/normal/auto | ✅ 已实现（`graph/permissions.py`） |
+| `model` | `MODEL_KEY`（`web/src/lib/model.ts`） | 对话模型 id `供应商名:模型名` | ✅ 已实现（`graph/model_switch.py`） |
 
-两者都**按 `threadId` 存而非全局**——同任务内前后两条消息可能针对不同目录。
-另有 `draft` 副本供新任务用，`createThread()` 时 `adoptDraft()` 固化并重置。
+`workspace` / `permissions` **按 `threadId` 存而非全局**——同任务内前后两条消息可能针对
+不同目录。另有 `draft` 副本供新任务用，`createThread()` 时 `adoptDraft()` 固化并重置。
+
+`model` 是**全局偏好**（localStorage），每次运行都随请求带过去，所以刷新页面、
+后端重启都还在。**恢复挂起的运行时也要原样带回去**：恢复时后端同样按
+`configurable.model` 换模型，带空了就退回默认模型，跟批准前用的不是同一个模型。
 
 ### 4.5 端点速查
 
@@ -487,6 +559,9 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 | 拒绝是整组的 | 一次挂起含多条命令时，卡片把整组展示，没有逐条挑选 | 框架的 `edit` 决策前端也没做 |
 | 子 agent 也会触发确认 | `fixer` 这类没声明 `permissions` 的子 agent 执行命令同样挂起 | 要不要默认放行是个待定的产品决策 |
 | 记忆只在会话开始时读一次 | 改完 `.scode-memory.md` 要开新会话才生效 | 框架设计 |
+| 切模型不换 harness profile | 系统提示词附加内容、工具描述改写、排除的工具都按启动时的模型定死 | 建图时决定的，跑起来改不了 |
+| 切模型不换摘要阈值 | 压缩历史的触发阈值按启动时模型的上下文窗口算 | 切到窗口更小的模型可能触发偏晚 |
+| 选了不存在的模型会静默退回 | 界面上看不出切换没生效，只有后端日志有 warning | 有意为之：不让整个对话挂掉 |
 | 流式回复是整段到达 | 不是 token 级增量 | 平台两种模式都支持，`messages-tuple` 事件名是 `messages` |
 | 没有自动化测试、没有 CI | 验证全靠手工 | 本项目是有意如此（学习项目） |
 | `docs/overall-design.md` §1.3 / §9 落后于代码 | 说后端只做到 004 期、目录结构是旧的 | **以代码为准** |
@@ -572,7 +647,55 @@ curl -N -X POST "http://127.0.0.1:2024/threads/$TID/runs/stream" \
   `Number of human decisions (N) does not match number of hanging tool calls (M)`。
 - `configurable.permissions` **必须原样带回同一个档位**。
 
-### 步骤 5：前端
+### 步骤 5：切换对话模型
+
+先记下 `config.toml` 里 `default` 指向的那个模型名，然后：
+
+```bash
+TID=$(curl -s -X POST http://127.0.0.1:2024/threads \
+  -H 'Content-Type: application/json' -d '{}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["thread_id"])')
+
+# 不带 configurable.model → 用启动时的默认模型
+curl -N -X POST "http://127.0.0.1:2024/threads/$TID/runs/stream" \
+  -H 'Content-Type: application/json' \
+  -d '{"assistant_id":"code_agent",
+       "input":{"messages":[{"role":"user","content":"只回复两个字：收到"}]},
+       "stream_mode":["updates"],
+       "config":{"configurable":{"permissions":"auto"}}}'
+
+# 带 configurable.model → 换成选中的那个（id 格式 "供应商名:模型名"）
+curl -N -X POST "http://127.0.0.1:2024/threads/$TID/runs/stream" \
+  -H 'Content-Type: application/json' \
+  -d '{"assistant_id":"code_agent",
+       "input":{"messages":[{"role":"user","content":"只回复两个字：收到"}]},
+       "stream_mode":["updates"],
+       "config":{"configurable":{"permissions":"auto","model":"minimax:MiniMax-M3.1-Flash"}}}'
+```
+
+看两次分别用了哪个模型——**不用猜**，消息里的 `response_metadata.model_name` 就是
+实际调用的模型：
+
+```bash
+curl -s "http://127.0.0.1:2024/threads/$TID/state" | python3 -c '
+import sys, json
+st = json.load(sys.stdin)
+for m in st.get("values", {}).get("messages", []):
+    if m.get("type") == "ai":
+        md = m.get("response_metadata") or {}
+        print(md.get("model_name"), "|", repr(str(m.get("content"))[:30]))
+'
+```
+
+期望：第一行是 `default` 那个模型，第二行是 `MiniMax-M3.1-Flash`。
+
+顺手验一下**选错会退回默认**（后端记 warning，不报错）：
+
+```bash
+# 把 model 改成 "不存在的供应商:不存在" → 请求正常完成，但用的是默认模型
+```
+
+### 步骤 6：前端
 
 ```bash
 cd web && pnpm dev
@@ -580,7 +703,10 @@ cd web && pnpm dev
 
 打开 http://localhost:5173，发一句"你好"，能收到回复即通过。
 
-### 步骤 6：关停
+侧边栏左下角换模型 → 再发一句 → 回复正常即通过（**不用重启后端**）。
+在设置页把模型删掉 → 侧边栏下拉框刷新后应回落到后端默认模型。
+
+### 步骤 7：关停
 
 `Ctrl+C` 后检查没有残留进程：
 
@@ -675,8 +801,41 @@ pgrep -f "langgraph_cli dev"        # 应该没有输出
 - 平台的后端工具在 `execute` 之外还有 `ls` / `read_file` / `write_file` / `edit_file` /
   `delete` / `glob` / `grep`；本期只拦 `execute`
 
-### 8.5 委派行为（2026-10-21 实测）
+### 8.5 模型切换（2026-10-23 对真实服务实测）
 
+- **`request.override(model=...)` 真的换模型**。框架最终是拿
+  `request.model.bind_tools(...)` 去发请求的（`langchain/agents/factory.py` 的
+  `_get_bound_model`），不是拿建图时那个实例。换完就是真换
+- **`get_config()` 在 `wrap_model_call` / `awrap_model_call` 里能拿到 `configurable`**。
+  `ModelRequest.runtime` 是 `Runtime`，**没有 `.config` 属性**（`ToolCallRequest.runtime`
+  才有），所以别去找 `request.runtime.config`——用 `langgraph.config.get_config()`
+- **子 agent 的中间件也能拿到父图的 `configurable`**（子图继承父图的 config）。
+  框架上做得到「子 agent 也跟着换」——**但本项目有意不用**：子 agent 的模型是
+  `conf/subagents.toml` 配置出来的，切换只该影响主对话（见 010 期的取舍）
+- **`configurable.model` 能穿过 `langgraph dev` 的 run 请求体**到达图的中间件，
+  实测 `response_metadata.model_name` 从 `MiniMax-M3` 变成 `MiniMax-M3.1-Flash`，
+  **后端没重启**
+- **HITL 挂起后恢复，模型也保持**：恢复请求带上同一个 `configurable.model`，
+  挂起前后两条 AI 消息的 `model_name` 一致
+- **`AnthropicPromptCachingMiddleware` / `UnsupportedContentMiddleware` /
+  `MemoryMiddleware(add_cache_control=True)` 都是看 `request.model` 决定行为**，
+  所以它们会跟着切换后的模型走——前提是切换中间件比它们更外层
+  （deepagents 把新的用户中间件放在 core 之后、尾部之前，天然满足）
+- **`create_deep_agent` 的 `middleware=` 列表里，新中间件按名字落位**：
+  名字撞上已有槽位就**原地替换**，不撞就插在 core 之后、尾部之前。
+  想让自定义中间件在尾部那些（prompt-caching / memory / HITL）更外层，
+  把它放列表靠前的位置即可
+- **显式声明 `general-purpose` 子 agent 能顶掉自动添加的那份**
+  （`any(spec["name"] == "general-purpose" for spec in inline_subagents)` 为真时
+  不再自动加），其余字段（tools / interrupt_on / permissions）不写就继承主 agent。
+  **本项目没有用它**——见上面那条，子 agent 的模型该由配置决定
+- **模型实例按连接信息缓存是安全的**：键里带 api_key 和 base_url，
+  改了 key 缓存自然失效，不会拿着旧 key 去请求
+- **协议跟着供应商一起换**，不是只换模型名：切到 `protocol = "openai"` 的供应商时，
+  请求真的按 OpenAI 的报文格式发出去（实测 anthropic → openai → anthropic 三次切换，
+  每次都打到对应协议的服务上）
+
+### 8.6 委派行为（2026-10-21 实测）
 用 MiniMax-M3 + 本项目 subagent 配置做的对照实验：
 
 | 组 | 提示词 | 用户请求 | 结果 |

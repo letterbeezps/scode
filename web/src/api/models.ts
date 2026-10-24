@@ -7,8 +7,10 @@
  * 三个必须记住的点：
  *
  * 1. **写入的是配置，不是运行时。** config.toml 是 `agent.py` 导入时读的，
- *    改完必须重启 scode，运行中的 graph 还拿着旧的模型实例。所有写操作的
- *    响应都带 `restart_required: true`，UI 要把它显式告诉用户。
+ *    所以「后端启动时带的默认模型」改完要重启 scode 才换得掉。
+ *    但运行期切换模型那条路径（后端 `graph/model_switch.py`）每次调用都重读
+ *    这个文件，所以**切换过去的模型下一次运行就用新配置**。
+ *    所有写操作的响应都带 `restart_required: true`，指的是前者。
  * 2. **api_key 默认脱敏。** 列表和详情返回 `***末4位`，带 `?reveal=true`
  *    才给明文。UI 上的「显示」开关要走这个参数，不要在前端缓存明文。
  * 3. **连接字段是供应商级的。** toml 按 provider 分组，protocol / base_url /

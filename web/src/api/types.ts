@@ -142,6 +142,11 @@ export interface RunOptions {
   /** 工作空间绝对路径。空字符串表示本次任务不选择工作空间 */
   workspace: string
   permissions: PermissionLevel
+  /**
+   * 选中的对话模型 id（`供应商名:模型名`）。
+   * 空字符串表示不指定，后端就用它启动时带的默认模型。
+   */
+  model: string
 }
 
 /* -------------------------------------------------------- LangGraph 平台协议 */
@@ -184,7 +189,11 @@ export interface ModelListResponse {
   /** config.toml 里 [models].recent，default 缺省时的回退 */
   recent: string | null
   models: AdminModel[]
-  /** 配置是启动时读的，改完必须重启才生效 */
+  /**
+   * 改完配置是否要重启才生效。
+   * 指「后端启动时带的默认模型」——运行期切换过去的模型每次调用都重读配置，
+   * 下一次运行就用新的（见后端 graph/model_switch.py）。
+   */
   restart_required: boolean
 }
 

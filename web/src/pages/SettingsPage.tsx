@@ -18,6 +18,7 @@ import { cn } from '../lib/cn'
 export function SettingsPage() {
   const selectedId = useSettingsStore((s) => s.selectedId)
   const models = useSettingsStore((s) => s.models)
+  const defaultId = useSettingsStore((s) => s.defaultId)
   const setModel = useSettingsStore((s) => s.select)
   const theme = useUIStore((s) => s.theme)
   const toggleTheme = useUIStore((s) => s.toggleTheme)
@@ -76,10 +77,11 @@ export function SettingsPage() {
             ))}
           </select>
           <p className="mt-1.5 text-xs text-fg-muted">
-            这里的选择只写进浏览器本地。后端实际使用的模型由{' '}
-            <code className="font-mono">conf/config.toml</code> 的{' '}
-            <code className="font-mono">[models].default</code> 决定，接口没有提供改它的入口，
-            改完要重启服务。
+            这里的选中值会随每次运行发给后端，
+            <strong className="text-fg">下一条消息就用这个模型</strong>，不用重启后端。
+            后端启动时带的默认模型是 <code className="font-mono">conf/config.toml</code> 的{' '}
+            <code className="font-mono">[models].default</code>，
+            {defaultId ? <>当前是 <code className="font-mono">{defaultId}</code>。</> : null}
           </p>
         </Section>
 

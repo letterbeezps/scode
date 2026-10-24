@@ -47,7 +47,7 @@ ls .agents/skills | head
 
 ## 当前状态
 
-**后端 Agent Server 已跑通，前端已连真后端完成整轮对话（001–009 期均已落地）。**
+**后端 Agent Server 已跑通，前端已连真后端完成整轮对话（001–010 期均已落地）。**
 
 进度快照见 [`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md)——做了什么、为什么这么做、
 还欠什么，都在里面。
@@ -62,6 +62,7 @@ ls .agents/skills | head
 - 长期记忆走 `graph/memory.py`：读工作空间根的 `.scode-memory.md`（没有就自动创建带模板的一份），用 `MemoryMiddleware` 经 `middleware=` 参数挂进 `create_deep_agent()`；每次新会话读一次
 - backend 是**真实磁盘**（007 期）：`graph/backend.py` 构造 `CompositeBackend(default=LocalShellBackend)`，agent 的文件读写落在工作空间的真文件上，`execute` 直接在本机跑 shell——所以记忆文件也真的写得进去
 - `execute` 有**人工确认**（009 期）：`graph/permissions.py` 按运行期传来的权限档位决定拦不拦（`auto` 全放行 / `manual` 每条都问 / `normal` 只问命中危险模式的），拦下时图挂起，前端弹确认卡片，批准/拒绝后用 `command.resume` 让图继续。文件类工具（`write_file` / `edit_file` / `delete`）不拦——那是 code agent 的日常
+- **对话模型可以运行期切换**（010 期）：`graph/model_switch.py` 的中间件在每次模型调用前把 `request.model` 换成界面上选的那个——**不用重启后端**。那条路径每次调用都重读 `conf/config.toml`，所以新增模型、改 base_url / api_key 也立刻生效
 - `/admin/models` 提供模型配置的增删改查（003 期），由 `admin/app.py` 挂在 `/admin` 前缀下，与 langgraph 内置路由并行
 - `uv run scode` 以子进程拉起 `langgraph dev`（监听 `127.0.0.1:2024`），自动轮询 `GET /ok` 与 `GET /assistants/{id}/graph` 做就绪验证；`Ctrl+C` 或 SIGTERM 会连整个子进程组一起关掉，不留孤儿占端口（启动途中 Ctrl+C 也一样）
 - 端口**锁死 2024**：被占用时 `scode` 直接启动失败并说明是谁占着，不会自动换端口——自动换端口会让就绪检查打到旧服务上误报"已就绪"，前端连的是旧代码
@@ -73,6 +74,7 @@ ls .agents/skills | head
 - **已对接 LangGraph 平台的 thread / run 系列接口**（实测过的契约见 [`stupid_code/API.md`](stupid_code/API.md)）：建会话、列会话、改 metadata、读历史、流式运行、取消运行
 - 会话标题存平台的 `metadata.title`（平台没有独立的 title 字段），刷新页面后侧栏标题还在
 - 模型管理界面直连 `/admin/models`，可切供应商 / 换模型 / 改 key
+- 侧边栏左下角**切换对话模型**：选中即生效，下一条消息就用新供应商，**不用重启后端**
 - 输入区下方有**工作空间**（文件夹浏览器）和**权限**（`manual` / `normal` / `auto` 三级确认策略）
 - 命中人工确认时，助手消息里会插入一张**确认卡片**（显示要执行的命令、为什么被拦），批准/拒绝后图继续往下跑
 - `VITE_USE_MOCK=false` 下直连真后端；mock 只是后端没跑时演示 UI 用的
@@ -184,6 +186,10 @@ models = ["MiniMax-M3", "MiniMax-M3.1-Flash"]
 
 供应商 / 模型也可以直接在网页端的「设置 → 模型管理」里改（走 `/admin/models`），改完按提示重启后端生效。
 
+> 010 期起有个例外：**在侧边栏切换对话模型那条路径每次调用都重读 `conf/config.toml`**，
+> 所以新增模型、改 base_url / api_key 在下一次运行就生效，不用重启。
+> 要改的只是「后端启动时带的默认模型」时才需要重启。
+
 ### 3.1 配子 agent（可选）
 
 **建在根目录 `conf/subagents.toml`**（004 期，无密钥，可以直接提交）。每个 `[[subagents]]` 至少要有 `name` / `description` / `model` 三项：
@@ -288,7 +294,7 @@ stupid-code/
 ├── docs/                    # 设计文档
 │   ├── overall-design.md    # 目标架构与前后端接口契约
 │   ├── frontend-design.md   # 网页前端的界面与交互设计
-│   └── backend/             # 后端进度快照（001–009 期合并成一份）
+│   └── backend/             # 后端进度快照（001–010 期合并成一份）
 │       └── PROGRESS.md
 ├── web/                     # 网页前端（Vite + React，与 Python 相互独立）
 │   ├── README.md            # 前端说明、接口契约、工作空间与权限
@@ -304,6 +310,8 @@ stupid-code/
 │   │   ├── agent.py         # create_deep_agent()，导出 graph
 │   │   ├── backend.py       # 真实 backend：CompositeBackend(default=LocalShellBackend)
 │   │   ├── memory.py        # 长期记忆：工作空间根的 .scode-memory.md（没有就创建）
+│   │   ├── model_switch.py  # 运行期切换对话模型的中间件
+│   │   ├── permissions.py   # shell 人工确认：档位与危险判定
 │   │   └── persistence.py   # SQLite 工厂：checkpoint/store → ../data/langgraph.db
 │   ├── config/              # 读项目根 conf/ 的那层（代码在这，数据在 ../../conf/）
 │   │   ├── model.py         # 读 conf/config.toml、校验、构建模型、模型 CRUD helpers

@@ -8,6 +8,7 @@ import { apiBaseUrl, authHeaders, isMockMode } from './client'
 import { createEventNormalizer } from './events'
 import { readSseStream } from './sse'
 import { mockRuns } from './mock'
+import { MODEL_KEY } from '../lib/model'
 import { PERMISSIONS_KEY, WORKSPACE_KEY } from '../lib/permissions'
 import type {
   ApprovalDecision,
@@ -64,13 +65,18 @@ export function streamRun(
      * 任务参数走 configurable，后端在图入口处读取：
      *   workspace   → 工作空间绝对路径；空字符串表示不限定，由后端决定
      *   permissions → 确认档位 manual / normal / auto
+     *   model       → 选中的对话模型 id（`供应商名:模型名`）
      * 后端需要在工具调用入口按 permissions 拦截并挂起等前端确认，
      * 否则这两项只是摆设。
+     *
+     * model 由后端在**每次模型调用前**换成对应供应商的实例
+     * （见后端 graph/model_switch.py），所以切换不需要重启后端。
      */
     config: {
       configurable: {
         [WORKSPACE_KEY]: options.workspace,
         [PERMISSIONS_KEY]: options.permissions,
+        [MODEL_KEY]: options.model,
       },
     },
   })
@@ -94,6 +100,9 @@ export function streamRun(
  *
  * **档位必须原样带回去**：后端的拦截判定在恢复时会再跑一次，档位变了结论就
  * 可能变（批准后变成"这条命令要拦"，就永远批不掉了）。
+ *
+ * **模型也要原样带回去**：恢复时后端同样按 configurable 里的 model 换模型，
+ * 带空了就换成默认模型，跟批准前用的不是同一个模型。
  */
 export function resumeRun(
   threadId: string,
@@ -120,6 +129,7 @@ export function resumeRun(
       configurable: {
         [WORKSPACE_KEY]: options.workspace,
         [PERMISSIONS_KEY]: options.permissions,
+        [MODEL_KEY]: options.model,
       },
     },
   })

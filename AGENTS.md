@@ -28,7 +28,7 @@ Python 侧**没有** ruff / black / mypy 配置，**整个仓库没有测试、�
 
 ## Project layout
 
-- `stupid_code/` — 后端包。顶层只放入口与起停，实现按职责分包：`__init__.py` 是 `start()` 入口、`launcher.py` 是 `scode` 的启动/就绪/关停逻辑、`langgraph.json` 是框架读的配置；`graph/`（`agent.py` 导出 `graph`，`memory.py` 装配长期记忆中间件，`permissions.py` 是 shell 人工确认的档位与危险判定，`backend.py` 装真实磁盘+shell 的 backend，`persistence.py` 把 checkpoint/store 落到 `data/langgraph.db`）、`config/`（`model.py` 读 `conf/config.toml`、`subagent.py` 读 `conf/subagents.toml`、`prompts.py` 是主 agent 的系统提示词）、`admin/` 是挂在 `/admin` 下的管理接口
+- `stupid_code/` — 后端包。顶层只放入口与起停，实现按职责分包：`__init__.py` 是 `start()` 入口、`launcher.py` 是 `scode` 的启动/就绪/关停逻辑、`langgraph.json` 是框架读的配置；`graph/`（`agent.py` 导出 `graph`，`memory.py` 装配长期记忆中间件，`model_switch.py` 是运行期切换对话模型的中间件，`permissions.py` 是 shell 人工确认的档位与危险判定，`backend.py` 装真实磁盘+shell 的 backend，`persistence.py` 把 checkpoint/store 落到 `data/langgraph.db`）、`config/`（`model.py` 读 `conf/config.toml`、`subagent.py` 读 `conf/subagents.toml`、`prompts.py` 是主 agent 的系统提示词）、`admin/` 是挂在 `/admin` 下的管理接口
 - `stupid_code/README.md` — 后端启动说明；`stupid_code/API.md` — 当前实际可用的端点清单
 - `web/src/api/` — 后端通信层，`mock/` 用**与真实后端完全相同的签名**实现假数据；`web/src/store/` Zustand 状态；`components/`、`pages/`、`lib/`
 - `docs/overall-design.md` — 目标架构与前后端契约；`docs/frontend-design.md` — 前端交互设计
@@ -46,11 +46,12 @@ Python 侧**没有** ruff / black / mypy 配置，**整个仓库没有测试、�
 5. **`GET /assistants` 返回 405**。列 assistant 要用 `POST /assistants/search`，再拿 `assistant_id`（UUID）去 `GET /assistants/{id}/graph`。
 6. **前端已经按契约写完了，后端要"实现前端已假定的契约"，不是"对齐已有实现"**。改后端接口前先看 `stupid_code/API.md` 和 `web/src/api/`。`GET /directories` 前端已在调用但后端**未实现**——工作空间选择器在真后端下报错是预期的，不是 bug。
 7. **SSE 一律用 fetch + 手动解析，不用 `EventSource`**（已定事项，别改回去）。
-8. **工作空间 + 权限是任务级参数**，按 `threadId` 存而非全局：同任务内前后两条消息可能针对不同目录。另有 `draft` 副本供新任务用，`createThread()` 时 `adoptDraft()` 固化并重置，否则两个任务的运行边界会串。
+8. **工作空间 + 权限是任务级参数**，按 `threadId` 存而非全局：同任务内前后两条消息可能针对不同目录。另有 `draft` 副本供新任务用，`createThread()` 时 `adoptDraft()` 固化并重置，否则两个任务的运行边界会串。**对话模型不是任务级参数**——它是全局偏好（存 localStorage），每次运行随 `configurable.model` 发给后端。
 9. **deepagents 0.7.28 不再提供内置系统提示词**。`BASE_AGENT_PROMPT` 在 0.7.0 废弃（0.9.0 移除），`HarnessProfile.base_system_prompt` 默认 `None`，内置的几个 claude profile 也没设。**`create_deep_agent(system_prompt=...)` 传进去的就是模型唯一看到的系统提示词**——别以为框架会垫底，行为准则要自己写全（见 `stupid_code/config/prompts.py`）。验证方法：用假模型把 `request.system_message` 打出来。
 10. **长期记忆用 `middleware=` 挂 `MemoryMiddleware`，别用 `create_deep_agent(memory=...)`**。两者是同一个中间件，但 `memory=` 只能用框架默认的 backend——默认是 StateBackend（虚拟文件系统），**读不到磁盘上的 `.scode-memory.md`**。自己挂才能给 `FilesystemBackend`（见 `stupid_code/graph/memory.py`）。另外记忆**只在会话开始时读一次**，改完文件要开新会话才生效。记忆文件名是 `.scode-memory.md` 而不是框架默认的 `AGENTS.md`：后者是"写给编码 agent 看的项目约定"（本项目根目录那份就是），和 agent 自己攒的长期记忆语义不同，混用会把开发者的项目说明当记忆注入。
 11. **端口锁死 2024，被占用就直接启动失败**。`langgraph dev` 在 2024 被占时会自动换端口（日志里 `Port 2024 is already in use, using port NNNNN instead`），而 launcher 的就绪检查只轮询 2024——早期版本因此会在 2024 被旧服务占着时**误报"已就绪"**（前端连的是旧代码，看起来像"改了没生效"）。现在 launcher 启动前先探端口：2024 被占就**启动失败**并告诉你怎么查占用进程，**绝不自动换端口**（前端默认就连 2024，换了没法用）。另外启动途中 Ctrl+C 也会整组清理子进程，早期版本会漏、留下占端口的孤儿。
 12. **backend 是真实磁盘 + 本机 shell**（007 期）。`graph/backend.py` 构造 `CompositeBackend(default=LocalShellBackend)`：agent 的 `write_file` / `edit_file` 改的是工作空间里的真文件，`execute` 能跑任意命令。**框架有条硬限制**：backend 支持命令执行时，`FilesystemMiddleware` 不接受 `permissions`（直接抛 `NotImplementedError`）——shell 能绕过任何文件权限，权限和 shell 不能共存。所以 `graph/backend.py` 的 `apply_permission_backend()` 会给**声明了 `permissions` 的子 agent** 换成无 shell 的 `FilesystemBackend`，`conf/subagents.toml` 里 `reviewer` 的只读就是靠这个保证的。改子 agent 配置时别把 `permissions` 直接塞回规格里。
+13. **切换对话模型靠中间件，不靠重建图**（010 期）。`graph/model_switch.py` 的 `ChatModelSwitchMiddleware` 覆盖 `wrap_model_call` / `awrap_model_call`，把 `request.model` 换成用户在界面上选的那个——框架最终是拿 `request.model.bind_tools(...)` 发请求的，所以换了就是真换。三个容易踩的点：① **`ModelRequest.runtime` 是 `Runtime`，没有 `.config` 属性**（只有 `ToolCallRequest.runtime` 才有），取 `configurable` 要用 `langgraph.config.get_config()`；② 中间件在 `middleware=` 列表里**越靠前越外层**，切换中间件要排在 prompt-caching / memory 之前，那些中间件才看得到换过的模型；③ 切换**只作用于主 agent**——子 agent 一律用各自原有的模型（`conf/subagents.toml` 里写死的，或建图时继承来的）。框架上做得到让子 agent 也跟着切（子 agent 的中间件也拿得到父图的 `configurable`），但**别那么做**：子 agent 用哪个模型是配置出来的（本项目 `reviewer`/`summarizer` 刻意用便宜的 `MiniMax-M3.1-Flash`），用户在下拉框选模型的意图是「这段对话用这个模型」，让委派出去的活跟着烧新模型会打乱配置好的成本结构。要改子 agent 的模型，去 `conf/subagents.toml` 写死。切换**不重启后端**：那条路径每次调用都重读 `conf/config.toml`，所以新增模型、改 base_url / api_key 立刻生效；但 harness profile 和摘要阈值是建图时定的，不跟着换。
 
 ## Code style
 

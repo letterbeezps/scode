@@ -11,10 +11,12 @@ import { ApiError, errorMessage } from '../api/client'
 import { resumeRun, streamRun, type RunHandlers } from '../api/run'
 import { useTodoStore } from './todoStore'
 import { useTaskStore } from './taskStore'
+import { useSettingsStore } from './settingsStore'
 import type {
   ApprovalDecision,
   ApprovalRequest,
   Message,
+  RunOptions,
   Thread,
   Todo,
   ToolCall,
@@ -358,8 +360,13 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       void threadApi.updateThreadMetadata(threadId!, { title }).catch(() => {})
     }
 
-    // 工作空间与权限按任务存；发送这一刻读一次快照，跑完之前再改不影响本次运行
-    const runOptions = useTaskStore.getState().resolve(threadId)
+    // 工作空间与权限按任务存；发送这一刻读一次快照，跑完之前再改不影响本次运行。
+    // 模型是全局偏好（侧边栏下拉框），存在 settingsStore 里，同样在发送这一刻取快照。
+    const taskSettings = useTaskStore.getState().resolve(threadId)
+    const runOptions: RunOptions = {
+      ...taskSettings,
+      model: useSettingsStore.getState().selectedId,
+    }
 
     cancelCurrentRun = streamRun(threadId, text, runOptions, createRunHandlers(threadId))
   },
@@ -389,7 +396,12 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
     }))
 
     // 档位要原样带回去：后端的拦截判定在恢复时会再跑一次，档位变了结论就可能变
-    const runOptions = useTaskStore.getState().resolve(pending.threadId)
+    // 模型同理：恢复时后端按 configurable 里的 model 换模型，带空了就退回默认模型
+    const taskSettings = useTaskStore.getState().resolve(pending.threadId)
+    const runOptions: RunOptions = {
+      ...taskSettings,
+      model: useSettingsStore.getState().selectedId,
+    }
 
     // decision 的个数必须和挂起时的 action_requests 一样多，否则框架直接抛
     // 「Number of human decisions (N) does not match number of hanging tool calls (M)」。

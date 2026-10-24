@@ -375,7 +375,8 @@ export const mockRuns = {
       // 收尾时把本次运行的边界说清楚，顺便验证参数确实传到了后端
       await emitText(
         `\n\n本次运行：${permissionMeta(options.permissions).description}；` +
-          `工作空间 ${options.workspace || '未选择'}。`,
+          `工作空间 ${options.workspace || '未选择'}；` +
+          `模型 ${options.model || '后端默认'}。`,
         6,
       )
 

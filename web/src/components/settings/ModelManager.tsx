@@ -3,9 +3,10 @@
  *
  * 两个不能忽略的语义，UI 上必须说出来，否则用户会误判：
  *
- * 1. **改配置 ≠ 换模型。** config.toml 是 `agent.py` 导入时读的，
- *    写完接口只把配置落盘，运行中的 graph 还拿着旧模型实例。
- *    所以每次写操作后都提示「重启 scode 后生效」。
+ * 1. **改配置 ≠ 换模型。** 改的是 `conf/config.toml`，不是运行中的实例。
+ *    但切换模型那条路径（后端 `graph/model_switch.py`）每次调用都重读这个文件，
+ *    所以**切换过去的模型下一次运行就用新配置**；只有「后端启动时带的默认模型」
+ *    才要重启 scode 才换得掉——提示里要说清这个区别。
  * 2. **连接字段是供应商级的。** 接口摊平成「每个模型自带全部字段」，
  *    但 toml 里 protocol / base_url / api_key / display_name 属于整个
  *    [models.providers.<name>] 段。所以这里按供应商分组展示，
@@ -226,8 +227,9 @@ export function ModelManager() {
 
       <p className="text-[11px] leading-relaxed text-fg-muted">
         改动写在仓库根的 <code className="font-mono">conf/config.toml</code>（已 gitignore）。
-        该文件是启动时读的，<strong className="text-fg">重启 scode 后新配置才会生效</strong>；
-        运行中的 graph 还拿着旧的模型实例。
+        <strong className="text-fg">切换过去的模型下一次运行就用新配置</strong>；
+        只有后端启动时带的默认模型，需要{' '}
+        <strong className="text-fg">重启 scode</strong> 才换得掉。
       </p>
     </div>
   )
