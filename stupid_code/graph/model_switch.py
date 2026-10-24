@@ -60,8 +60,10 @@ conf/config.toml 查 base_url / api_key / protocol，现场建一个模型实例
    供应商后这套 profile 不会跟着换。
 2. **历史压缩（summarization）的阈值也按启动时的模型算**。切到上下文窗口
    更小的模型时，压缩可能触发得偏晚，出现超长上下文错误。
-3. **摘要用的模型还是启动时那个**。压缩历史时会另发一次模型请求，那次请求
-   走的是建图时的模型实例。
+3. **摘要用的模型跟着切换走**（011 期改的）。框架默认把摘要模型在构造时定死
+   （`self._summary_chat_model = self.model`），切了之后压缩还在烧旧供应商；
+   `graph/compaction.py` 用 `summarizer=` 接管了摘要调用，改成每次调用时解析
+   当前选中的模型。但**阈值判断仍按启动时的模型算**——那条属于第 2 点。
 """
 
 from __future__ import annotations
@@ -102,6 +104,24 @@ def selected_model_spec() -> str | None:
     if isinstance(spec, str) and spec.strip():
         return spec.strip()
     return None
+
+
+def resolve_selected_model(default_model: BaseChatModel) -> BaseChatModel:
+    """当前运行该用哪个模型：用户选中的那个，取不到就退回 default_model。
+
+    与 `ChatModelSwitchMiddleware` 共用同一套解析逻辑——**摘要也算一次模型
+    调用**，走这里才能保证压缩历史时用的也是用户选中的供应商
+    （见 graph/compaction.py）。
+    """
+    spec = selected_model_spec()
+    if not spec:
+        return default_model
+    try:
+        config = load_config()
+        return build_model_by_spec(config, spec)
+    except Exception as exc:  # noqa: BLE001 — 取不到不该弄死整轮对话
+        logger.warning("切换到模型 %r 失败，改用默认模型：%s", spec, exc)
+        return default_model
 
 
 class ChatModelSwitchMiddleware(AgentMiddleware[Any, Any, Any]):

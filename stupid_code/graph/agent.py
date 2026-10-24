@@ -4,6 +4,10 @@ from stupid_code.config.model import load_model
 from stupid_code.config.prompts import SYSTEM_PROMPT
 from stupid_code.config.subagent import load_subagents
 from stupid_code.graph.backend import apply_permission_backend, build_backend
+from stupid_code.graph.compaction import (
+    build_compaction_middleware,
+    build_compaction_tool_middleware,
+)
 from stupid_code.graph.memory import build_memory_middleware
 from stupid_code.graph.model_switch import ChatModelSwitchMiddleware
 from stupid_code.graph.permissions import build_interrupt_on
@@ -15,6 +19,10 @@ backend = build_backend()
 # 前端把选中的模型 id 放进 configurable，中间件在每次模型调用前换掉
 # request.model —— 不需要重启后端。
 default_model = load_model()
+
+# 摘要中间件：顶掉 create_deep_agent() 自带的那份（靠 .name 匹配原地替换），
+# 加两件事——用户发 /compaction 时强制压缩一次；写摘要用当前选中的模型。
+compaction = build_compaction_middleware(default_model, backend)
 
 graph = create_deep_agent(
     model=default_model,
@@ -31,7 +39,13 @@ graph = create_deep_agent(
     # 顺序：切换中间件放在最前，让它在最外层——这样内层的
     # AnthropicPromptCachingMiddleware / MemoryMiddleware 看到的是
     # 已经换过的模型，缓存断点才会按新模型决定加不加。
-    middleware=[ChatModelSwitchMiddleware(default_model), build_memory_middleware()],
+    middleware=[
+        ChatModelSwitchMiddleware(default_model),
+        compaction,
+        # compact_conversation 工具：模型自己也能压缩上下文窗口
+        build_compaction_tool_middleware(compaction),
+        build_memory_middleware(),
+    ],
     # 执行命令前的人工确认：按运行期传来的权限档位决定拦不拦，
     # 拦下时图挂起等前端批准/拒绝——见 graph/permissions.py
     interrupt_on=build_interrupt_on(),

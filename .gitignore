@@ -32,4 +32,8 @@ stupid_code/data/
 # agent 长期记忆（工作空间本地状态文件，点开头不进版本库）
 .scode-memory.md
 
+# 压缩对话历史时被摘走的旧消息（deepagents 落到 backend 的文件里，
+# agent 需要时可以用 read_file 读回来）——同样是工作空间本地状态
+conversation_history/
+
 

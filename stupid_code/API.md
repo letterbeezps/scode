@@ -263,6 +263,12 @@ Accept: text/event-stream
   `base_url` / `api_key` / `protocol`——所以**切换不需要重启后端**。
   不传或传空串表示用后端启动时带的默认模型（`[models].default`）。
   见 `stupid_code/graph/model_switch.py`
+- 消息正文本身也可以是**斜杠命令**（011 期）：正文恰好是 `/compaction` 时，
+  后端会强制压缩一次对话历史（不等待阈值）。这是普通消息，没有单独的端点——
+  命令表在前端 `web/src/lib/commands.ts`，后端认哪个命令见
+  `stupid_code/graph/compaction.py` 的 `COMPACTION_COMMAND`。
+  压缩掉的旧对话会落到工作空间的 `conversation_history/<session_id>.md`，
+  agent 之后可以用 `read_file` 读回来
 
 **响应 `200`** — SSE 流，事件类型：
 

@@ -58,21 +58,29 @@ export function ChatPage() {
     [isGenerating, cancelRun, navigate],
   )
 
-  const handleSend = useCallback(async () => {
-    const text = draft
-    if (!text.trim()) return
-    setDraft('')
+  /**
+   * 发送一条消息。
+   *
+   * 文本由调用方给（输入框传当前内容，斜杠命令菜单传命令本体）——
+   * 命令不一定等于输入框里的字，命令选中时输入框还停在用户敲的半截上。
+   */
+  const handleSend = useCallback(
+    async (text: string) => {
+      if (!text.trim()) return
+      setDraft('')
 
-    // /chat（无 threadId）下首发消息时要先建线程并跳过去。
-    // store 里 sendMessage 也会兜底建线程，但那时 URL 还停在 /chat，
-    // 消息会渲染到一个读不到 threadId 的页面上，等于凭空消失。
-    if (!threadId && !activeThreadId) {
-      const created = await createThread()
-      if (!created) return
-      navigate(`/chat/${created}`)
-    }
-    void sendMessage(text)
-  }, [draft, threadId, activeThreadId, createThread, navigate, sendMessage])
+      // /chat（无 threadId）下首发消息时要先建线程并跳过去。
+      // store 里 sendMessage 也会兜底建线程，但那时 URL 还停在 /chat，
+      // 消息会渲染到一个读不到 threadId 的页面上，等于凭空消失。
+      if (!threadId && !activeThreadId) {
+        const created = await createThread()
+        if (!created) return
+        navigate(`/chat/${created}`)
+      }
+      void sendMessage(text)
+    },
+    [threadId, activeThreadId, createThread, navigate, sendMessage],
+  )
 
   return (
     <div className="flex h-full">

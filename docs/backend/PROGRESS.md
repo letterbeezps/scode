@@ -36,6 +36,7 @@
 | 008 | launcher 端口锁定与关停 | ✅ 已落地 | `stupid_code/launcher.py` |
 | 009 | shell 人工确认（HITL） | ✅ 已落地 | `stupid_code/graph/permissions.py` + 前端 `ApprovalCard.tsx` |
 | 010 | 运行期切换对话模型 | ✅ 已落地 | `stupid_code/graph/model_switch.py` + 前端侧边栏模型下拉框 |
+| 011 | 手动压缩对话历史（`/compaction`） | ✅ 已落地 | `stupid_code/graph/compaction.py` + 前端斜杠命令菜单 |
 
 ### 1.3 前端完成度
 
@@ -48,6 +49,7 @@
 - 人工确认卡片（显示命令 + 为什么被拦，批准 / 拒绝）
 - 模型管理界面（直连 `/admin/models`）
 - **对话模型切换**（侧边栏下拉框，选中即生效，不用重启后端——010 期）
+- **斜杠命令菜单**（输入 `/` 弹列表，`/compaction` 手动压缩对话历史——011 期）
 - mock 模式（`VITE_USE_MOCK=true`，签名与真实后端完全一致）
 
 ### 1.4 验证方式
@@ -77,6 +79,7 @@ stupid-code/
 │   ├── graph/
 │   │   ├── agent.py            # create_deep_agent()，导出 graph
 │   │   ├── backend.py          # 真实磁盘 + shell 的 backend
+│   │   ├── compaction.py       # /compaction 手动压缩 + 摘要用当前模型
 │   │   ├── memory.py           # 长期记忆中间件
 │   │   ├── model_switch.py     # 运行期切换对话模型的中间件
 │   │   ├── permissions.py      # 人工确认的档位与危险判定
@@ -460,9 +463,89 @@ protocol**，不用重启后端。
 |---|---|
 | harness profile 不跟着换 | deepagents 按**启动时**的模型决定系统提示词附加内容、工具描述改写、排除哪些工具 |
 | 摘要阈值不跟着换 | 压缩历史的触发阈值按启动时模型的上下文窗口算；切到窗口更小的模型可能触发偏晚 |
-| 摘要用的还是旧模型 | 压缩历史会另发一次模型请求，那次走建图时的模型实例 |
+| ~~摘要用的还是旧模型~~ | **011 期已修**：摘要改用当前选中的模型，见下面的 011 期 |
 | 子 agent 不跟着换 | 子 agent 用哪个模型是**配置**出来的（`conf/subagents.toml`），切换只影响主对话 |
 | 选了不存在的模型 | 静默退回默认模型（后端有 warning 日志，界面上看不出来） |
+
+### 011 · 手动压缩对话历史（`/compaction`）
+
+**做了什么**：输入框敲 `/` 弹出命令菜单，选「压缩对话历史」→ 后端把之前的对话
+总结成一段摘要，释放上下文窗口；旧的对话落成文件，agent 需要时能 `read_file` 读回来。
+
+**框架自带的两层**（deepagents `middleware/summarization.py`）
+
+| 层 | 干什么 | 怎么触发 |
+|---|---|---|
+| `SummarizationMiddleware` | 自动：对话超阈值时压缩 | 框架自己判断 |
+| `SummarizationToolMiddleware` | 手动：注册 `compact_conversation` 工具 | 模型调用那个工具 |
+
+两层共用 `_summarization_event` 这个私有 state key，状态才对得上。
+
+**关键发现一：摘要的模型是建图时定死的**
+
+`langchain` 的 `SummarizationMiddleware.__init__` 里有：
+
+```python
+self._summary_chat_model = self.model     # 构造那一刻就固定了
+```
+
+摘要调用走 `self._summary_model.invoke(...)`，**不是** `request.model`。
+所以「切到新供应商之后，压缩历史还在烧旧供应商」是框架的默认行为。
+
+这跟「这段对话用这个模型」的意图对不上：用户特意切过去图省钱，压缩却按旧价结算。
+框架留了公开扩展点——`summarizer` 参数（一个 Runnable，接管摘要调用）。
+本项目用它，在**每次调用时**解析 `configurable.model`，摘要也用当前选中的模型。
+
+**关键发现二：要让 `/compaction` 生效，得顶掉自带的那份**
+
+deepagents 按中间件的 `.name` 合并：**名字撞上已有槽位就原地替换，不撞就多一份**。
+自带那份的 `.name` 对「正好是它自己」返回公开别名、对子类返回类名
+（子类必须显式覆盖）。所以 `CompactionMiddleware.name` 报同样的名字 → 原地替换。
+两份摘要中间件同时跑会重复压缩、互相打架。
+
+**别名不要写死字面量**：框架升级改了公开别名，写死的字符串就对不上了 → 静默变成
+两份摘要中间件。本项目的做法是**从框架那里取**（`compaction.py` 的
+`_framework_summary_name()`）：取框架写在 `name` property 旁边的 ClassVar
+`SummarizationMiddleware.serialized_name`。
+
+**别直接 `return SummarizationMiddleware.name`**：property 访问类属性拿到的是
+**property 对象本身**，不是字符串。合并键变成一个永远对不上的对象 → 静默变成两份
+摘要中间件（实测过：最终栈 2 份，一份框架的、一份我们的）。
+
+**关键发现三：判断「要不要压缩」的地方就是 `_should_summarize()`**
+
+子类覆盖它：这一轮用户发的是 `/compaction` 就返回 True，剩下的活全部交给框架
+原有 machinery（切分 → 总结 → 落盘 → 生成 summary event）。
+
+**只看最后一条用户消息**：`/compaction` 这条消息会留在对话里（模型要看到它才知道
+发生了什么），如果判断成「出现过就行」，下一轮又会误判一次，历史被反复压缩。
+
+**压缩了什么**：框架默认把被摘走的旧消息写到 backend 的
+`conversation_history/<session_id>.md`，摘要里带着那个路径，agent 之后可以
+`read_file` 读回来。所以压缩不是「丢历史」，是「把历史挪进文件」。
+（这个目录已经加进 `.gitignore`——它是工作空间本地状态，跟 `.scode-memory.md` 同类。）
+
+**前端**
+
+- `web/src/lib/commands.ts`：命令表。加新命令不用改接口——命令就是一条普通消息，
+  后端认出就执行
+- `web/src/components/chat/InputBar.tsx`：开头敲 `/` 弹菜单，↑↓ 选、回车/Tab 确认、
+  Esc 关闭。只在**开头**是 `/` 且还没打空格时才弹（`/usr/local/bin` 这种路径不误弹）
+- `web/src/components/chat/UserMessage.tsx`：命令渲染成「命令气泡」，
+  `/compaction` 显示成一句普通聊天看着像在说胡话
+- 系统提示词里加了一段，告诉模型收到 `/compaction` 时简短确认就行，
+  不要复述摘要、也不要接着上次的活往下做
+
+**关键取舍**
+
+- **摘要用当前选中的模型**：用 `summarizer` 这个公开扩展点接管，没去改框架私有属性
+  （改 `self._summary_model` 是共享可变状态，并发跑会串）。
+- **自己实现 Runnable 而不是用 `RunnableLambda`**：框架的摘要调用有同步
+  `invoke` 和异步 `ainvoke` 两条路。`RunnableLambda` 包同步函数的话，异步路径会
+  把它丢进线程池——而 `get_config()` 依赖 contextvar，跨线程不一定拿得到
+  `configurable`，就会静默退回默认模型。自己实现 `invoke`/`ainvoke` 就没这个问题。
+- **`/compaction` 是普通消息**：不在前端做特殊拦截，后端按消息内容认出命令。
+  加新命令不用改接口。
 
 ---
 
@@ -473,6 +556,7 @@ protocol**，不用重启后端。
 ```python
 backend = build_backend()
 default_model = load_model()
+compaction = build_compaction_middleware(default_model, backend)
 
 graph = create_deep_agent(
     model=default_model,
@@ -480,7 +564,14 @@ graph = create_deep_agent(
     subagents=[apply_permission_backend(spec) for spec in load_subagents()],
     backend=backend,
     # 切换中间件放最前 → 在最终栈里比 prompt-caching / memory 更外层
-    middleware=[ChatModelSwitchMiddleware(default_model), build_memory_middleware()],
+    middleware=[
+        ChatModelSwitchMiddleware(default_model),
+        # 名字叫 SummarizationMiddleware → 顶掉 create_deep_agent 自带的那份
+        compaction,
+        # compact_conversation 工具：模型自己也能压缩
+        build_compaction_tool_middleware(compaction),
+        build_memory_middleware(),
+    ],
     interrupt_on=build_interrupt_on(),
 )
 ```
@@ -561,6 +652,7 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 | 记忆只在会话开始时读一次 | 改完 `.scode-memory.md` 要开新会话才生效 | 框架设计 |
 | 切模型不换 harness profile | 系统提示词附加内容、工具描述改写、排除的工具都按启动时的模型定死 | 建图时决定的，跑起来改不了 |
 | 切模型不换摘要阈值 | 压缩历史的触发阈值按启动时模型的上下文窗口算 | 切到窗口更小的模型可能触发偏晚 |
+| 切模型不换「超预算」兜底的预算 | 压缩中间件在最终栈里位于切换中间件**外层**，它内部读 `request.model.profile` 时看到的还是启动时的模型 | 本项目模型无 profile，这条兜底恒不触发；真超限时靠 `ContextOverflowError` 的兜底路径兜住 |
 | 选了不存在的模型会静默退回 | 界面上看不出切换没生效，只有后端日志有 warning | 有意为之：不让整个对话挂掉 |
 | 流式回复是整段到达 | 不是 token 级增量 | 平台两种模式都支持，`messages-tuple` 事件名是 `messages` |
 | 没有自动化测试、没有 CI | 验证全靠手工 | 本项目是有意如此（学习项目） |
@@ -706,6 +798,21 @@ cd web && pnpm dev
 侧边栏左下角换模型 → 再发一句 → 回复正常即通过（**不用重启后端**）。
 在设置页把模型删掉 → 侧边栏下拉框刷新后应回落到后端默认模型。
 
+输入框敲 `/` → 弹出命令菜单 → 选「压缩对话历史」→ 模型简短确认即通过。
+查状态确认压缩真的发生了：
+
+```bash
+curl -s "http://127.0.0.1:2024/threads/$TID/state" | python3 -c '
+import sys, json
+vals = json.load(sys.stdin).get("values", {})
+ev = vals.get("_summarization_event") or {}
+print("cutoff_index =", ev.get("cutoff_index"), "| 有摘要:", bool(ev.get("summary_message")))
+'
+```
+
+`cutoff_index` 不是 None 就说明压过。工作空间里还会多出
+`conversation_history/<session_id>.md`（被摘走的旧对话，已 gitignore）。
+
 ### 步骤 7：关停
 
 `Ctrl+C` 后检查没有残留进程：
@@ -835,7 +942,53 @@ pgrep -f "langgraph_cli dev"        # 应该没有输出
   请求真的按 OpenAI 的报文格式发出去（实测 anthropic → openai → anthropic 三次切换，
   每次都打到对应协议的服务上）
 
-### 8.6 委派行为（2026-10-21 实测）
+### 8.6 压缩对话历史（2026-10-24 对真实服务实测）
+
+- **摘要的模型在构造时就定死了**：`langchain` 的 `SummarizationMiddleware.__init__`
+  里 `self._summary_chat_model = self.model`，摘要调用走 `self._summary_model.invoke(...)`，
+  **不是** `request.model`。**框架默认**切了模型之后自动压缩仍然用建图时那个实例
+  （本项目已用 `summarizer=` 接管，摘要改用当前选中的模型——见 011 期）
+- **deepagents 的摘要中间件不覆写 `before_model`**：自动压缩整个做在
+  `wrap_model_call` 里。它内部用一个 langchain 的 `SummarizationMiddleware`
+  当 `_lc_helper`，大部分方法转发过去
+- **中间件按 `.name` 合并**：名字撞上已有槽位就原地替换，不撞就追加一份。
+  自带的摘要中间件 `.name` 是 `SummarizationMiddleware`（子类默认报自己的类名，
+  要替换必须显式覆盖 `name` 属性）
+- **`SummarizationMiddleware.name` 是 property 对象，不是字符串**：
+  `SummarizationMiddleware.name` 拿到的是 `<property object>`，直接返回它会让
+  合并键永远对不上 → 静默变成两份摘要中间件。框架同时把这个公开别名写在
+  ClassVar `serialized_name` 上，取那个才是字符串
+- **框架的 `name` property 对「正好是它自己」返回公开别名、对子类返回类名**
+  （`type(self) is _DeepAgentsSummarizationMiddleware` 是精确类型比较），
+  所以 `super().name` 拿到的是子类名，不是别名
+- **`summarizer` 是公开扩展点**：传一个 Runnable 就接管摘要调用（收到的是待总结的
+  消息，摘要提示词要自己拼）。用来换摘要模型比改私有属性安全
+- **`RunnableLambda` 包同步函数会丢 contextvar**：异步路径 `ainvoke` 会把同步函数
+  丢进线程池执行，而 `get_config()` 依赖 contextvar——跨线程拿不到 `configurable`，
+  会静默退回默认模型。要在异步路径里读运行配置，得自己实现 `invoke`/`ainvoke`
+- **deepagents 的压缩不改 `state["messages"]`**：摘走的旧消息原样留在状态里，
+  压缩通过私有的 `_summarization_event` 在模型调用时生效（LangChain 原生那个
+  是用 `RemoveMessage(id=REMOVE_ALL_MESSAGES)` 直接改状态）
+- **被摘走的旧消息会落到 backend 的文件里**：`conversation_history/<session_id>.md`，
+  摘要里带着那个路径，agent 可以 `read_file` 读回来。压缩不是丢历史
+- **`_summarization_event` 能在 `/threads/{id}/state` 里看到**：`cutoff_index` 和
+  `summary_message` 都在——这是判断「压缩到底有没有发生」最直接的证据
+- **本项目模型的摘要默认值**：MiniMax-M3（走 ChatAnthropic）**没有 profile**，
+  所以 `compute_summarization_defaults` 给的是固定值：
+  `trigger=("tokens", 170000)`、`keep=("messages", 6)`
+- **主 agent 的最终中间件顺序**（实测打印）：
+  `Filesystem → SubAgent → _ParentNotifier → Summarization(我们的) → PatchToolCalls
+  → ChatModelSwitch → SummarizationTool → Memory → AnthropicPromptCaching
+  → HumanInTheLoop → UnsupportedContent`
+  框架把自定义中间件**按名字合并进基础栈**：撞名原地替换、不撞就追加到 core 之后。
+  所以压缩中间件（替换自带那份）留在 core 段，**位于切换中间件外层**——
+  它内部读 `request.model` 看到的仍是启动时的模型。摘要本身不受影响
+  （`_RuntimeSummaryRunnable` 自己按 `configurable` 解析模型），
+  受影响的只有「按 profile 算的超预算兜底」这条判断。
+- **`/compaction` 只在「最后一条用户消息」是命令时才触发**：命令消息会留在对话里
+  （模型要看到它），判断成「出现过就行」会导致下一轮又压一次
+
+### 8.7 委派行为（2026-10-21 实测）
 用 MiniMax-M3 + 本项目 subagent 配置做的对照实验：
 
 | 组 | 提示词 | 用户请求 | 结果 |

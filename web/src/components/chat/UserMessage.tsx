@@ -1,7 +1,19 @@
 import type { Message } from '../../api/types'
+import { isSlashCommand } from '../../lib/commands'
 import { MarkdownContent } from './markdown/MarkdownContent'
 
 export function UserMessage({ message }: { message: Message }) {
+  // 斜杠命令渲染成「命令气泡」——`/compaction` 显示成一句普通聊天看着像在说胡话
+  if (isSlashCommand(message.content)) {
+    return (
+      <div className="animate-fade-up flex justify-end px-4 py-3">
+        <div className="rounded-lg border border-line bg-raised px-3 py-1.5 font-mono text-[13px] text-fg">
+          {message.content.trim()}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="animate-fade-up flex justify-end px-4 py-3">
       <div className="max-w-[85%] rounded-lg bg-bubble px-4 py-2.5 text-white">
