@@ -17,6 +17,7 @@ export function ChatPage() {
   const messages = useConversationStore((s) => s.messages)
   const pendingMessage = useConversationStore((s) => s.pendingMessage)
   const isGenerating = useConversationStore((s) => s.isGenerating)
+  const recovering = useConversationStore((s) => s.recovering)
   const loading = useConversationStore((s) => s.loading)
   const error = useConversationStore((s) => s.error)
   const loadThreads = useConversationStore((s) => s.loadThreads)
@@ -41,7 +42,7 @@ export function ChatPage() {
   }, [threadId, activeThreadId, selectThread])
 
   const threadMessages = threadId ? (messages[threadId] ?? []) : []
-  const isEmpty = threadMessages.length === 0 && !pendingMessage
+  const isEmpty = threadMessages.length === 0 && !pendingMessage && !isGenerating
 
   const handleNewChat = useCallback(async () => {
     if (isGenerating) cancelRun()
@@ -102,6 +103,7 @@ export function ChatPage() {
             messages={threadMessages}
             pendingMessage={pendingMessage}
             isGenerating={isGenerating}
+            recovering={recovering}
           />
         )}
 

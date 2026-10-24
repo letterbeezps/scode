@@ -8,7 +8,13 @@
 import { create } from 'zustand'
 import * as threadApi from '../api/thread'
 import { ApiError, errorMessage } from '../api/client'
-import { resumeRun, streamRun, type RunHandlers } from '../api/run'
+import {
+  cancelRun as cancelRunApi,
+  joinRunStream,
+  resumeRun,
+  streamRun,
+  type RunHandlers,
+} from '../api/run'
 import { useTodoStore } from './todoStore'
 import { useTaskStore } from './taskStore'
 import { useSettingsStore } from './settingsStore'
@@ -25,8 +31,36 @@ import type {
 /** streamRun 返回的取消函数不放进 state：它不是数据，进 state 会白白触发渲染 */
 let cancelCurrentRun: (() => void) | null = null
 
+/** 轮询恢复的代号：切线程/用户取消/又开始新运行后，旧循环看到代号变了就退出 */
+let recoveryGeneration = 0
+/** 页面刷新后从 /runs 找到的活跃 run，取消时不用再查一次 */
+let recoveryRunId: string | null = null
+
+const RECOVERY_POLL_MS = 1200
+/** 恢复最长等这么久；超过就收尾并提示用户刷新，避免无限轮询 */
+const RECOVERY_TIMEOUT_MS = 10 * 60 * 1000
+
 let msgSeq = 0
 const nextId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${++msgSeq}`
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function emptyAssistant(threadId: string): Message {
+  return {
+    id: nextId('msg'),
+    thread_id: threadId,
+    role: 'assistant',
+    content: '',
+    parts: [],
+    created_at: new Date().toISOString(),
+  }
+}
+
+function isActiveRun(run: { status: string }): boolean {
+  return run.status === 'running' || run.status === 'pending'
+}
 
 /**
  * 一组待人工确认的动作。
@@ -55,6 +89,8 @@ export interface ConversationState {
   /** pendingMessage 属于哪个线程，切线程时不会串台 */
   pendingThreadId: string | null
   isGenerating: boolean
+  /** 断线/刷新后正在等后端把 run 跑完并接回结果 */
+  recovering: boolean
   loading: boolean
   error: string | null
   /** 用户点过停止：onEnd 落位时据此标记 interrupted */
@@ -80,13 +116,339 @@ function patchPending(fn: (msg: Message) => Message): void {
   )
 }
 
+/** 把 pendingMessage 落位；没有内容就只清状态 */
+function commitPendingMessage(): void {
+  useConversationStore.setState((prev) => {
+    const pid = prev.pendingThreadId
+    const pendingMsg = prev.pendingMessage
+    if (!pid || !pendingMsg) {
+      return {
+        pendingMessage: null,
+        pendingThreadId: null,
+        isGenerating: false,
+        recovering: false,
+        cancelRequested: false,
+      }
+    }
+
+    // 用户中途停止：内容留着，标一个中断状态
+    const interrupted = prev.cancelRequested ? { ...pendingMsg, interrupted: true } : pendingMsg
+    return {
+      messages: { ...prev.messages, [pid]: [...(prev.messages[pid] ?? []), interrupted] },
+      pendingMessage: null,
+      pendingThreadId: null,
+      isGenerating: false,
+      recovering: false,
+      cancelRequested: false,
+    }
+  })
+}
+
+/** 把仍没有结果的工具调用从历史里摘掉——HITL 卡片会单独展示这些动作，避免重复 */
+function stripUnresolvedTools(messages: Message[]): Message[] {
+  const next = [...messages]
+  for (let index = next.length - 1; index >= 0; index -= 1) {
+    const message = next[index]
+    if (message.role !== 'assistant') continue
+
+    const unresolved = new Set(
+      (message.tool_calls ?? [])
+        .filter((call) => call.status === 'pending' || call.status === 'running')
+        .map((call) => call.id),
+    )
+    if (unresolved.size === 0) return next
+
+    const parts = message.parts.filter(
+      (part) => !(part.kind === 'tool' && unresolved.has(part.call.id)),
+    )
+    if (parts.length === 0) next.splice(index, 1)
+    else {
+      next[index] = {
+        ...message,
+        parts,
+        tool_calls: (message.tool_calls ?? []).filter((call) => !unresolved.has(call.id)),
+      }
+    }
+    return next
+  }
+  return next
+}
+
+/** 用持久化的 state.interrupts 重建审批卡片（刷新/断线后的关键一步） */
+function presentInterrupt(threadId: string, requests: ApprovalRequest[], messages: Message[]): void {
+  const id = nextId('approval')
+  const cleaned = stripUnresolvedTools(messages)
+  const pending = emptyAssistant(threadId)
+  pending.parts = [{ kind: 'approval', id, requests, status: 'pending' }]
+
+  useConversationStore.setState((prev) => {
+    const thread = prev.threads.find((item) => item.thread_id === threadId)
+    const next = {
+      messages: { ...prev.messages, [threadId]: cleaned },
+      titles: { ...prev.titles, [threadId]: deriveTitle(thread, cleaned) },
+    }
+    if (prev.activeThreadId !== threadId) return next
+    return {
+      ...next,
+      pendingMessage: pending,
+      pendingThreadId: threadId,
+      pendingApproval: { id, threadId, requests },
+      isGenerating: false,
+      recovering: false,
+      cancelRequested: false,
+    }
+  })
+}
+
+/** 以 /state 为准重新加载线程，用于恢复结束后对齐历史 */
+async function refreshThread(threadId: string): Promise<void> {
+  try {
+    const snapshot = await threadApi.loadThreadSnapshot(threadId)
+
+    if (snapshot.interrupts.length > 0) {
+      const messages = threadApi.restoreMessages(threadId, snapshot.rawMessages, {
+        unresolvedToolCalls: 'pending',
+      })
+      presentInterrupt(threadId, snapshot.interrupts, messages)
+      return
+    }
+
+    if (snapshot.next.length > 0) {
+      const runs = await threadApi.listRuns(threadId)
+      const active = runs.find(isActiveRun)
+      if (active) {
+        void startRecoveryPolling(threadId, active.run_id)
+        return
+      }
+    }
+
+    const messages = threadApi.restoreMessages(threadId, snapshot.rawMessages)
+    const state = useConversationStore.getState()
+    // 刷新期间用户已经发了新消息：别把新运行的 pending 状态冲掉
+    if (state.isGenerating || state.pendingThreadId) return
+
+    useConversationStore.setState((prev) => {
+      const thread = prev.threads.find((item) => item.thread_id === threadId)
+      const next = {
+        messages: { ...prev.messages, [threadId]: messages },
+        titles: { ...prev.titles, [threadId]: deriveTitle(thread, messages) },
+      }
+      if (prev.activeThreadId !== threadId) return next
+      return {
+        ...next,
+        pendingMessage: null,
+        pendingThreadId: null,
+        isGenerating: false,
+        recovering: false,
+        pendingApproval: null,
+        cancelRequested: false,
+      }
+    })
+  } catch {
+    // 刷新失败不覆盖现有 UI；用户还能手动刷新
+  }
+}
+
+/** 轮询 /state，直到 run 结束或挂在人工确认上 */
+async function startRecoveryPolling(threadId: string, runId?: string): Promise<void> {
+  if (useConversationStore.getState().activeThreadId !== threadId) return
+
+  const generation = ++recoveryGeneration
+  recoveryRunId = runId ?? null
+  cancelCurrentRun = null
+
+  const current = useConversationStore.getState()
+  useConversationStore.setState({
+    isGenerating: true,
+    recovering: true,
+    // 同页断线时保留已经流出来的部分内容；页面刷新时这里本来就是 null
+    pendingMessage: current.pendingThreadId === threadId ? current.pendingMessage : null,
+    pendingThreadId: threadId,
+    error: null,
+    cancelRequested: false,
+  })
+
+  const deadline = Date.now() + RECOVERY_TIMEOUT_MS
+  let polls = 0
+  while (generation === recoveryGeneration) {
+    const state = useConversationStore.getState()
+    if (state.activeThreadId !== threadId) {
+      // 用户已经切走：只清理属于这条线程的全局状态，别影响新线程
+      if (state.pendingThreadId === threadId) {
+        useConversationStore.setState({
+          pendingMessage: null,
+          pendingThreadId: null,
+          isGenerating: false,
+          recovering: false,
+        })
+      }
+      return
+    }
+
+    try {
+      const snapshot = await threadApi.loadThreadSnapshot(threadId)
+
+      if (snapshot.interrupts.length > 0) {
+        const messages = threadApi.restoreMessages(threadId, snapshot.rawMessages, {
+          unresolvedToolCalls: 'pending',
+        })
+        presentInterrupt(threadId, snapshot.interrupts, messages)
+        recoveryRunId = null
+        return
+      }
+
+      if (snapshot.next.length === 0) {
+        const messages = threadApi.restoreMessages(threadId, snapshot.rawMessages)
+        useConversationStore.setState((prev) => {
+          const thread = prev.threads.find((item) => item.thread_id === threadId)
+          return {
+            messages: { ...prev.messages, [threadId]: messages },
+            titles: { ...prev.titles, [threadId]: deriveTitle(thread, messages) },
+            pendingMessage: null,
+            pendingThreadId: null,
+            isGenerating: false,
+            recovering: false,
+            pendingApproval: null,
+            cancelRequested: false,
+          }
+        })
+        recoveryRunId = null
+        return
+      }
+
+      // 每几轮确认一次 run 是否还活着：后端重启会丢掉 inmem 队列里的运行，
+      // 这种时候 state.next 可能永远不为空，不能一直等到超时
+      polls += 1
+      if (polls % 5 === 0) {
+        try {
+          const runs = await threadApi.listRuns(threadId)
+          const stillActive = runId
+            ? runs.some((run) => run.run_id === runId && isActiveRun(run))
+            : runs.some(isActiveRun)
+          if (!stillActive) {
+            const messages = threadApi.restoreMessages(threadId, snapshot.rawMessages)
+            useConversationStore.setState((prev) => {
+              const thread = prev.threads.find((item) => item.thread_id === threadId)
+              return {
+                messages: { ...prev.messages, [threadId]: messages },
+                titles: { ...prev.titles, [threadId]: deriveTitle(thread, messages) },
+                pendingMessage: null,
+                pendingThreadId: null,
+                isGenerating: false,
+                recovering: false,
+                pendingApproval: null,
+                cancelRequested: false,
+                error: '上次运行已中断，未收到最终结果',
+              }
+            })
+            recoveryRunId = null
+            return
+          }
+        } catch {
+          // 查询失败就继续按 state 轮询
+        }
+      }
+    } catch {
+      // 网络还没恢复：继续重试
+    }
+
+    if (Date.now() >= deadline) break
+    await sleep(RECOVERY_POLL_MS)
+  }
+
+  if (generation !== recoveryGeneration) return
+  recoveryRunId = null
+  const timeoutMessage = '等待运行完成超时，请刷新会话查看最新状态'
+  useConversationStore.setState((prev) => {
+    const pid = prev.pendingThreadId
+    const message = prev.pendingMessage
+    if (!pid || !message) {
+      return {
+        isGenerating: false,
+        recovering: false,
+        pendingMessage: null,
+        pendingThreadId: null,
+        error: timeoutMessage,
+      }
+    }
+    // 超时也别把已经流出来的内容丢掉，落位并标错误
+    return {
+      messages: {
+        ...prev.messages,
+        [pid]: [...(prev.messages[pid] ?? []), { ...message, error: timeoutMessage }],
+      },
+      pendingMessage: null,
+      pendingThreadId: null,
+      isGenerating: false,
+      recovering: false,
+      error: timeoutMessage,
+    }
+  })
+}
+
+/** 用户取消恢复：停掉轮询，并把后端还在跑的 run 也取消 */
+async function cancelRecovery(threadId: string | null): Promise<void> {
+  recoveryGeneration += 1
+  const runId = recoveryRunId
+  recoveryRunId = null
+  cancelCurrentRun = null
+
+  const state = useConversationStore.getState()
+  if (state.pendingMessage && state.pendingThreadId) {
+    useConversationStore.setState((prev) => {
+      const pid = prev.pendingThreadId
+      const message = prev.pendingMessage
+      if (!pid || !message) return prev
+      return {
+        messages: {
+          ...prev.messages,
+          [pid]: [...(prev.messages[pid] ?? []), { ...message, interrupted: true }],
+        },
+        pendingMessage: null,
+        pendingThreadId: null,
+        isGenerating: false,
+        recovering: false,
+        pendingApproval: null,
+        cancelRequested: false,
+      }
+    })
+  } else {
+    useConversationStore.setState({
+      isGenerating: false,
+      recovering: false,
+      pendingMessage: null,
+      pendingThreadId: null,
+      pendingApproval: null,
+      cancelRequested: false,
+    })
+  }
+
+  if (!threadId) return
+  try {
+    if (runId) {
+      await cancelRunApi(threadId, runId)
+    } else {
+      const runs = await threadApi.listRuns(threadId)
+      const active = runs.find(isActiveRun)
+      if (active) await cancelRunApi(threadId, active.run_id)
+    }
+  } catch {
+    // 后端已经不可达时本地状态已经收尾，不再额外报错
+  }
+}
+
+interface RunHandlerOptions {
+  /** 断线后接回来的 run：结束后以 /state 为准刷新，避免本地流式结果不全 */
+  recovered?: boolean
+}
+
 /**
  * 一次运行的事件处理。
  *
- * 发消息和恢复挂起的运行走同一套处理：恢复后模型接着往下说，token / 工具调用
- * 继续追加到同一条 pendingMessage 上。
+ * 发消息、断线重连、恢复挂起的运行走同一套处理：token / 工具调用继续追加到
+ * 同一条 pendingMessage 上。
  */
-function createRunHandlers(threadId: string): RunHandlers {
+function createRunHandlers(threadId: string, options: RunHandlerOptions = {}): RunHandlers {
   return {
     onToken(chunk) {
       patchPending((msg) => {
@@ -103,11 +465,17 @@ function createRunHandlers(threadId: string): RunHandlers {
     },
 
     onToolCall(call: ToolCall) {
-      patchPending((msg) => ({
-        ...msg,
-        parts: [...msg.parts, { kind: 'tool', call }],
-        tool_calls: [...(msg.tool_calls ?? []), call],
-      }))
+      patchPending((msg) => {
+        // join 回来的流可能重发断线前已经见过的调用，按 id 去重
+        if (msg.parts.some((part) => part.kind === 'tool' && part.call.id === call.id)) {
+          return msg
+        }
+        return {
+          ...msg,
+          parts: [...msg.parts, { kind: 'tool', call }],
+          tool_calls: [...(msg.tool_calls ?? []), call],
+        }
+      })
     },
 
     onToolResult({ id, output, diff, files, error }) {
@@ -140,7 +508,7 @@ function createRunHandlers(threadId: string): RunHandlers {
 
     onError(message) {
       patchPending((msg) => ({ ...msg, error: message }))
-      useConversationStore.setState({ error: message })
+      useConversationStore.setState({ error: message, recovering: false })
     },
 
     onInterrupt(requests) {
@@ -148,11 +516,44 @@ function createRunHandlers(threadId: string): RunHandlers {
       // 丢掉任何一个，恢复时就会报数量不匹配。
       if (requests.length === 0) return
       const id = nextId('approval')
-      patchPending((msg) => ({
-        ...msg,
-        parts: [...msg.parts, { kind: 'approval', id, requests, status: 'pending' }],
-      }))
-      useConversationStore.setState({ pendingApproval: { id, threadId, requests } })
+      const state = useConversationStore.getState()
+
+      if (state.pendingMessage) {
+        patchPending((msg) => ({
+          ...msg,
+          parts: [...msg.parts, { kind: 'approval', id, requests, status: 'pending' }],
+        }))
+      } else {
+        const pending = emptyAssistant(threadId)
+        pending.parts = [{ kind: 'approval', id, requests, status: 'pending' }]
+        useConversationStore.setState({ pendingMessage: pending, pendingThreadId: threadId })
+      }
+
+      useConversationStore.setState({
+        pendingApproval: { id, threadId, requests },
+        isGenerating: false,
+        recovering: false,
+      })
+    },
+
+    onConnectionLost(runId) {
+      if (options.recovered) {
+        // join 回来的流也断了：退回轮询 state，至少能拿到最终结果
+        void startRecoveryPolling(threadId, runId)
+        return
+      }
+
+      if (runId) {
+        useConversationStore.setState({ recovering: true })
+        cancelCurrentRun = joinRunStream(
+          threadId,
+          runId,
+          createRunHandlers(threadId, { recovered: true }),
+        )
+        return
+      }
+
+      void startRecoveryPolling(threadId)
     },
 
     onEnd() {
@@ -161,25 +562,17 @@ function createRunHandlers(threadId: string): RunHandlers {
 
       // 图挂起等人确认：消息先不落位，等批准/拒绝后继续往这条消息上追加
       if (state.pendingApproval) {
-        useConversationStore.setState({ isGenerating: false })
+        useConversationStore.setState({ isGenerating: false, recovering: false })
         return
       }
 
-      useConversationStore.setState((prev) => {
-        const pid = prev.pendingThreadId
-        const pendingMsg = prev.pendingMessage
-        if (!pid || !pendingMsg) return { pendingMessage: null, pendingThreadId: null, isGenerating: false }
+      const cancelled = state.cancelRequested
+      commitPendingMessage()
 
-        // 用户中途停止：内容留着，标一个中断状态
-        const interrupted = prev.cancelRequested ? { ...pendingMsg, interrupted: true } : pendingMsg
-        return {
-          messages: { ...prev.messages, [pid]: [...(prev.messages[pid] ?? []), interrupted] },
-          pendingMessage: null,
-          pendingThreadId: null,
-          isGenerating: false,
-          cancelRequested: false,
-        }
-      })
+      // 接回来的 run 结束后以 /state 为准对齐：join_stream 不补发断线前的内容
+      if (options.recovered && !cancelled) {
+        void refreshThread(threadId)
+      }
     },
   }
 }
@@ -214,6 +607,7 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
   pendingMessage: null,
   pendingThreadId: null,
   isGenerating: false,
+  recovering: false,
   loading: false,
   error: null,
   cancelRequested: false,
@@ -261,19 +655,76 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
   },
 
   async selectThread(id) {
-    set({ activeThreadId: id, error: null })
-    // 已缓存过就直接用，避免每次切换都打后端
-    if (get().messages[id]) return
+    // 浏览器后退/前进不一定走 ChatPage 的 handleSelect，这里兜底停掉当前运行
+    if (get().isGenerating) get().cancelRun()
 
-    set({ loading: true })
+    // 切线程先清掉上一条线程的全局 pending，读到的 state 会重新决定要显示什么
+    set({
+      activeThreadId: id,
+      error: null,
+      loading: true,
+      pendingMessage: null,
+      pendingThreadId: null,
+      pendingApproval: null,
+      isGenerating: false,
+      recovering: false,
+      cancelRequested: false,
+    })
+
     try {
-      const messages = await threadApi.loadMessages(id)
+      // 每次都读 state：缓存不能代表“run 是否还在跑”，刷新/断线恢复必须看 next/interrupts
+      const snapshot = await threadApi.loadThreadSnapshot(id)
+      // 读盘期间用户已经切走：别把旧线程的结果塞进当前 UI
+      if (get().activeThreadId !== id) return
+
+      const active = snapshot.next.length > 0 || snapshot.interrupts.length > 0
+      const messages = threadApi.restoreMessages(id, snapshot.rawMessages, {
+        unresolvedToolCalls: active ? 'pending' : 'error',
+      })
+
       set((state) => {
         const thread = state.threads.find((t) => t.thread_id === id)
         return {
           messages: { ...state.messages, [id]: messages },
           titles: { ...state.titles, [id]: deriveTitle(thread, messages) },
         }
+      })
+
+      if (snapshot.interrupts.length > 0) {
+        presentInterrupt(id, snapshot.interrupts, messages)
+        return
+      }
+
+      if (snapshot.next.length > 0) {
+        // state 说还没跑完：再确认有没有活跃 run。有就轮询到结束；
+        // 没有的话说明是一次中断的旧状态，不能一直转圈。
+        const runs = await threadApi.listRuns(id)
+        if (get().activeThreadId !== id) return
+        const activeRun = runs.find(isActiveRun)
+        if (activeRun) {
+          void startRecoveryPolling(id, activeRun.run_id)
+          return
+        }
+
+        const settled = threadApi.restoreMessages(id, snapshot.rawMessages)
+        set((state) => ({
+          messages: { ...state.messages, [id]: settled },
+          pendingMessage: null,
+          pendingThreadId: null,
+          isGenerating: false,
+          recovering: false,
+          error: '上次运行已中断，未收到工具结果',
+        }))
+        return
+      }
+
+      set({
+        pendingMessage: null,
+        pendingThreadId: null,
+        isGenerating: false,
+        recovering: false,
+        pendingApproval: null,
+        cancelRequested: false,
       })
     } catch (err) {
       set({ error: loadErrorMessage(err) })
@@ -283,6 +734,9 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
   },
 
   async deleteThread(id) {
+    // 删当前正在跑/恢复的线程时先停掉运行，否则轮询会一直打一个已删除的 thread
+    if (get().activeThreadId === id && get().isGenerating) get().cancelRun()
+
     try {
       await threadApi.deleteThread(id)
       // 任务删了，它的运行参数和待办也不该留在内存里
@@ -313,6 +767,10 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
     const text = content.trim()
     const state = get()
     if (!text || state.isGenerating) return
+    if (state.pendingApproval) {
+      set({ error: '请先批准或拒绝待确认的操作' })
+      return
+    }
 
     let threadId = state.activeThreadId
     if (!threadId) {
@@ -331,14 +789,7 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       created_at: now,
     }
 
-    const pending: Message = {
-      id: nextId('msg'),
-      thread_id: threadId,
-      role: 'assistant',
-      content: '',
-      parts: [],
-      created_at: now,
-    }
+    const pending = emptyAssistant(threadId)
 
     set((prev) => ({
       messages: {
@@ -349,6 +800,8 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       pendingMessage: pending,
       pendingThreadId: threadId,
       isGenerating: true,
+      recovering: false,
+      cancelRequested: false,
       error: null,
     }))
 
@@ -372,20 +825,31 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
   },
 
   cancelRun() {
-    if (!get().isGenerating) return
-    set({ cancelRequested: true })
-    // 图挂起等确认时也要能停：待确认状态先清掉，否则卡片一直亮着
-    set({ pendingApproval: null })
-    // run.ts 的 cancel 会同步触发 onEnd，由它负责把 pendingMessage 落位
-    cancelCurrentRun?.()
+    const state = get()
+    if (!state.isGenerating) return
+    set({ cancelRequested: true, pendingApproval: null, recovering: false })
+
+    // 有活的流（首次运行或 join 回来的流）就交给它收尾；
+    // 纯轮询恢复没有 cancelCurrentRun，需要自己停循环并调 cancel 接口
+    if (cancelCurrentRun) {
+      recoveryGeneration += 1
+      cancelCurrentRun()
+      return
+    }
+    void cancelRecovery(state.pendingThreadId ?? state.activeThreadId)
   },
 
   decideApproval(decision) {
     const pending = get().pendingApproval
     if (!pending) return
 
-    // 先把卡片状态落定，防止连点两次发两次恢复请求
-    set({ pendingApproval: null })
+    // 先把卡片状态落定，防止连点两次发两次恢复请求；恢复请求本身也是流式运行
+    set({ pendingApproval: null, recovering: false, isGenerating: true, pendingThreadId: pending.threadId })
+    if (!get().pendingMessage) {
+      // 从 /state 恢复出来的审批卡片可能没有 pendingMessage（历史里直接挂卡片时）
+      const pendingMessage = emptyAssistant(pending.threadId)
+      set({ pendingMessage, pendingThreadId: pending.threadId })
+    }
     patchPending((msg) => ({
       ...msg,
       parts: msg.parts.map((part) =>
@@ -416,7 +880,8 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       pending.threadId,
       decisions,
       runOptions,
-      createRunHandlers(pending.threadId),
+      // 恢复请求本身也会流式返回；结束后以 state 对齐，补上挂起前后没进 pending 的内容
+      createRunHandlers(pending.threadId, { recovered: true }),
     )
   },
 

@@ -15,8 +15,18 @@
  * 另外平台的 Thread 结构没有 title 字段，标题走 metadata.title。
  */
 import { request, isMockMode } from './client'
+import { parseInterrupts } from './events'
 import { mockThreads } from './mock'
-import type { Message, MessagePart, Thread, ThreadStatus, ToolCall, ToolResult } from './types'
+import type {
+  ApprovalRequest,
+  Message,
+  MessagePart,
+  Thread,
+  ThreadRun,
+  ThreadStatus,
+  ToolCall,
+  ToolResult,
+} from './types'
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
@@ -102,11 +112,69 @@ export async function getThreadState(threadId: string): Promise<unknown> {
   return request<unknown>(`/threads/${threadId}/state`)
 }
 
-export async function loadMessages(threadId: string): Promise<Message[]> {
-  const state = await getThreadState(threadId)
-  const values = (state as { values?: { messages?: unknown[] } })?.values ?? {}
+/**
+ * 一次线程状态快照。
+ *
+ * `next` / `interrupts` 不能丢：页面刷新或断线后，前端要靠它们判断
+ * 「run 还在跑」还是「图挂在人工确认上」。只读 values.messages 会把这些信息丢掉，
+ * 刷新后就既接不回运行、也画不出审批卡片。
+ */
+export interface ThreadSnapshot {
+  rawMessages: unknown[]
+  /** 非空表示图还没跑完（正在执行或挂在中断上） */
+  next: string[]
+  /** 平台已经持久化的 interrupt，刷新后用它重建审批卡片 */
+  interrupts: ApprovalRequest[]
+}
+
+export async function loadThreadSnapshot(threadId: string): Promise<ThreadSnapshot> {
+  const state = asRecord(await getThreadState(threadId))
+  const values = asRecord(state.values)
   const rawMessages = Array.isArray(values.messages) ? values.messages : []
-  return restoreMessages(threadId, rawMessages)
+  const next = Array.isArray(state.next)
+    ? state.next.filter((item): item is string => typeof item === 'string')
+    : []
+  const rawInterrupts = Array.isArray(state.interrupts) ? state.interrupts : []
+  const interrupts = parseInterrupts({ __interrupt__: rawInterrupts }) ?? []
+  return { rawMessages, next, interrupts }
+}
+
+/**
+ * 列出某个 thread 的 run。
+ *
+ * 页面刷新后本地没有 run_id，只能从这里找还在跑的那个，再决定是否轮询/接回。
+ * 按创建时间倒序，调用方取第一个活跃的即可。
+ */
+export async function listRuns(threadId: string): Promise<ThreadRun[]> {
+  if (isMockMode) return []
+  const raw = await request<unknown>(`/threads/${threadId}/runs?limit=20`)
+  const list = Array.isArray(raw) ? raw : []
+  const runs: ThreadRun[] = []
+  for (const item of list) {
+    const rec = asRecord(item)
+    const runId = typeof rec.run_id === 'string' ? rec.run_id : ''
+    const status = rec.status
+    if (!runId || !isRunStatus(status)) continue
+    runs.push({
+      run_id: runId,
+      thread_id: typeof rec.thread_id === 'string' ? rec.thread_id : threadId,
+      status,
+      created_at: typeof rec.created_at === 'string' ? rec.created_at : undefined,
+      updated_at: typeof rec.updated_at === 'string' ? rec.updated_at : undefined,
+    })
+  }
+  return runs.sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))
+}
+
+function isRunStatus(value: unknown): value is ThreadRun['status'] {
+  return (
+    value === 'pending' ||
+    value === 'running' ||
+    value === 'error' ||
+    value === 'success' ||
+    value === 'timeout' ||
+    value === 'interrupted'
+  )
 }
 
 /* ------------------------------------------------------- LangChain 消息还原 */
@@ -143,7 +211,21 @@ function nextId(prefix: string): string {
  * `ai(文本 + tool_calls)` + `tool(...)` + `ai(续写)` …多条消息，
  * 必须边走边把 tool 结果回填到对应的工具调用上，否则工具卡片会被渲染成孤立条目。
  */
-export function restoreMessages(threadId: string, rawMessages: unknown[]): Message[] {
+export interface RestoreMessagesOptions {
+  /**
+   * 走到消息末尾仍没有结果的工具调用怎么收尾。
+   *
+   * - `error`：默认。运行确实结束了却没收到结果，标红。
+   * - `pending`：线程还在跑或挂在中断上，这只是暂时没结果，不能误报成失败。
+   */
+  unresolvedToolCalls?: 'error' | 'pending'
+}
+
+export function restoreMessages(
+  threadId: string,
+  rawMessages: unknown[],
+  options: RestoreMessagesOptions = {},
+): Message[] {
   const out: Message[] = []
   /** tool_call_id -> 该调用在 out/parts 中的位置，用于回填结果 */
   const callIndex = new Map<string, { message: Message; call: ToolCall }>()
@@ -238,10 +320,15 @@ export function restoreMessages(threadId: string, rawMessages: unknown[]): Messa
     out.push(message)
   }
 
-  // 走到最后仍没有结果的调用：运行被中断了，按 error 收尾
+  // 走到最后仍没有结果的调用：运行被中断了按 error 收尾；
+  // 线程还在跑（或挂在 HITL 上）时保持 pending，别把「还没到」误报成「失败」
   for (const { call } of callIndex.values()) {
-    call.status = 'error'
-    call.error = call.error ?? '运行已中断，未收到工具结果'
+    if (options.unresolvedToolCalls === 'pending') {
+      call.status = 'pending'
+    } else {
+      call.status = 'error'
+      call.error = call.error ?? '运行已中断，未收到工具结果'
+    }
   }
 
   return out

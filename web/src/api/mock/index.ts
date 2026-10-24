@@ -117,7 +117,12 @@ export const mockThreads = {
   },
 
   state(threadId: string): unknown {
-    return { values: { messages: rawMessages.get(threadId) ?? [] }, next: [], tasks: [] }
+    return {
+      values: { messages: rawMessages.get(threadId) ?? [] },
+      next: [],
+      tasks: [],
+      interrupts: [],
+    }
   },
 }
 

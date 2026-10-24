@@ -15,9 +15,11 @@ interface Props {
   messages: Message[]
   pendingMessage: Message | null
   isGenerating: boolean
+  /** 断线/刷新后正在等后端把 run 跑完 */
+  recovering?: boolean
 }
 
-export function MessageList({ messages, pendingMessage, isGenerating }: Props) {
+export function MessageList({ messages, pendingMessage, isGenerating, recovering }: Props) {
   const { containerRef, contentRef, pinned, scrollToBottom, handleScroll } = useAutoScroll<HTMLDivElement>()
 
   return (
@@ -41,7 +43,14 @@ export function MessageList({ messages, pendingMessage, isGenerating }: Props) {
           {isGenerating && !pendingMessage && (
             <div className="flex items-center gap-2 px-4 py-3 text-sm text-fg-muted">
               <Loader2 className="size-4 animate-spin-slow" />
-              正在思考…
+              {recovering ? '连接中断，正在等待后端完成…' : '正在思考…'}
+            </div>
+          )}
+
+          {recovering && pendingMessage && (
+            <div className="flex items-center gap-2 px-4 pb-3 text-xs text-fg-muted">
+              <Loader2 className="size-3 animate-spin-slow" />
+              连接中断，正在等待后端完成…
             </div>
           )}
         </div>

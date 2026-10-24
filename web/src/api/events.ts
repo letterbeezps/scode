@@ -103,7 +103,7 @@ function roleOf(msg: Record<string, unknown>): 'human' | 'ai' | 'tool' | 'system
  *                                "review_configs": [...]}}]}
  * action_requests 里没有工具调用 id，只有名字和参数——够前端画卡片了。
  */
-function parseInterrupts(payload: Record<string, unknown>): ApprovalRequest[] | null {
+export function parseInterrupts(payload: Record<string, unknown>): ApprovalRequest[] | null {
   const raw = payload['__interrupt__']
   if (!Array.isArray(raw) || raw.length === 0) return null
 

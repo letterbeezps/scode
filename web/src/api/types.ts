@@ -28,6 +28,17 @@ export interface Thread {
   status?: ThreadStatus
 }
 
+/** 平台 run 的状态。页面恢复时用它判断是否还有任务在跑。 */
+export type RunStatus = 'pending' | 'running' | 'error' | 'success' | 'timeout' | 'interrupted'
+
+export interface ThreadRun {
+  run_id: string
+  thread_id: string
+  status: RunStatus
+  created_at?: string
+  updated_at?: string
+}
+
 /* ---------------------------------------------------------------------- 工具 */
 
 export type ToolCallStatus = 'pending' | 'running' | 'success' | 'error'

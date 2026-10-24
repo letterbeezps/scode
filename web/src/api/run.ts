@@ -38,6 +38,13 @@ export interface RunHandlers {
   onRunId?: (runId: string) => void
   /** 图挂起等人工确认（后端命中 HITL） */
   onInterrupt?: (requests: ApprovalRequest[]) => void
+  /**
+   * SSE 网络层断开（不是后端发来的 error 事件）。
+   *
+   * 后端因为 `on_disconnect: "continue"` 还在继续跑，调用方可以拿 runId
+   * 重新接上或轮询线程状态；不实现这个回调时按普通错误收尾。
+   */
+  onConnectionLost?: (runId?: string) => void
 }
 
 /**
@@ -138,10 +145,16 @@ export function resumeRun(
 }
 
 /** 跑一次流式请求并把事件分发给 handlers，返回取消函数。 */
-function runStream(threadId: string, body: string, handlers: RunHandlers): () => void {
+function consumeRunStream(
+  threadId: string,
+  request: { url: string; init: RequestInit },
+  handlers: RunHandlers,
+  /** join 已存在的 run 时传进来：HTTP 失败可以交给恢复逻辑轮询 state */
+  knownRunId?: string,
+): () => void {
   const controller = new AbortController()
   const normalizer = createEventNormalizer()
-  let runId: string | undefined
+  let runId = knownRunId
   let settled = false
 
   const cancel = () => {
@@ -163,19 +176,19 @@ function runStream(threadId: string, body: string, handlers: RunHandlers): () =>
 
   void (async () => {
     try {
-      const res = await fetch(`${apiBaseUrl}/threads/${threadId}/runs/stream`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'text/event-stream',
-          ...authHeaders(),
-        },
-        body,
+      const res = await fetch(request.url, {
+        ...request.init,
         signal: controller.signal,
       })
 
       if (!res.ok) {
         const text = await res.text().catch(() => '')
+        // join 已有 run：404/409 多半是 run 刚好结束，交给恢复逻辑去读 state，
+        // 比直接甩一个 HTTP 错误更有用
+        if (knownRunId && handlers.onConnectionLost) {
+          handlers.onConnectionLost(runId)
+          return
+        }
         handlers.onError(`${res.status} ${res.statusText}${text ? ` — ${text}` : ''}`)
         return finish()
       }
@@ -224,16 +237,82 @@ function runStream(threadId: string, body: string, handlers: RunHandlers): () =>
         }
       }
 
-      // 流自然结束但没收到 end 事件（后端异常断开）也算一次运行结束
+      // 用户主动取消会 abort 并 break 上面的循环，这里不能再走恢复
+      if (settled) return
+
+      // join 一个已经结束的 run 时平台会直接返回空流（实测 200 + 空 body），
+      // 这时没有 end 事件，交给恢复逻辑读 state 收尾；首次运行按正常结束处理
+      if (knownRunId && handlers.onConnectionLost) {
+        handlers.onConnectionLost(runId)
+        return
+      }
       finish()
     } catch (err) {
       if (settled) return // 用户主动取消，不当作错误
+      if (handlers.onConnectionLost) {
+        // 网络断开不等于 run 失败：后端还在跑，交给调用方接回/轮询
+        handlers.onConnectionLost(runId)
+        return
+      }
       handlers.onError(err instanceof Error ? err.message : String(err))
       finish()
     }
   })()
 
   return cancel
+}
+
+function runStream(threadId: string, body: string, handlers: RunHandlers): () => void {
+  return consumeRunStream(
+    threadId,
+    {
+      url: `${apiBaseUrl}/threads/${threadId}/runs/stream`,
+      init: {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+          ...authHeaders(),
+        },
+        body,
+      },
+    },
+    handlers,
+  )
+}
+
+/**
+ * 重新接上一个已经在跑的 run。
+ *
+ * 平台说明 join_stream 只推「接上之后」产生的事件，断线前已经产出的内容
+ * 不会补发——所以调用方应先以 `GET /threads/{id}/state` 为准，
+ * 这个流只负责把后续输出接回 UI。
+ */
+export function joinRunStream(
+  threadId: string,
+  runId: string,
+  handlers: RunHandlers,
+): () => void {
+  if (isMockMode) {
+    handlers.onEnd()
+    return () => {}
+  }
+
+  return consumeRunStream(
+    threadId,
+    {
+      url: `${apiBaseUrl}/threads/${threadId}/runs/${runId}/stream?stream_mode=updates`,
+      init: {
+        method: 'GET',
+        headers: {
+          Accept: 'text/event-stream',
+          ...authHeaders(),
+        },
+      },
+    },
+    handlers,
+    runId,
+  )
 }
 
 /** 通知后端中止运行 */
