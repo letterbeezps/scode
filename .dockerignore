@@ -1,0 +1,47 @@
+# 后端镜像的构建上下文排除项。
+#
+# 重点：conf/config.toml **必须**排除——里面有明文 api_key，
+# 打进镜像等于把密钥固化进镜像层（`docker history` 就能翻出来）。
+
+# 版本控制 / 编辑器
+.git
+.gitignore
+.DS_Store
+.agents
+.claude
+.workbuddy
+.vscode
+.idea
+
+# Python 产物
+.venv
+**/__pycache__
+**/*.py[cod]
+*.egg-info
+
+# 密钥（AGENTS.md：API key 只走环境变量 / 本地文件，不入库）
+conf/config.toml
+.env
+.env.*
+!.env.example
+
+# 运行时状态：工作空间本地状态，不能进镜像
+.langgraph_api/
+stupid_code/data/
+.scode-memory.md
+conversation_history/
+
+# 前端由独立镜像构建，后端镜像用不到
+web/
+
+# 文档与构建产物
+docs/
+*.md
+!README.md
+dist/
+build/
+
+# Docker 自身
+Dockerfile
+.dockerignore
+docker-compose*.yml

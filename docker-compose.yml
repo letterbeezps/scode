@@ -1,0 +1,69 @@
+# stupid-code 的 Docker 编排：后端（agent server）+ 前端（静态站点 + 反代）。
+#
+# 启动：
+#     docker compose up --build
+# 打开：
+#     http://127.0.0.1:5173
+#
+# ## 端口绑定为什么写死 127.0.0.1
+#
+# AGENTS.md 的安全姿态：后端带 shell 执行和文件写权限，**绝不**暴露到
+# 0.0.0.0。容器里后端进程绑的是 0.0.0.0（不然容器之间连不上），
+# 但宿主侧的端口映射只绑 127.0.0.1 —— 对外依然只有本机能访问。
+#
+# ## 三个挂载，各司其职
+#
+#   ./conf             → /app/conf              供应商配置（含明文 api_key）
+#   ./stupid_code/data → /app/stupid_code/data  SQLite checkpoint / store
+#   $SCODE_WORKSPACE   → /workspace             agent 的工作空间
+#
+# conf/ 和 data/ 来自宿主：前者有密钥（不进镜像），后者要跨重启保留历史。
+# 后端**代码**来自镜像（/app），不随 workspace 变动——框架按 `__file__`
+# 定位这些目录，源码和配置的位置必须稳定。
+#
+# ## 工作空间
+#
+# SCODE_WORKSPACE 指向的目录会挂到容器里的 /workspace，也就是 agent 的
+# 工作空间（shell / 文件工具的根）。默认是仓库自身，于是 agent 改的就是
+# 宿主上的真实文件。
+#
+# 想让 agent 去改别的项目，把 SCODE_WORKSPACE 指过去即可：
+#     SCODE_WORKSPACE=~/projects/other docker compose up
+#
+# 注意：agent 在工作空间里有 shell 执行权限，指到重要目录前先想清楚。
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: stupid-code-backend
+    container_name: stupid-code-backend
+    environment:
+      # 容器内绑全网卡，宿主侧由 ports 映射收回 127.0.0.1
+      SCODE_BIND_HOST: "0.0.0.0"
+    volumes:
+      # 供应商配置：api_key 在这，.dockerignore 排除了它，不进镜像
+      - "./conf:/app/conf"
+      # SQLite checkpoint / store：跨重启保留历史
+      - "./stupid_code/data:/app/stupid_code/data"
+      # agent 的工作空间：agent 的文件 / shell 工具以此为根
+      - "${SCODE_WORKSPACE:-.}:/workspace"
+    ports:
+      # 直连后端（/docs、/ok 等）。只绑本机。
+      - "127.0.0.1:2024:2024"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    image: stupid-code-frontend
+    container_name: stupid-code-frontend
+    depends_on:
+      backend:
+        # 等后端 /ok 通过再起 nginx，避免首屏就撞上"连不上后端"
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:5173:80"
+    restart: unless-stopped

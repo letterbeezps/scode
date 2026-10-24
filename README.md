@@ -181,6 +181,52 @@ VITE_USE_MOCK=true pnpm dev
 
 界面细节、接口契约、`GET /directories` 的约定都在 [`web/README.md`](web/README.md)。
 
+### 7. 或者：整个项目跑在 Docker 里
+
+不想在宿主机装 Python / Node 的话，两个服务都用容器跑。
+
+**启动前必须先有 `conf/config.toml`**（步骤 3 做的事）：
+
+```bash
+cp conf/config.example.toml conf/config.toml   # 没这个文件就先复制
+# 然后编辑 conf/config.toml，填上 api_key
+```
+
+这个文件**不会**打进镜像——它有明文 api_key，`.dockerignore` 把它排除了，
+运行时靠 volume 挂进容器。所以**忘了准备它，容器起不来**：
+
+```
+ConfigError: 找不到 /app/conf/config.toml。请复制 conf/config.example.toml 为 conf/config.toml 并填入供应商信息。
+GraphLoadError: Failed to load graph 'code_agent' from /app/stupid_code/graph/agent.py: ...
+Application startup failed. Exiting.
+```
+
+后端容器会一直重启（`docker compose ps` 显示 `Restarting`），前端则因为
+`depends_on: service_healthy` 一直等着不起。**先看后端日志**：
+
+```bash
+docker compose logs backend
+```
+
+另外 `.agents/skills` 也要装好（步骤 1），否则 agent 读不到参考资料。
+
+准备好之后：
+
+```bash
+docker compose up --build
+```
+
+打开 <http://127.0.0.1:5173>。
+
+要点：
+
+- **工作空间默认是仓库本身** —— `SCODE_WORKSPACE` 指向的目录挂到容器里的 `/workspace`，agent 的文件 / shell 工具以此为根。想让它改别的项目：`SCODE_WORKSPACE=~/projects/other docker compose up`。
+- **历史不会丢** —— thread 索引（`.langgraph_api/`）落在工作空间里，checkpoint（`stupid_code/data/langgraph.db`）挂在宿主上，容器重建后接着用。
+- **api_key 不进镜像** —— `conf/config.toml` 被 `.dockerignore` 排除，靠 volume 挂进去。
+- **端口只绑 127.0.0.1** —— 容器内后端进程绑 `0.0.0.0`（不然容器之间连不上），但宿主侧的端口映射只绑本机，对外依然只有本机能访问。
+
+细节（含踩过的坑）见 [`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md) 的「012 · Docker 运行」一节。
+
 ---
 
 ## 注意事项

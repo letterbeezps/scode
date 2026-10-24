@@ -31,6 +31,11 @@
   代码，看起来就像"改了没生效"；
 - Ctrl+C 时关闭整个子进程组（含 uvicorn 进程），不留孤儿进程——**启动阶段
   同样如此**（早期版本在启动阶段按 Ctrl+C 会漏掉清理，留下占端口的孤儿）。
+
+监听地址：
+- 默认绑 127.0.0.1（本机可见，这是安全姿态）；
+- 容器里用 SCODE_BIND_HOST=0.0.0.0 改成全网卡绑，否则服务在容器外不可达。
+  对外暴露面仍由 compose 的 ports 绑定（127.0.0.1）控制，见 AGENTS.md。
 """
 
 import json
@@ -46,7 +51,17 @@ from pathlib import Path
 
 import httpx
 
-HOST = "127.0.0.1"
+# 监听地址。默认只听本机——这是安全姿态，不要改成 0.0.0.0（见 AGENTS.md）。
+#
+# 容器里要设成 0.0.0.0，否则服务在容器内网之外不可达。但那是**容器内部**
+# 网络：对外暴露面由 compose 的 ports 绑定决定（只绑 127.0.0.1），
+# 所以「只对本机可见」这条安全要求在容器形态下依然成立。
+BIND_HOST = os.environ.get("SCODE_BIND_HOST", "127.0.0.1")
+
+# 就绪探测永远打本机回环：绑 0.0.0.0 时 127.0.0.1 同样连得上，
+# 而拿 0.0.0.0 当连接目标在不同平台上行为不一致。
+PROBE_HOST = "127.0.0.1"
+
 DEFAULT_PORT = 2024
 GRAPH_ID = "code_agent"
 CONFIG_NAME = "langgraph.json"
@@ -121,13 +136,14 @@ def _graph_node_count(client: httpx.Client) -> int | None:
 def _is_port_free(port: int) -> bool:
     """端口能不能拿来监听。
 
-    只探 127.0.0.1——服务本来就只监听本机。
+    探监听地址本身（BIND_HOST）：绑 0.0.0.0 时被占用的情况和绑 127.0.0.1
+    不一样，探错地址会漏判。
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         # 允许绑定 TIME_WAIT 状态的端口（那不是"被占用"）
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            sock.bind((HOST, port))
+            sock.bind((BIND_HOST, port))
         except OSError:
             return False
     return True
@@ -239,7 +255,8 @@ def main() -> None:
     except RuntimeError as exc:
         print(f"启动失败：{exc}", file=sys.stderr)
         raise SystemExit(1) from exc
-    base_url = f"http://{HOST}:{port}"
+    # 就绪探测打回环，不打 BIND_HOST
+    base_url = f"http://{PROBE_HOST}:{port}"
 
     # 派生配置只放临时目录（退出即删），不污染工作空间。
     # runtime_dir 一创建就进入下面的 try：配置生成失败或 Popen 抛错时也要清掉它。
@@ -263,7 +280,7 @@ def main() -> None:
             "--no-browser",
             "--no-reload",
             "--host",
-            HOST,
+            BIND_HOST,
             "--port",
             str(port),
         ]
@@ -285,7 +302,7 @@ def main() -> None:
             start_new_session=True,
         )
 
-        print(f"正在启动 LangGraph Agent Server（{HOST}:{port}）...")
+        print(f"正在启动 LangGraph Agent Server（{BIND_HOST}:{port}）...")
         print(f"工作空间：{workspace}")
         try:
             with httpx.Client(base_url=base_url) as client:

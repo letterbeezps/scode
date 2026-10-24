@@ -26,13 +26,21 @@
 
 Python 侧**没有** ruff / black / mypy 配置，**整个仓库没有测试、没有 CI**。不要发明这些命令。
 
+**Docker（可选，012 期）**
+
+- 全栈：`docker compose up --build` → 前端 <http://127.0.0.1:5173>，后端 `127.0.0.1:2024`
+- 只起后端：`docker compose up -d backend`
+- 工作空间由 `SCODE_WORKSPACE` 决定（默认仓库自身），挂到容器里的 `/workspace`
+- 坑位见下面第 15 条
+
 ## Project layout
 
 - `stupid_code/` — 后端包。顶层只放入口与起停，实现按职责分包：`__init__.py` 是 `start()` 入口、`launcher.py` 是 `scode` 的启动/就绪/关停逻辑、`langgraph.json` 是框架读的配置；`graph/`（`agent.py` 导出 `graph`，`memory.py` 装配长期记忆中间件，`model_switch.py` 是运行期切换对话模型的中间件，`compaction.py` 是 `/compaction` 手动压缩历史，`permissions.py` 是 shell 人工确认的档位与危险判定，`backend.py` 装真实磁盘+shell 的 backend，`persistence.py` 把 checkpoint/store 落到 `data/langgraph.db`）、`config/`（`model.py` 读 `conf/config.toml`、`subagent.py` 读 `conf/subagents.toml`、`prompts.py` 是主 agent 的系统提示词）、`admin/` 是挂在 `/admin` 下的管理接口
 - `stupid_code/README.md` — 后端启动说明；`stupid_code/API.md` — 当前实际可用的端点清单
 - `web/src/api/` — 后端通信层，`mock/` 用**与真实后端完全相同的签名**实现假数据；`web/src/store/` Zustand 状态；`components/`、`pages/`、`lib/`
 - `docs/overall-design.md` — 目标架构与前后端契约；`docs/frontend-design.md` — 前端交互设计；`docs/learning-path.md` — 框架背景与学习路线
-- `docs/backend/PROGRESS.md` — 后端进度快照（001–011 期合并成一份，见「测试与验证」）
+- `docs/backend/PROGRESS.md` — 后端进度快照（001–012 期合并成一份，见「测试与验证」）
+- `Dockerfile` — 后端镜像（python:3.12-slim + uv；代码在 `/app`、venv 在 `/opt/venv`、agent 工作空间在 `/workspace`）；`web/Dockerfile` + `web/nginx.conf` — 前端镜像（Vite 构建 → nginx 托管 + `/api` 反代）；`docker-compose.yml` — 串起两个服务
 - `skills-lock.json` — langchain-skills 安装记录与 hash，**已入库**，用来追踪参考资料版本
 
 ## 动手前必须知道的几件事
@@ -53,6 +61,7 @@ Python 侧**没有** ruff / black / mypy 配置，**整个仓库没有测试、�
 12. **backend 是真实磁盘 + 本机 shell**（007 期）。`graph/backend.py` 构造 `CompositeBackend(default=LocalShellBackend)`：agent 的 `write_file` / `edit_file` 改的是工作空间里的真文件，`execute` 能跑任意命令。**框架有条硬限制**：backend 支持命令执行时，`FilesystemMiddleware` 不接受 `permissions`（直接抛 `NotImplementedError`）——shell 能绕过任何文件权限，权限和 shell 不能共存。所以 `graph/backend.py` 的 `apply_permission_backend()` 会给**声明了 `permissions` 的子 agent** 换成无 shell 的 `FilesystemBackend`，`conf/subagents.toml` 里 `reviewer` 的只读就是靠这个保证的。改子 agent 配置时别把 `permissions` 直接塞回规格里。
 13. **切换对话模型靠中间件，不靠重建图**（010 期）。`graph/model_switch.py` 的 `ChatModelSwitchMiddleware` 覆盖 `wrap_model_call` / `awrap_model_call`，把 `request.model` 换成用户在界面上选的那个——框架最终是拿 `request.model.bind_tools(...)` 发请求的，所以换了就是真换。三个容易踩的点：① **`ModelRequest.runtime` 是 `Runtime`，没有 `.config` 属性**（只有 `ToolCallRequest.runtime` 才有），取 `configurable` 要用 `langgraph.config.get_config()`；② 中间件在 `middleware=` 列表里**越靠前越外层**，切换中间件要排在 prompt-caching / memory 之前，那些中间件才看得到换过的模型；**但 deepagents 是按 `.name` 把自定义中间件合并进基础栈的**（撞名原地替换、不撞就追加到 core 之后），所以压缩中间件留在 core 段、**位于切换中间件外层**，它内部读 `request.model` 看到的仍是启动时的模型（摘要本身不受影响，摘要自己按 `configurable` 解析）；③ 切换**只作用于主 agent**——子 agent 一律用各自原有的模型（`conf/subagents.toml` 里写死的，或建图时继承来的）。框架上做得到让子 agent 也跟着切（子 agent 的中间件也拿得到父图的 `configurable`），但**别那么做**：子 agent 用哪个模型是配置出来的（本项目 `reviewer`/`summarizer` 刻意用便宜的 `MiniMax-M3.1-Flash`），用户在下拉框选模型的意图是「这段对话用这个模型」，让委派出去的活跟着烧新模型会打乱配置好的成本结构。要改子 agent 的模型，去 `conf/subagents.toml` 写死。切换**不重启后端**：那条路径每次调用都重读 `conf/config.toml`，所以新增模型、改 base_url / api_key 立刻生效；但 harness profile 和摘要阈值是建图时定的，不跟着换。
 14. **压缩历史用 `graph/compaction.py` 的 `CompactionMiddleware`**（011 期）。它继承 deepagents 的 `SummarizationMiddleware` 并做三件事：① `.name` 报成**框架自带那一份的公开别名**——别名**从框架那里问出来，不写死字面量**（框架升级改了公开别名，写死的字符串就对不上，会静默变成两份摘要中间件）——这样才能**顶掉** `create_deep_agent()` 自带的那份（deepagents 按 `.name` 合并：撞名原地替换，不撞就多一份；两份摘要中间件同时跑会重复压缩）；② 覆盖 `_should_summarize()`，用户发 `/compaction` 就强制压缩一次（**只看最后一条用户消息**，命令消息会留在对话里，否则下一轮又压一次）；③ 用 `summarizer=` 这个公开扩展点接管摘要调用，让摘要也用**当前选中的模型**——框架默认把摘要模型在构造时就固定了（`self._summary_chat_model = self.model`），切了模型之后压缩还在烧旧供应商。别用 `RunnableLambda` 包同步函数来实现摘要：`ainvoke` 会把它丢进线程池，`get_config()` 依赖 contextvar，跨线程拿不到 `configurable`，会静默退回默认模型——要自己实现 `invoke`/`ainvoke`。被摘走的旧消息会落到工作空间的 `conversation_history/`（已 gitignore），agent 能 `read_file` 读回来。
+15. **容器里跑有三个坑（012 期）**。① **`/app`（后端代码）和 `/workspace`（agent 工作空间）必须分开**：框架按 `__file__` 定位 `conf/`、`data/`、`langgraph.json`（见第 3 条），这些位置是约定死的，所以后端代码来自镜像、位置固定在 `/app`；只有 `conf/` 和 `stupid_code/data/` 来自宿主（前者有密钥，后者要跨重启保留历史）。**别把两者合并到一个挂载点** —— 早先一版把源码也放 `/workspace`，`SCODE_WORKSPACE` 一指向外部目录，挂载就把源码整个盖住，容器直接 `ModuleNotFoundError: No module named 'stupid_code'`（editable 安装的 `.pth` 硬编码了项目根）。这类"默认能跑、换个参数就崩"的坑默认路径测不出来，**必须显式测一次外部 workspace**。② **必须 editable 安装**：`config/model.py`、`config/subagent.py`、`launcher.py`、`graph/persistence.py` 四个模块靠源码树位置定位文件，装成非 editable 这些路径全落到 site-packages 里，直接找不到文件。③ **`launcher.py` 的监听地址读 `SCODE_BIND_HOST`**（默认仍是 `127.0.0.1`，原生跑法行为不变），容器里设 `0.0.0.0` 才对外可达——但**宿主侧 `ports` 映射只绑 `127.0.0.1`**，容器内绑全网卡 ≠ 宿主可访问，AGENTS.md 的安全姿态不受影响。改 `web/nginx.conf` 时注意：**`set` 必须写在 `rewrite` 前面**（rewrite 模块按配置顺序执行，`rewrite ... break` 会终止后续指令，`set` 写在后面则 `$api_upstream` 未初始化 → 500），SSE 那段必须 `proxy_buffering off` + `proxy_read_timeout 3600s`（默认 60s 会把长对话掐断）。`conf/config.toml` 在 `.dockerignore` 里，**别把它打进镜像**（明文 api_key 会固化进镜像层）。
 
 ## Code style
 

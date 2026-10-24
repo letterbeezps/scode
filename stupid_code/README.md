@@ -44,6 +44,12 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 
 前端联调另开终端：`cd <项目根>/web && pnpm dev`（http://localhost:5173）。
 
+### 监听地址
+
+`launcher.py` 的监听地址读环境变量 `SCODE_BIND_HOST`，默认 `127.0.0.1`（原生跑法）。
+容器里要设成 `0.0.0.0` 才对外可达——见根目录 `Dockerfile` 与 `docker-compose.yml`。
+就绪探测永远打 `127.0.0.1`（绑全网卡时同样连得上）。
+
 ## 文件
 
 按职责分四块：起停、图与持久化、配置解析、管理接口。

@@ -1,10 +1,10 @@
-# 后端进度快照（001–011 合并版）
+# 后端进度快照（001–012 合并版）
 
-> **这份文档是什么**：项目后端从第 001 期到第 011 期的**进度快照**。
+> **这份文档是什么**：项目后端从第 001 期到第 012 期的**进度快照**。
 > 它把原先散在 `001_*.md` ~ `009_*.md` 九份阶段文档里的内容合并成一份，
 > 回答三个问题：**现在做到了哪一步 / 为什么这么做 / 接下来还欠什么**。
 >
-> - 快照时间：2026-10-23，代码基线 `c184207`
+> - 快照时间：2026-10-25，代码基线 `c184207`
 > - 后端：`stupid_code/`（Python 1798 行）　前端：`web/`（TS/TSX 5920 行）
 > - 依赖版本：`deepagents 0.7.28` / `langchain 1.4.6` / `langgraph 1.2.16` /
 >   `langgraph-cli 0.4.36` / `langchain-anthropic 1.7.6` / `langchain-openai 1.7.2`
@@ -37,6 +37,7 @@
 | 009 | shell 人工确认（HITL） | ✅ 已落地 | `stupid_code/graph/permissions.py` + 前端 `ApprovalCard.tsx` |
 | 010 | 运行期切换对话模型 | ✅ 已落地 | `stupid_code/graph/model_switch.py` + 前端侧边栏模型下拉框 |
 | 011 | 手动压缩对话历史（`/compaction`） | ✅ 已落地 | `stupid_code/graph/compaction.py` + 前端斜杠命令菜单 |
+| 012 | Docker 运行（后端 + 前端） | ✅ 已落地 | `Dockerfile` + `web/Dockerfile` + `docker-compose.yml` |
 
 ### 1.3 前端完成度
 
@@ -547,6 +548,241 @@ deepagents 按中间件的 `.name` 合并：**名字撞上已有槽位就原地�
   `configurable`，就会静默退回默认模型。自己实现 `invoke`/`ainvoke` 就没这个问题。
 - **`/compaction` 是普通消息**：不在前端做特殊拦截，后端按消息内容认出命令。
   加新命令不用改接口。
+
+### 012 · Docker 运行（后端 + 前端）
+
+**目标**：不用在宿主机装 Python / Node，`docker compose up --build` 就能跑起
+后端 Agent Server + 前端网页，且行为跟原生跑法一致（真后端、SSE 流式、
+agent 能改真实文件、历史不丢）。
+
+**成果**：
+
+| 文件 | 作用 |
+|---|---|
+| `Dockerfile` | 后端镜像（python:3.12-slim + uv） |
+| `web/Dockerfile` | 前端镜像（node 构建 → nginx 托管） |
+| `web/nginx.conf` | 静态托管 + `/api` 反代 + SSE 参数 |
+| `docker-compose.yml` | 串起两个服务 |
+| `.dockerignore` / `web/.dockerignore` | 构建上下文排除（含 api_key） |
+| `stupid_code/launcher.py` | 新增 `SCODE_BIND_HOST`（见下） |
+
+**关键取舍一：后端仍用 `scode` 启动，不用 `langgraph dev` 直接跑**
+
+`langgraph dev` 在容器里有个坑：`langgraph.json` 里 `dependencies: ["."]`
+会被框架解读成"把 cwd 加进 sys.path"，而 cwd 是 agent 的工作空间——那会把
+工作空间里一个叫 `stupid_code` 的目录当成后端包导入。
+
+更根本的是：`scode` 负责派生配置（把 langgraph.json 里的相对路径绝对化）、
+就绪校验（`/ok` + 图注册都通过才算启动成功）、端口锁定、优雅关停。
+这些逻辑在 008 期已经踩过坑了，容器里重新实现一遍必然踩第二遍。
+所以容器入口直接是 `/opt/venv/bin/scode`，复用同一套逻辑。
+
+**关键取舍二：app 根和 agent 工作空间必须分开**
+
+容器里有两个"目录"，性质不同：
+
+| 目录 | 内容 | 位置能变吗 |
+|---|---|---|
+| `/app` | stupid-code 本体：源码 + `conf/` + `data/` | **不能** —— 框架按 `__file__` 定位这些目录 |
+| `/workspace` | agent 干活的目录（用户指定） | 能，随时指向别的项目 |
+
+框架那四处 `__file__` 定位（见上）决定了 `/app` 的位置是约定死的，
+所以后端**代码来自镜像**，只有**配置和持久化**来自宿主：
+
+```yaml
+volumes:
+  - "./conf:/app/conf"                    # 供应商配置（含明文 api_key）
+  - "./stupid_code/data:/app/stupid_code/data"  # SQLite checkpoint / store
+  - "${SCODE_WORKSPACE:-.}:/workspace"    # agent 的工作空间
+```
+
+**踩过一次的坑：合并成一个目录会直接崩**
+
+早先一版把源码和 workspace 合在 `/workspace`（venv 移到 `/opt/venv` 规避遮挡）。
+默认跑（workspace = 仓库）一切正常，但一旦 `SCODE_WORKSPACE` 指向别处，
+挂载就把 `/workspace` 整个盖住 —— 镜像里的源码没了：
+
+```
+ModuleNotFoundError: No module named 'stupid_code'
+```
+
+根因是 editable 安装的 `.pth` 硬编码了项目根：
+
+```
+/opt/venv/lib/python3.12/site-packages/_editable_impl_stupid_code.pth
+→ /workspace
+```
+
+**这类"默认能跑、换个参数就崩"的 bug 最难查** —— 默认路径测不出来，
+必须显式测一次 `SCODE_WORKSPACE` 指向外部目录。
+
+**关键取舍三：必须用 editable 安装**
+
+`uv sync` 默认把根项目装成 editable，`stupid_code` 解析到 `/app/stupid_code`
+而不是 site-packages。装成非 editable 的话那几处 `__file__` 定位全落到
+site-packages 里，直接找不到文件 —— `config.toml` 读不到，graph 加载失败。
+
+**坑一：nginx 的 `set` 必须写在 `rewrite` 前面**
+
+反代要剥掉 `/api` 前缀（和 vite dev 代理的 rewrite 一致），而用变量形式的
+`proxy_pass` 才能在后端容器重建换 IP 后重新解析域名：
+
+```nginx
+set $api_upstream http://backend:2024;
+rewrite ^/api/(.*)$ /$1 break;
+proxy_pass $api_upstream;
+```
+
+`set` 写在 `rewrite` 后面会 500。原因是 nginx 的 rewrite 模块**按配置顺序**
+执行指令，而 `rewrite ... break` 会终止本模块后续指令的执行 ——
+`set` 根本没轮到执行，`$api_upstream` 是未初始化状态：
+
+```
+[warn] using uninitialized "api_upstream" variable
+[error] invalid URL prefix in ""
+```
+
+实测：`/api/ok` 返回 500，`/api/admin/models` 同样 500，但直接打后端
+`http://127.0.0.1:2024/ok` 是 200 —— 很容易误判成"后端没起来"。
+
+**坑二：SSE 必须关掉 nginx 的缓冲**
+
+`POST /threads/{id}/runs/stream` 是长连接流式响应。nginx 默认会缓冲，
+攒够一块才吐给前端，界面上"逐字输出"就没了（看起来像一次性刷出来）。
+所以 `/api/` 那个 location 里要：
+
+```nginx
+proxy_buffering off;
+proxy_cache off;
+gzip off;
+proxy_read_timeout 3600s;   # 默认 60s，agent 跑几分钟是常事
+```
+
+**坑三：`SCODE_BIND_HOST` —— 容器里必须绑 0.0.0.0**
+
+`launcher.py` 原来把监听地址写死 `127.0.0.1`。容器里这么绑的话，
+服务在容器外完全不可达（前端容器连不上，宿主 `ports` 映射也打不通）。
+
+改成读环境变量 `SCODE_BIND_HOST`，默认仍是 `127.0.0.1`（**原生跑法行为不变**），
+容器里设成 `0.0.0.0`。
+
+但这不违反 AGENTS.md 的"绝不要绑 0.0.0.0"：那条约束针对的是**宿主暴露面**。
+容器有独立的网络命名空间，容器内绑全网卡 ≠ 宿主上能访问 ——
+宿主侧的端口映射仍然只绑 `127.0.0.1`：
+
+```yaml
+ports:
+  - "127.0.0.1:2024:2024"
+```
+
+顺带把就绪探测和监听地址拆开了：探测永远打 `127.0.0.1`（`PROBE_HOST`），
+绑 `0.0.0.0` 时也连得上，而拿 `0.0.0.0` 当连接目标在不同平台上行为不一致。
+
+**坑四：api_key 不能进镜像层**
+
+`conf/config.toml` 里有明文 api_key，`.dockerignore` 里必须排除它 ——
+打进镜像等于把密钥固化进镜像层，`docker history` 就能翻出来。
+运行时靠 volume 把宿主的 `conf/` 挂进去。
+
+同理前端镜像的构建参数也**不能依赖宿主的 `.env.local`**（不在版本库里，
+而且 mock 开着的话容器里跑的是假数据，看着像"后端没连上"）。
+`web/Dockerfile` 里显式注入 `VITE_USE_MOCK=false` 等变量。
+
+**这条的直接后果：启动前必须先有 `conf/config.toml`，否则容器起不来**
+
+密钥不进镜像是有代价的——**新克隆的仓库没有这个文件**（已 gitignore），
+直接 `docker compose up` 会失败：
+
+```
+ConfigError: 找不到 /app/conf/config.toml。请复制 conf/config.example.toml 为 conf/config.toml 并填入供应商信息。
+GraphLoadError: Failed to load graph 'code_agent' from /app/stupid_code/graph/agent.py: ...
+Application startup failed. Exiting.
+```
+
+现象值得记一下，因为**它不直观**：
+
+- 后端容器进入 `Restarting` 循环（`restart: unless-stopped` 配的）；
+- 前端因为 `depends_on: {condition: service_healthy}` 一直**等**着不起来；
+- 界面上什么都看不到，连后端直连 `http://127.0.0.1:2024/ok` 也不通。
+
+第一反应容易是「Docker 配错了」，其实只是配置文件没准备。
+**排查先看 `docker compose logs backend`**。
+
+想在容器外先验证配置对不对（不起服务，最快暴露配置错误）：
+
+```bash
+uv run python -c "from stupid_code.config.model import load_config; load_config(); print('config OK')"
+```
+
+**验证步骤（带 curl）**
+
+```bash
+# 0. 前提：仓库根下已有 conf/config.toml
+docker compose up --build -d
+
+# 1. 两个容器都 healthy（前端要等后端 /ok 通过才起）
+docker compose ps
+
+# 2. 后端就绪
+curl -s http://127.0.0.1:2024/ok
+# → {"ok":true,"services":{}}
+
+# 3. 前端静态页
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:5173/
+# → 200
+
+# 4. 反代生效（剥掉 /api 后打到后端）
+curl -s http://127.0.0.1:5173/api/ok
+# → {"ok":true,"services":{}}
+
+# 5. 图注册成功
+AID=$(curl -s -X POST http://127.0.0.1:5173/api/assistants/search \
+  -H 'Content-Type: application/json' -d '{}' \
+  | python3 -c "import json,sys; print([a for a in json.load(sys.stdin) if a['graph_id']=='code_agent'][0]['assistant_id'])")
+curl -s http://127.0.0.1:5173/api/assistants/$AID/graph \
+  | python3 -c "import json,sys; print([n['id'] for n in json.load(sys.stdin)['nodes']])"
+
+# 6. SSE 真跑一轮（会消耗 token）
+TID=$(curl -s -X POST http://127.0.0.1:5173/api/threads \
+  -H 'Content-Type: application/json' -d '{}' \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['thread_id'])")
+curl -sN -X POST "http://127.0.0.1:5173/api/threads/$TID/runs/stream" \
+  -H 'Content-Type: application/json' -H 'Accept: text/event-stream' \
+  -d '{"assistant_id":"code_agent","input":{"messages":[{"role":"user","content":"只回复两个字：你好"}]},"stream_mode":["updates"],"on_disconnect":"continue","config":{"configurable":{"permissions":"auto","model":"minimax:MiniMax-M3"}}}'
+
+# 7. 持久化：重启后历史还在
+docker compose restart backend
+curl -s -X POST http://127.0.0.1:5173/api/threads/search \
+  -H 'Content-Type: application/json' -d '{"limit":10}'
+
+# 8. 换个工作空间（务必测这条：默认路径测不出 workspace 相关的崩）
+mkdir -p /tmp/other-ws && SCODE_WORKSPACE=/tmp/other-ws docker compose up -d --force-recreate backend
+docker compose ps backend   # 期望 healthy，而不是 CrashLoopBackOff
+```
+
+**已验证的事实**（2026-10-25 实测，Docker 29.9.2 / Compose v5.6.1）
+
+- 两个容器都起来且 `healthy`；`/ok` 200、`/` 200、`/api/ok` 200
+- `code_agent` 图注册成功，8 个节点：`__start__` / `model` / `tools` /
+  `MemoryMiddleware.before_agent` / `HumanInTheLoopMiddleware.after_model` 等
+- SSE 端到端跑通，模型真实返回内容（`你好`）
+- agent 的 `write_file` 在**宿主**仓库里落地（容器写 → volume → 宿主可见），
+  `execute` 也能跑
+- `docker compose stop` 退出码 0，宿主无残留 `langgraph_cli` 进程
+- 重启容器后 thread 索引与 checkpoint 都在，历史消息（含工具调用）完整读回
+- 容器内路径解析全部正确：`stupid_code` → `/app/stupid_code`、
+  conf → `/app/conf`、db → `/app/stupid_code/data/langgraph.db`
+- **`SCODE_WORKSPACE` 指向外部目录**（`/tmp/sc-ws-test`）时同样正常：
+  容器 healthy、图加载成功、agent 的 `write_file` 落在**那个外部目录**里，
+  与宿主仓库互不干扰
+
+**本期不做**
+
+- 不做多副本 / 集群（inmem 运行时本就是单进程开发态）
+- 不做生产级镜像优化（没压 `uv` / `pnpm` 缓存层体积，没做 distroless）
+- 不做前端 dev 模式的容器化（`pnpm dev` + 热重载仍建议在宿主跑，
+  后端用 `docker compose up backend` 即可）
+- 不改 `GET /directories` 未实现这一既有缺口（工作空间选择器在容器里同样报错）
 
 ---
 
