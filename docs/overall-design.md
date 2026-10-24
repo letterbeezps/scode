@@ -33,7 +33,7 @@
 | 部分 | 文档描述 | 代码现状 |
 |---|---|---|
 | 前端 `web/` | 完整实现 | ✅ 已完成 5920 行 TS/TSX，mock 与真后端两套都能跑 |
-| 后端 Agent | §3 完整设计 | ⚠️ 001–009 期均已落地（真实磁盘 + shell、长期记忆、shell 人工确认、子 agent 配置）。工作空间校验、运行护栏等自研中间件仍未做 |
+| 后端 Agent | §3 完整设计 | ⚠️ 001–011 期均已落地（真实磁盘 + shell、长期记忆、shell 人工确认、子 agent 配置、运行期切模型、手动压缩历史）。工作空间校验、运行护栏等自研中间件仍未做 |
 | 后端依赖 | Deep Agents + LangGraph | ✅ 已装齐并锁进 `uv.lock` |
 | `langgraph.json` | §3.2 已给出 | ✅ 在 `stupid_code/` 目录（不是根目录），图注册 + http.app + checkpointer/store 都已配 |
 | 模型配置 | §4 多供应商 | ✅ `conf/config.toml` + `/admin/models` 管理接口（002 / 003 期） |
@@ -535,49 +535,61 @@ stupid_code/prompts/
 
 ## 9. 目录结构
 
+**实际布局**（随代码演进，维护中的活目录树见 [`docs/backend/PROGRESS.md`](backend/PROGRESS.md) §2.1，路径约束见同节 §2.2）：
+
 ```
 stupid-code/
+├── AGENTS.md                # 给编码 Agent 的项目约定：命令、路径、踩过的坑
+├── pyproject.toml           # 依赖与 scode 入口（scode = stupid_code:start）
+├── uv.lock                  # 依赖锁定
+├── .python-version          # 3.12
+├── skills-lock.json         # langchain-skills 安装记录与 hash
+├── conf/                    # 模型配置（config.toml 不入库）+ 子 agent 声明（subagents.toml 入库）
 ├── docs/
-│   ├── overall-design.md      # 本文档
-│   ├── overall-design-review.md  # v0.1 评审意见（历史存档）
-│   ├── frontend-design.md     # 前端设计文档
-│   └── backend/                # 后端进度快照（001–009 期合并成一份）
-│       └── PROGRESS.md         # 进度 / 取舍 / 已验证事实 / 已知缺口
-├── conf/                       # 模型供应商配置（config.toml 不入库）+ 子 agent 声明（subagents.toml 入库）
-├── stupid_code/               # 后端 Python 包
-│   ├── launcher.py            # scode：拉起 langgraph dev 子进程、就绪探测、优雅关停
-│   ├── langgraph.json         # langgraph-cli 配置（图注册 / http.app / checkpointer / store）
-│   ├── graph/                 # 图与它的持久化
-│   │   ├── agent.py           # create_deep_agent 构建入口，导出 graph
-│   │   ├── backend.py         # 真实 backend：CompositeBackend(default=LocalShellBackend)
-│   │   ├── memory.py          # 长期记忆：工作空间根的 .scode-memory.md（不存在则创建）
-│   │   └── persistence.py     # SQLite 工厂：checkpoint/store → ../data/langgraph.db
-│   ├── config/                # 读项目根 conf/ 的那层（代码在这，数据在 ../../conf/）
-│   │   ├── model.py           # 读 conf/config.toml、校验、构建模型
-│   │   ├── subagent.py        # 读 conf/subagents.toml、校验、转成 deepagents 的 SubAgent 规格
-│   │   └── prompts.py         # 主 agent 的系统提示词（框架已无内置提示词，见 §3.1）
-│   ├── admin/                 # 挂在 /admin 下的管理接口
-│   │   ├── app.py             # Starlette 子应用与路由表
-│   │   └── models.py          # /admin/models 端点处理
-│   ├── middlewares/            # 自研中间件（护栏、工作空间校验、埋点）—— 待建
-│   ├── tools/                  # 自定义工具 —— 待建
-│   └── prompts/                # 版本化提示词（§8）—— 待建
-├── web/                       # 前端 Web 应用（独立子项目，注意不是 frontend/）
+│   ├── overall-design.md    # 本文档
+│   ├── frontend-design.md   # 前端交互设计
+│   ├── learning-path.md     # 框架背景与学习路线
+│   └── backend/
+│       └── PROGRESS.md      # 后端进度快照（001–011 期合并成一份）
+├── web/                     # 前端 Web 应用（独立子项目，注意不是 frontend/）
 │   ├── src/
 │   │   ├── components/
 │   │   ├── pages/
-│   │   ├── api/               # 后端通信层
-│   │   ├── store/             # 状态管理
+│   │   ├── api/             # 后端通信层
+│   │   ├── store/           # 状态管理
 │   │   └── lib/
 │   ├── package.json
 │   └── vite.config.ts
-├── pyproject.toml             # 依赖与 scode 入口（scode = stupid_code:start）
-└── skills-lock.json           # langchain-skills 安装记录
+├── stupid_code/             # 后端 Python 包
+│   ├── __init__.py          # scode 命令入口（start()）
+│   ├── launcher.py          # scode：拉起 langgraph dev 子进程、就绪探测、优雅关停
+│   ├── langgraph.json       # langgraph-cli 配置（图注册 / http.app / checkpointer / store）
+│   ├── graph/               # 图与它的持久化
+│   │   ├── agent.py         # create_deep_agent 构建入口，导出 graph
+│   │   ├── backend.py       # 真实 backend：CompositeBackend(default=LocalShellBackend)
+│   │   ├── compaction.py    # /compaction 手动压缩历史 + 摘要用当前选中的模型
+│   │   ├── memory.py        # 长期记忆：工作空间根的 .scode-memory.md（不存在则创建）
+│   │   ├── model_switch.py  # 运行期切换对话模型的中间件
+│   │   ├── permissions.py   # shell 人工确认：档位与危险判定
+│   │   └── persistence.py   # SQLite 工厂：checkpoint/store → ../data/langgraph.db
+│   ├── config/              # 读项目根 conf/ 的那层（代码在这，数据在 ../../conf/）
+│   │   ├── model.py         # 读 conf/config.toml、校验、构建模型、模型 CRUD helpers
+│   │   ├── subagent.py      # 读 conf/subagents.toml、校验、转成 deepagents 的 SubAgent 规格
+│   │   └── prompts.py       # 主 agent 的系统提示词（框架已无内置提示词，见 §3.1）
+│   ├── admin/               # 挂在 /admin 下的管理接口
+│   │   ├── app.py           # Starlette 子应用与路由表
+│   │   └── models.py        # /admin/models 端点处理
+│   ├── data/                # SQLite 数据库目录（gitignore，checkpoint/store 落这儿）
+│   ├── middlewares/         # 自研中间件（护栏、工作空间校验、埋点）—— 待建
+│   ├── tools/               # 自定义工具 —— 待建
+│   └── prompts/             # 版本化提示词（§8）—— 待建
+└── .agents/skills/          # langchain-skills（gitignore，需自行安装）
 ```
 
-> 本节按 003 完成后的实际布局更新。002 之前项目用的是 `.env` 配模型，现已改为
-> 根目录 `conf/config.toml`（见 §1.3）。`middlewares/` / `tools/` / `prompts/`
-> 仍是目标设计，尚未建。
+> `middlewares/` / `tools/` / `prompts/` 仍是目标设计，尚未建。
+> `langgraph.json` 直接引用了 `./graph/agent.py:graph`、`./graph/persistence.py:checkpointer`、
+> `./admin/app.py:app` 三条路径，挪动这些文件必须同步改配置。
+
 
 ---
 

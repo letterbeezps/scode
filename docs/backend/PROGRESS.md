@@ -1,6 +1,6 @@
-# 后端进度快照（001–010 合并版）
+# 后端进度快照（001–011 合并版）
 
-> **这份文档是什么**：项目后端从第 001 期到第 010 期的**进度快照**。
+> **这份文档是什么**：项目后端从第 001 期到第 011 期的**进度快照**。
 > 它把原先散在 `001_*.md` ~ `009_*.md` 九份阶段文档里的内容合并成一份，
 > 回答三个问题：**现在做到了哪一步 / 为什么这么做 / 接下来还欠什么**。
 >
@@ -65,8 +65,9 @@
 ```
 stupid-code/
 ├── docs/
-│   ├── overall-design.md      # 目标架构与前后端契约（§1.3 / §9 落后于代码）
+│   ├── overall-design.md      # 目标架构与前后端契约
 │   ├── frontend-design.md     # 前端交互设计
+│   ├── learning-path.md       # 框架背景与学习路线
 │   └── backend/PROGRESS.md    # 本文档
 ├── conf/                       # 配置数据（代码在 stupid_code/config/，数据在这里）
 │   ├── config.toml             # 模型供应商配置 —— 不入库（gitignore）
@@ -656,7 +657,6 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 | 选了不存在的模型会静默退回 | 界面上看不出切换没生效，只有后端日志有 warning | 有意为之：不让整个对话挂掉 |
 | 流式回复是整段到达 | 不是 token 级增量 | 平台两种模式都支持，`messages-tuple` 事件名是 `messages` |
 | 没有自动化测试、没有 CI | 验证全靠手工 | 本项目是有意如此（学习项目） |
-| `docs/overall-design.md` §1.3 / §9 落后于代码 | 说后端只做到 004 期、目录结构是旧的 | **以代码为准** |
 
 ---
 
@@ -1100,9 +1100,10 @@ permissions with backends that provide command execution`**
 
 | 文档 | 内容 |
 |---|---|
-| [`docs/overall-design.md`](../overall-design.md) | 目标架构、前后端契约、安全设计（§1.3 / §9 落后于代码） |
+| [`docs/overall-design.md`](../overall-design.md) | 目标架构、前后端契约、安全设计 |
 | [`docs/frontend-design.md`](../frontend-design.md) | 前端交互设计 |
+| [`docs/learning-path.md`](../learning-path.md) | 框架背景与学习路线 |
 | [`stupid_code/API.md`](../../stupid_code/API.md) | 当前实际可用的 HTTP 端点清单（含实测记录） |
 | [`stupid_code/README.md`](../../stupid_code/README.md) | 后端启动说明 |
 | [`AGENTS.md`](../../AGENTS.md) | 写代码前必看的坑位清单 |
-| [`README.md`](../../README.md) | 面向人的项目说明 |
+| [`README.md`](../../README.md) | 面向人的项目说明：这是什么 / 怎么跑 / 注意事项 |

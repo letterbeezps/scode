@@ -31,8 +31,8 @@ Python 侧**没有** ruff / black / mypy 配置，**整个仓库没有测试、�
 - `stupid_code/` — 后端包。顶层只放入口与起停，实现按职责分包：`__init__.py` 是 `start()` 入口、`launcher.py` 是 `scode` 的启动/就绪/关停逻辑、`langgraph.json` 是框架读的配置；`graph/`（`agent.py` 导出 `graph`，`memory.py` 装配长期记忆中间件，`model_switch.py` 是运行期切换对话模型的中间件，`compaction.py` 是 `/compaction` 手动压缩历史，`permissions.py` 是 shell 人工确认的档位与危险判定，`backend.py` 装真实磁盘+shell 的 backend，`persistence.py` 把 checkpoint/store 落到 `data/langgraph.db`）、`config/`（`model.py` 读 `conf/config.toml`、`subagent.py` 读 `conf/subagents.toml`、`prompts.py` 是主 agent 的系统提示词）、`admin/` 是挂在 `/admin` 下的管理接口
 - `stupid_code/README.md` — 后端启动说明；`stupid_code/API.md` — 当前实际可用的端点清单
 - `web/src/api/` — 后端通信层，`mock/` 用**与真实后端完全相同的签名**实现假数据；`web/src/store/` Zustand 状态；`components/`、`pages/`、`lib/`
-- `docs/overall-design.md` — 目标架构与前后端契约；`docs/frontend-design.md` — 前端交互设计
-- `docs/backend/PROGRESS.md` — 后端进度快照（001–009 期合并成一份，见「测试与验证」）
+- `docs/overall-design.md` — 目标架构与前后端契约；`docs/frontend-design.md` — 前端交互设计；`docs/learning-path.md` — 框架背景与学习路线
+- `docs/backend/PROGRESS.md` — 后端进度快照（001–011 期合并成一份，见「测试与验证」）
 - `skills-lock.json` — langchain-skills 安装记录与 hash，**已入库**，用来追踪参考资料版本
 
 ## 动手前必须知道的几件事
@@ -67,7 +67,13 @@ Python 侧**没有** ruff / black / mypy 配置，**整个仓库没有测试、�
 
 ## 文档会滞后于代码
 
-`README.md` 的「当前状态」、`docs/overall-design.md` §1.3 和 §9 的目录结构是按早期状态写的，**落后于代码**：后端依赖已装、`langgraph.json` 在 `stupid_code/` 里（不在根目录）、后端 Agent 已可跑。以代码为准；改到相关代码时顺手把对应段落更新掉。
+`README.md` 只写「这是什么 / 怎么跑 / 注意事项」，**细节一律指向 `docs/` 下的文档**，别把实现细节又堆回 README：
+
+- `docs/backend/PROGRESS.md` —— 后端的**活文档**，每期一节，最新一期在最后
+- `docs/overall-design.md` —— 目标架构与前后端契约，写的是**设计**，与代码有出入时以 `PROGRESS.md` 为准
+- `docs/learning-path.md` —— 框架背景与学习路线，框架升级后要回头核一遍
+
+以代码为准；改到相关代码时顺手把对应段落更新掉。
 
 ## PR & commit conventions
 
