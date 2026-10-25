@@ -38,6 +38,7 @@
 | `langgraph.json` | §3.2 已给出 | ✅ 在 `stupid_code/` 目录（不是根目录），图注册 + http.app + checkpointer/store 都已配 |
 | 模型配置 | §4 多供应商 | ✅ `conf/config.toml` + `/admin/models` 管理接口（002 / 003 期） |
 | 子 agent | §3 委派机制 | ✅ `conf/subagents.toml` 声明，`task` 工具可调（004 期） |
+| MCP 工具 | —（013 期新增） | ✅ `conf/mcp.json` 声明，http / stdio 都支持；建图时静态注册（改配置需重启） |
 | 目录浏览端点 | §4.1 已定义 | ❌ 后端未实现（前端已按此契约调用） |
 
 **这意味着：写后端时不需要"对齐已有实现"，而是要"实现前端已经假定的契约"。** 契约清单见 §4。
@@ -544,7 +545,8 @@ stupid-code/
 ├── uv.lock                  # 依赖锁定
 ├── .python-version          # 3.12
 ├── skills-lock.json         # langchain-skills 安装记录与 hash
-├── conf/                    # 模型配置（config.toml 不入库）+ 子 agent 声明（subagents.toml 入库）
+├── conf/                    # 模型配置（config.toml 不入库）+ 子 agent 声明（subagents.toml 入库）+ MCP 服务器（mcp.json 不入库，从 mcp.example.json 复制）
+├── examples/                # 可直接跑的示例（mcp_stdio_server.py：零依赖的 stdio MCP 服务器）
 ├── docs/
 │   ├── overall-design.md    # 本文档
 │   ├── frontend-design.md   # 前端交互设计
@@ -570,11 +572,13 @@ stupid-code/
 │   │   ├── compaction.py    # /compaction 手动压缩历史 + 摘要用当前选中的模型
 │   │   ├── memory.py        # 长期记忆：工作空间根的 .scode-memory.md（不存在则创建）
 │   │   ├── model_switch.py  # 运行期切换对话模型的中间件
+│   │   ├── mcp.py           # MCP 工具加载：建图时取工具 + 调用期重试 / 错误兜底
 │   │   ├── permissions.py   # shell 人工确认：档位与危险判定
 │   │   └── persistence.py   # SQLite 工厂：checkpoint/store → ../data/langgraph.db
 │   ├── config/              # 读项目根 conf/ 的那层（代码在这，数据在 ../../conf/）
 │   │   ├── model.py         # 读 conf/config.toml、校验、构建模型、模型 CRUD helpers
 │   │   ├── subagent.py      # 读 conf/subagents.toml、校验、转成 deepagents 的 SubAgent 规格
+│   │   ├── mcp.py           # 读 conf/mcp.json、校验、转成 MCP 客户端的连接参数
 │   │   └── prompts.py       # 主 agent 的系统提示词（框架已无内置提示词，见 §3.1）
 │   ├── admin/               # 挂在 /admin 下的管理接口
 │   │   ├── app.py           # Starlette 子应用与路由表

@@ -21,6 +21,10 @@ wheels/
 !.env.example
 conf/config.toml
 
+# MCP 服务器配置：机器相关，而且 stdio 服务器会在启动时执行命令——
+# 按需从 conf/mcp.example.json 复制，不要默认入库
+conf/mcp.json
+
 # langgraph dev 的运行状态目录（工作空间下；scode 不再清理它——
 # 里面的 .langgraph_ops.pckl 是 thread 索引，删了重启后会话列表就空了；
 # 直接手动跑 langgraph dev 或在后端目录运行时也会出现，一并忽略）

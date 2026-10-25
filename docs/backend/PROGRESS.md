@@ -1,13 +1,14 @@
-# 后端进度快照（001–012 合并版）
+# 后端进度快照（001–013 合并版）
 
-> **这份文档是什么**：项目后端从第 001 期到第 012 期的**进度快照**。
+> **这份文档是什么**：项目后端从第 001 期到第 013 期的**进度快照**。
 > 它把原先散在 `001_*.md` ~ `009_*.md` 九份阶段文档里的内容合并成一份，
 > 回答三个问题：**现在做到了哪一步 / 为什么这么做 / 接下来还欠什么**。
 >
-> - 快照时间：2026-10-25，代码基线 `c184207`
-> - 后端：`stupid_code/`（Python 1798 行）　前端：`web/`（TS/TSX 5920 行）
+> - 快照时间：2026-10-25，代码基线 `c184207` + 013 期改动
+> - 后端：`stupid_code/`（Python 3152 行）　前端：`web/`（TS/TSX 5920 行）
 > - 依赖版本：`deepagents 0.7.28` / `langchain 1.4.6` / `langgraph 1.2.16` /
->   `langgraph-cli 0.4.36` / `langchain-anthropic 1.7.6` / `langchain-openai 1.7.2`
+>   `langgraph-cli 0.4.36` / `langchain-anthropic 1.7.6` / `langchain-openai 1.7.2` /
+>   `langchain-mcp-adapters 0.3.2`
 > - **以代码为准**。本文记录的是当前实现的实际形态，不是设计意图。
 >   目标架构见 [`docs/overall-design.md`](../overall-design.md)，
 >   前后端 HTTP 契约见 [`stupid_code/API.md`](../../stupid_code/API.md)。
@@ -38,6 +39,7 @@
 | 010 | 运行期切换对话模型 | ✅ 已落地 | `stupid_code/graph/model_switch.py` + 前端侧边栏模型下拉框 |
 | 011 | 手动压缩对话历史（`/compaction`） | ✅ 已落地 | `stupid_code/graph/compaction.py` + 前端斜杠命令菜单 |
 | 012 | Docker 运行（后端 + 前端） | ✅ 已落地 | `Dockerfile` + `web/Dockerfile` + `docker-compose.yml` |
+| 013 | MCP 支持（`conf/mcp.json`，http + stdio） | ✅ 已落地 | `stupid_code/config/mcp.py` + `stupid_code/graph/mcp.py` |
 
 ### 1.3 前端完成度
 
@@ -341,7 +343,7 @@ CompositeBackend(
   `NotImplementedError`。理由站得住——`execute` 能用 shell 绕过任何文件权限
   （`echo x > file`）。处理办法：给这类子 agent 单独一个**没有 shell** 的
   `FilesystemBackend`（真实磁盘，路径同样锁在工作空间内），权限就真的拦得住。
-  实现见 `graph/backend.py` 的 `apply_permission_backend()`。
+  实现见 `graph/backend.py` 的 `apply_subagent_policies()`。
 - **长期记忆中间件不共用这个 CompositeBackend**：记忆只需要"工作空间里那一个文件"，
   自己持有一个以工作空间为根的 `FilesystemBackend` 更直白。两者解析出来的真实路径
   是同一个，所以 agent 写进去的内容下次开新会话照样会被读进来。
@@ -784,6 +786,265 @@ docker compose ps backend   # 期望 healthy，而不是 CrashLoopBackOff
   后端用 `docker compose up backend` 即可）
 - 不改 `GET /directories` 未实现这一既有缺口（工作空间选择器在容器里同样报错）
 
+### 013 · MCP 支持（`conf/mcp.json`）
+
+**目标**：agent 能用上 MCP 服务器提供的工具。用户在项目根的 `conf/mcp.json`
+里自己加服务器，**http 和 stdio 两种传输都支持**。
+
+**成果**：
+
+| 文件 | 作用 |
+|---|---|
+| `conf/mcp.example.json` | MCP 配置模板（`conf/mcp.json` 不入库，按需复制；格式跟 Claude Code / Cursor 一致） |
+| `stupid_code/config/mcp.py` | 配置的加载与校验（pydantic 声明字段）、`${VAR}` 展开、连接参数构建 |
+| `stupid_code/graph/mcp.py` | 工具加载：连服务器、取工具、改名、重名检测、`tool_interceptors` 兜错 + 调用期重试 |
+| `stupid_code/graph/agent.py` | `tools=load_mcp_tools()` |
+| `examples/mcp_stdio_server.py` | 一个能直接跑的 stdio MCP 服务器（零新依赖），用来验 stdio 传输 |
+| `pyproject.toml` | 新增依赖 `langchain-mcp-adapters>=0.3.2`（连带官方 SDK `mcp`） |
+
+**依赖说明**：MCP 协议**一行都没手写**。`langchain-mcp-adapters` 负责连服务器、
+取工具清单、把 MCP 工具转成 LangChain 工具；底层是官方 Python SDK `mcp`
+（stdio 管道、streamable-http 握手、会话初始化都在它那里）。
+
+`fastmcp`（另一个 PyPI 包）**不用装**——FastMCP 是官方 `mcp` 包自带的
+（`from mcp.server.fastmcp import FastMCP`），`examples/mcp_stdio_server.py`
+就是这么写的。
+
+**配置格式**
+
+```json
+{
+  "mcpServers": {
+    "docs-langchain": {"type": "http", "url": "https://docs.langchain.com/mcp"},
+    "local-fs": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    }
+  }
+}
+```
+
+| 字段 | 适用传输 | 说明 |
+|---|---|---|
+| `type`（或 `transport`） | 全部 | `http` / `stdio` / `sse` / `websocket`；写 `streamable_http` 也认。**不写能推断**：有 `command` 当 stdio，有 `url` 当 http |
+| `url` | http / sse / websocket | 必填，必须以 `http://` / `https://` 开头（websocket 要 `ws://` / `wss://`） |
+| `command` + `args` | stdio | `command` 必填；`args` 可省（默认空数组） |
+| `env` / `cwd` | stdio | 子进程的环境变量 / 工作目录 |
+| `headers` | http / sse | 请求头，值里可写 `${VAR}` |
+| `timeout` / `sse_read_timeout` / `terminate_on_close` | http / sse | 超时与收尾选项。不写 `timeout` 时默认 8 秒（不是 adapter 的 30 秒，见下） |
+| `description` | 全部 | 给界面看的元信息（Claude Desktop / VS Code 那种配置里常见）。**认了但忽略**——agent 看不到它 |
+
+**密钥不写死在文件里**：`env` 和 `headers` 的值里可以写 `${VAR}`，
+加载时从**进程环境**展开；变量不存在时**原样保留** `${VAR}`
+（宁可留个能看懂的占位符，也不要悄悄变成空字符串）。
+
+**逐个服务器校验**：某一个写错了只跳它自己，其余照常（跳过的那个在日志里
+报一句为什么）。早先是一把梭——**一个服务器配错，整个 MCP 都没了**，
+连能用的那几个也一起废掉，界面上还看不出来。
+
+**关键取舍一：静态注册，不是运行期注入**
+
+工具在建图时取一次，交给 `create_deep_agent(tools=[...])`。这样它们就是
+**普通工具**——注册在框架的 ToolNode 里，模型调用时框架自己执行，
+不需要额外的中间件。
+
+框架其实也支持运行期注入（中间件在 `wrap_model_call` 里往 `request.tools`
+追加工具，再在 `wrap_tool_call` 里用 `request.override(tool=...)` 执行它们，
+见 `langchain/agents/factory.py` 的 `DYNAMIC_TOOL_ERROR_TEMPLATE` →
+"Option 2: Handle dynamic tools in middleware"）。**本项目试过，然后放弃了**：
+
+| | 运行期注入 | 静态注册（现方案） |
+|---|---|---|
+| 代码量 | 多一个中间件（442 行）+ 两套钩子 | 一个 `load_mcp_tools()` |
+| 改 `conf/mcp.json` | 不用重启 | **要重启**（跟 `conf/subagents.toml` 一样） |
+| 服务器启动时挂着 | 别的服务器照常，它 60 秒后自动恢复 | 别的服务器照常，它要等重启 |
+| 理解成本 | 要理解「注入 + 覆盖」两套机制 | 就是普通工具 |
+
+这个项目是**学习项目**，标准是「能跑、能看懂、能改」（见 AGENTS.md）。
+多一套钩子换「改配置不用重启」，不划算——`conf/subagents.toml` 本来也是
+改完要重启的。所以选了简单的那条。
+
+**关键取舍二：工具名用 `mcp__{服务器}__{工具}`**
+
+这是 Claude Code 那套约定。**理由是项目自带的参考资料就是这么写的**——
+`.agents/skills/ecosystem-primer/SKILL.md` 里有一句：
+
+> If the LangChain Docs MCP server is connected
+> (`mcp__docs-langchain__*` tools are available), query it directly
+
+agent 读的就是这份说明。名字对不上，agent 会以为 MCP 没接上——**实测过**：
+它转而自己拿 `execute` 去 curl MCP 端点（能 work，但绕了一大圈，
+还多烧了一堆 token）。改成这个约定之后，agent 直接就调了。
+
+顺带解决了两件事：跟内置工具（`read_file` / `execute` / `task`…）不重名；
+双下划线分隔也不会跟工具名里本来就有的单下划线混淆。名字长度上限 64
+（Anthropic 的限制），超了截断。
+
+**关键取舍三：容错分三层**
+
+1. **加载时**：逐个服务器取工具（不用 `client.get_tools()`——它内部是 gather，
+   一个失败整批都炸），**并行**加载（互不依赖，串行的话 N 个服务器要花 N 倍时间），
+   失败重试 2 次（**只在非超时失败上重试**：超时重试没有意义），彻底连不上就
+   跳过它，其余服务器照常。
+2. **调用时**：用 adapter 公开的 `tool_interceptors` 扩展点接住传输层失败
+   （服务器挂了 / 网络抖）：瞬时失败重试一次，最终失败构造一个
+   `CallToolResult(isError=True)`——adapter 会把它变成 `status="error"` 的
+   ToolMessage，**模型看得见「这个工具没调通」**，可以换个工具重试，整轮对话不崩。
+   （框架的 ToolNode 默认 `_default_handle_tool_errors` 只放过
+   `ToolInvocationError`，其余一律重抛，一次网络抖动整个 run 就变 internal error。）
+3. **限时**：建图时加载是**同步阻塞**的（`graph/agent.py` 导入时就在连服务器），
+   所以每服务器**总共** 12 秒（`_LOAD_TIMEOUT`，重试和退避都算在里面）——
+   用 `asyncio.wait_for` **真的掐断**。因为服务器是并行加载的，
+   总耗时 ≈ 单个服务器的预算，不是各预算之和；死服务器拖不过 launcher 的
+   60 秒就绪超时。
+
+**关键取舍四：只补 SDK 不做的两件事**
+
+`langchain-mcp-adapters` 已经做掉了绝大部分工作，剩下两件得自己来：
+
+| 要补的 | 为什么 SDK 没做 |
+|---|---|
+| 改名 `mcp__{服务器}__{工具}` | adapter 的 `tool_name_prefix` 拼的是 `{服务器}_{工具}`（单下划线），跟项目 skill 里的 `mcp__docs-langchain__*` 对不上 |
+| 兜传输层失败 + 调用期重试 | adapter 文档写明：传输层失败「always raise regardless of this setting」，只有 MCP 自己的执行错误（`isError=True`）才变 ToolMessage；`tool_interceptors` 是它留的公开扩展点 |
+
+补法是**只原地改 `name`**：adapter 的工具对象上已经配好了 `args_schema`、
+`response_format`、`handle_tool_error`（MCP 自己报的错要保留图片等内容块），
+重建一个 `StructuredTool` 等于把这些都丢掉。改 `name` 是安全的：
+`BaseTool.__setattr__` 在 `name` 被重新赋值时会清掉缓存的 `tool_call_schema`，
+下次用会按新名字重建。改名前还会做重名检测——字符替换和截断可能把两个名字
+撞成一个，撞了跳过后来者并 warning。
+
+**MCP 工具只有异步实现**：adapter 造的 `StructuredTool` 只填了 `coroutine`
+（`func` 是 None），所以 `tool.invoke()` 这类同步路径会抛 `NotImplementedError`
+（本地脚本 `graph.invoke()` 会撞上）。本项目没有同步调用场景，不补 `func`；
+Agent Server 全程异步，没问题。
+
+**配置校验交给 pydantic**（项目本来就有这个依赖）。每种传输一个模型，
+字段集照着 adapter 的连接参数字典写（`langchain_mcp_adapters/sessions.py`
+里的 `StdioConnection` / `StreamableHttpConnection` / …），`extra="forbid"`
+让写错的字段当场报出来。错误消息翻成中文：
+
+```
+mcp.json 的服务器 'x' 配置不合法：typo：不认识的字段
+mcp.json 的服务器 'x' 配置不合法：url 必须以 http:// 或 https:// 开头，当前是 'ftp://x.com'
+```
+
+**踩过的坑**
+
+- **一个服务器配错，曾经把整个 MCP 都带走**。配置校验是一把梭抛的
+  `ConfigError`，上层直接返回空工具列表——结果连能用的那几个 http 服务器
+  也一起没了，界面上完全看不出来（界面上本来就不显示 MCP 工具）。
+  触发它的是一个很平常的字段：真实配置里带 `description`（Claude Desktop /
+  VS Code 那种格式常见），而我们只认 adapter 那套字段。
+  **现在改成逐个服务器校验**：写错的只跳它自己，其余照常，日志里报一句为什么。
+  `description` 也认了（给界面看的元信息，agent 用不上）。
+- **建图时不能直接 `asyncio.run`**。`langgraph dev` 是在**它自己的事件循环里**
+  导入图模块的（后端日志里能看到 `thread_name=uvloop_1`），
+  `asyncio.run` 会抛 "cannot be called from a running event loop"。
+  `graph/mcp.py` 的 `_run_sync()` 检测到有循环就**换线程跑**（那个线程自带空 loop）。
+- **MCP 工具只有异步实现**。adapter 造的 `StructuredTool` 只填了 `coroutine`
+  （`func` 是 None），同步执行路径（`tool.invoke()`）会抛 `NotImplementedError`
+  ——本地脚本用 `graph.invoke()` 就会撞上。本项目没有同步调用场景，不补 `func`。
+- **早先那版的「限时」是假的**。当时只在「两次重试之间」看一眼时间戳，
+  一个挂死的服务器（连上了但不回话）照样能把启动拖过 launcher 的 60 秒
+  就绪超时。现在改成 `asyncio.wait_for` 真的掐断，**12 秒是含重试的总预算**，
+  并且**各服务器并行加载**，总耗时 ≈ 单个服务器的预算。
+  后来还发现「只在两次重试之间看时间」那版的另一种浪费：**超时也被重试**，
+  1 秒预算实测跑出 3.31 秒——现在超时直接放弃。
+- **anyio 的 TaskGroup 会把真实异常包进 `ExceptionGroup`**。直接打印只看得到
+  「unhandled errors in a TaskGroup (1 sub-exception)」——看不出是网络问题、
+  超时还是 401。`_describe()` 负责一层层剥到最里层，日志里才看得到
+  `ConnectError: All connection attempts failed`。
+- **pydantic 的宽松模式会悄悄改类型**：`timeout: true` 会被当成 1.0
+  （= 1 秒超时！），`timeout: "8"` 会被当成 8.0。两种都不是用户想写的意思，
+  所以在转换之前（`mode="before"`）就拦下来。
+- **别用 `asyncio.Lock` 给加载加锁**。`asyncio.Lock` 会把实例绑死在第一个用到它的
+  事件循环上，langgraph dev 的运行循环不一定只有一个，绑死了在别的事件循环里
+  直接抛 `RuntimeError`。
+- **公网 MCP 端点会抖**。`docs.langchain.com/mcp` 实测 10 次连接失败 1 次，
+  报 `httpx.ConnectError(EndOfStream())`——**用纯 httpx 打同一个地址也一样**，
+  所以跟 SDK 无关，是 CDN 在 TLS 握手阶段直接掐连接。加载重试就是为它准备的
+  （重试 2 次，退避 0.5 秒 / 1 秒）。
+
+**验证步骤**
+
+```bash
+# 1. 先看配置对不对（不起服务，最快暴露语法/字段错误）
+cd /path/to/stupid-code
+uv run python -c "
+from stupid_code.config.mcp import load_connections
+import json
+print(json.dumps(load_connections(), indent=2, ensure_ascii=False))
+"
+```
+
+期望输出形如：
+
+```json
+{
+  "docs-langchain": {"transport": "http", "url": "https://docs.langchain.com/mcp",
+                      "timeout": 8.0}
+}
+```
+
+配置写错时这一步直接抛 `ConfigError`（字段名、拼错的 `type` 都会被指出来）。
+
+```bash
+# 2. 起后端后看工具挂上没有（后端日志）
+#    预期：MCP 工具已加载：5 个（来自 2 个服务器）
+#    某个服务器连不上时：MCP 服务器 'xxx' 连不上，跳过它的工具：...
+
+# 3. 跑一轮对话，确认 agent 真的调了 MCP 工具
+TID=$(curl -s -X POST http://127.0.0.1:2024/threads \
+  -H 'Content-Type: application/json' -d '{}' \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['thread_id'])")
+
+curl -s -N -X POST "http://127.0.0.1:2024/threads/$TID/runs/stream" \
+  -H 'Content-Type: application/json' -H 'Accept: text/event-stream' \
+  -d '{"assistant_id":"code_agent",
+       "input":{"messages":[{"role":"user","content":"用 MCP 的文档搜索工具查一下 create_deep_agent 是什么，一句话总结。"}]},
+       "stream_mode":["updates"],"on_disconnect":"continue",
+       "config":{"configurable":{"workspace":"/abs/path","permissions":"auto"}}}'
+```
+
+在 SSE 的 `updates` 事件里应能看到 `mcp__docs-langchain__search_docs_by_lang_chain`
+这类工具调用，以及它的返回内容。
+
+**stdio 传输怎么验**（http 通了不代表 stdio 通了，两条路径不一样）：
+
+```bash
+# 1. 在 conf/mcp.json 里加一个 stdio 服务器（examples/ 里那个是现成的）
+cat > /tmp/demo-mcp.json <<'JSON'
+{
+  "mcpServers": {
+    "demo": {
+      "type": "stdio",
+      "command": "<项目>/.venv/bin/python",
+      "args": ["<项目>/examples/mcp_stdio_server.py"]
+    }
+  }
+}
+JSON
+# 把它并进 conf/mcp.json，然后**重启后端**（MCP 工具是建图时静态注册的）
+
+# 2. 后端日志里应该看到三个服务器都加载上了
+#    MCP 工具已加载：5 个（来自 3 个服务器）
+
+# 3. 跑一轮对话，让它调 stdio 那个工具
+#    预期在 SSE 里看到 "name":"mcp__demo__echo"，返回内容是 "echo: <你传的字>"
+```
+
+**本期不做**
+
+- 不做 MCP 的界面化管理（只能手改 `conf/mcp.json`）
+- 不做 MCP 资源（resources）、提示（prompts）、采样（sampling）的接入
+- 不给 MCP 工具加人工确认（`graph/permissions.py` 只拦 `execute`）
+- 不做有状态会话（adapter 默认每次调用新建会话，stdio 传输等于每次调用
+  重新拉起子进程——慢但简单）
+- **不做「改配置不用重启」**（试过运行期注入，为了少一套钩子放弃了，见「关键取舍一」）
+- 不做 MCP 工具的按需加载 / 懒加载（建图时一次性取完）
+
 ---
 
 ## 4. 关键机制速查
@@ -798,7 +1059,10 @@ compaction = build_compaction_middleware(default_model, backend)
 graph = create_deep_agent(
     model=default_model,
     system_prompt=SYSTEM_PROMPT,
-    subagents=[apply_permission_backend(spec) for spec in load_subagents()],
+    subagents=[
+        apply_subagent_policies(spec, default_interrupt_on=interrupt_on)
+        for spec in load_subagents()
+    ],
     backend=backend,
     # 切换中间件放最前 → 在最终栈里比 prompt-caching / memory 更外层
     middleware=[
@@ -891,6 +1155,14 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 | 切模型不换摘要阈值 | 压缩历史的触发阈值按启动时模型的上下文窗口算 | 切到窗口更小的模型可能触发偏晚 |
 | 切模型不换「超预算」兜底的预算 | 压缩中间件在最终栈里位于切换中间件**外层**，它内部读 `request.model.profile` 时看到的还是启动时的模型 | 本项目模型无 profile，这条兜底恒不触发；真超限时靠 `ContextOverflowError` 的兜底路径兜住 |
 | 选了不存在的模型会静默退回 | 界面上看不出切换没生效，只有后端日志有 warning | 有意为之：不让整个对话挂掉 |
+| MCP 工具不经过人工确认 | `graph/permissions.py` 只拦 `execute`；MCP 工具是第三方服务器自己实现的 | 013 期有意不做 |
+| MCP 工具只能异步调用 | `tool.invoke()` / `graph.invoke()` 调 MCP 工具会抛 `NotImplementedError` | adapter 只填 `coroutine`；本项目没有同步调用场景，不补 `func` |
+| 工作空间是仓库根时能改启动配置 | agent 能写 `conf/mcp.json` 和后端源码，下次启动时执行——绕开 `execute` 的人工确认 | 已加启动警告；推荐用 `SCODE_WORKSPACE` 指向单独目录 |
+| 改 `conf/mcp.json` 要重启后端 | 加服务器 / 改地址之后得重启才生效 | 013 期有意为之（静态注册换简单，见「013 · 关键取舍一」） |
+| 服务器启动时挂着，得等重启 | 该服务器的工具整个会话都没有 | 加载时重试过；仍失败就等下次重启 |
+| MCP 每次调用都新建会话 | stdio 传输等于每次工具调用都重新拉起子进程 | adapter 的默认行为；换有状态会话要自己管 session 生命周期 |
+| MCP 连接失败只少几个工具 | 连不上的服务器的工具不会出现在模型面前（界面看不出来） | 有意为之：不让一个外部服务拖垮整轮对话 |
+| MCP 配置写错的服务器只跳它自己 | 那几个工具整个会话都没有，界面上也看不出来 | 日志里会报一句为什么；其余服务器照常 |
 | 流式回复是整段到达 | 不是 token 级增量 | 平台两种模式都支持，`messages-tuple` 事件名是 `messages` |
 | 没有自动化测试、没有 CI | 验证全靠手工 | 本项目是有意如此（学习项目） |
 
@@ -1049,7 +1321,73 @@ print("cutoff_index =", ev.get("cutoff_index"), "| 有摘要:", bool(ev.get("sum
 `cutoff_index` 不是 None 就说明压过。工作空间里还会多出
 `conversation_history/<session_id>.md`（被摘走的旧对话，已 gitignore）。
 
-### 步骤 7：关停
+### 步骤 7：MCP 工具（013 期）
+
+```bash
+# 0. 没有配置的话先复制示例（conf/mcp.json 不入库）
+cd /path/to/stupid-code
+cp conf/mcp.example.json conf/mcp.json
+
+# 1. 先看配置对不对（不起服务，最快暴露语法/字段错误）
+uv run python -c "
+from stupid_code.config.mcp import load_connections
+import json
+print(json.dumps(load_connections(), indent=2, ensure_ascii=False))
+"
+```
+
+期望输出形如：
+
+```json
+{
+  "docs-langchain": {"transport": "http", "url": "https://docs.langchain.com/mcp",
+                      "timeout": 8.0}
+}
+```
+
+配置写错时这一步直接抛 `ConfigError`（字段名、拼错的 `type` 都会被指出来）：
+
+```
+mcp.json 的服务器 'x' 配置不合法：typo：不认识的字段
+mcp.json 的服务器 'x' 的 type 'stio' 不支持，只支持 http / sse / stdio / ...
+```
+
+```bash
+# 2. 起服务后看工具挂上没有（后端日志）
+#    预期：MCP 工具已加载：5 个（来自 2 个服务器）
+#    某个服务器连不上时：MCP 服务器 'xxx' 连不上，跳过它的工具：ConnectError: ...
+
+# 3. 跑一轮对话，确认 agent 真的调了 MCP 工具
+TID=$(curl -s -X POST http://127.0.0.1:2024/threads \
+  -H 'Content-Type: application/json' -d '{}' \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['thread_id'])")
+
+curl -s -N -X POST "http://127.0.0.1:2024/threads/$TID/runs/stream" \
+  -H 'Content-Type: application/json' -H 'Accept: text/event-stream' \
+  -d '{"assistant_id":"code_agent",
+       "input":{"messages":[{"role":"user","content":"用 MCP 的文档搜索工具查一下 create_deep_agent 是什么，一句话总结。"}]},
+       "stream_mode":["updates"],"on_disconnect":"continue",
+       "config":{"configurable":{"workspace":"/abs/path","permissions":"auto"}}}'
+```
+
+在 SSE 的 `updates` 事件里应能看到 `mcp__docs-langchain__search_docs_by_lang_chain`
+这样的工具调用和它的返回内容。
+
+```bash
+# 4. stdio 传输单独验一遍（http 通了不代表 stdio 通了）
+#    在 conf/mcp.json 里加：
+#      "demo": {"type": "stdio", "command": "<项目>/.venv/bin/python",
+#               "args": ["<项目>/examples/mcp_stdio_server.py"]}
+#    重启后端 → 日志应显示 3 个服务器都加载上了
+#    再跑一轮对话让它调 echo：
+#      "用 MCP 的 demo 服务器（stdio 那个）调用 echo 工具，传入文字 hello-stdio"
+#    预期 SSE 里有 "name":"mcp__demo__echo"，返回内容是 "echo: hello-stdio"
+```
+
+**改配置要重启**：改完 `conf/mcp.json` 重启 `scode`，新服务器的工具才出现
+（工具是建图时静态注册的，见「013 · 关键取舍一」）。
+
+### 步骤 8：关停
 
 `Ctrl+C` 后检查没有残留进程：
 
@@ -1242,6 +1580,120 @@ pgrep -f "langgraph_cli dev"        # 应该没有输出
 2. **真正决定委派与否的是用户请求**。明说"用 task 工具委派"就委派，不说就自己干
    ——A/B/C 三组提示词都没能改变这一点。
 
+### 8.8 MCP（2026-10-25 对真实服务实测）
+
+- **框架支持运行期注入动态工具**，但本项目**没用**：`langchain/agents/factory.py`
+  的 `DYNAMIC_TOOL_ERROR_TEMPLATE` 写着 "Option 2: Handle dynamic tools in
+  middleware"——中间件在 `wrap_model_call` 里改 `request.tools`、在 `wrap_tool_call`
+  里 `request.override(tool=...)` 执行。`langgraph/prebuilt/tool_node.py` 的注释也
+  说得很清楚："Validation is deferred to _execute_tool_sync to allow interceptors
+  to short-circuit requests for unregistered tools"。**代价**：多一个中间件 +
+  两套钩子 + 名字覆盖语义，换来「改配置不用重启」。这个项目是学习项目，
+  标准是「能看懂」，所以选了静态注册（`create_deep_agent(tools=[...])`）
+- **静态注册之后，工具就是普通工具**：注册在框架的 ToolNode 里，模型调用时
+  框架自己执行。`request.tools` 里有没有它、bind_tools 绑没绑上，都是框架的事
+- **`ToolNode` 默认把工具异常往上抛**：默认的 `_handle_tool_errors` 是
+  `_default_handle_tool_errors`，它只放过 `ToolInvocationError`，其余一律重抛。
+  一次网络抖动就会让整个 run 变成 internal error（实测过：
+  `anyio.BrokenResourceError`）。要兜住得自己把异常转成 `ToolException`
+  （langchain_core 会把它变成 `status="error"` 的 ToolMessage）
+- **`MultiServerMCPClient.get_tools()` 不能整体用**：它内部是
+  `asyncio.gather(*tasks)`（**没有** `return_exceptions=True`），
+  一个服务器失败整批都炸。要「一个挂掉不影响其他」就得逐个服务器调
+  `get_tools(server_name=...)` 自己兜
+- **adapter 的 `handle_tool_errors=True` 只管 MCP 的执行错误**
+  （`CallToolResult.isError=True`），**传输层失败照样抛**——
+  文档里写明了："Transport/session failures ... always raise regardless of
+  this setting"。adapter 0.3.2 为此留了公开的 `tool_interceptors` 扩展点
+  （handler 可以重复调用），兜传输层失败和调用期重试就该在这里做
+- **MCP 工具只有异步实现**：`convert_mcp_tool_to_langchain_tool` 造的
+  `StructuredTool` 只填了 `coroutine`，`func` 是 None。框架的同步执行路径
+  （`tool.invoke()` / `graph.invoke()`）会抛 `NotImplementedError`。
+  本项目没有同步调用场景，**不补 `func`**；Agent Server 全程异步，没问题
+- **`response_format="content_and_artifact"` 要求工具返回二元组**：
+  langchain_core 的 `run()` 和 `arun()` 都会检查 `isinstance(response, tuple)`，
+  不是二元组直接抛 ValueError。adapter 的 coroutine 本来就返回二元组
+- **工具名约定会影响 agent 的行为**（实测）：项目自带的
+  `.agents/skills/ecosystem-primer/SKILL.md` 里写着 MCP 工具叫
+  `mcp__docs-langchain__*`。名字对不上时，agent 以为 MCP 没接上，
+  转而自己拿 `execute` 去 curl MCP 端点（能 work，但绕一大圈、多烧 token）。
+  改成这个约定之后，agent 直接就调了
+- **公网 MCP 端点会抖，而且跟 SDK 无关**（实测）：`docs.langchain.com/mcp`
+  10 次连接失败 1 次，报 `httpx.ConnectError(EndOfStream())`——**用纯 httpx
+  打同一个地址也一样失败**，所以是 CDN 在 TLS 握手阶段直接掐连接。
+  所以「一个服务器挂掉只少几个工具」+「加载重试」这两条容错不是锦上添花，
+  是必需的
+- **失败兜住之后，agent 会重试并如实告诉用户**（实测）：MCP 服务器全挂时，
+  工具调用返回 `status="error"` 的 ToolMessage，agent 重试了 6 次，最后回答
+  「MCP 的 reference-langchain 工具现在完全不可用：每次调用都返回
+  `ExceptionGroup: unhandled errors in a TaskGroup`」。**整轮对话没有崩**
+- **图是在 langgraph dev 自己的事件循环里导入的**（实测）：后端日志里加载
+  MCP 工具那行是 `thread_name=uvloop_1`。所以建图时同步加载 MCP 服务器
+  **不能直接 `asyncio.run`**（会抛 "cannot be called from a running event loop"），
+  得检测到有循环就换线程跑
+- **stdio 传输每次工具调用都重新拉起子进程**：adapter 默认无状态，
+  每次调用新建一个 MCP 会话。慢，但不用管进程生死
+- **`asyncio.Lock` 不能随便用来给异步加载加锁**：它会把实例绑死在第一个用到它的
+  事件循环上（`asyncio.mixins._LoopBoundMixin`），langgraph dev 的运行循环不一定
+  只有一个，绑死了在别的事件循环里直接抛 `RuntimeError`。
+  加载本身幂等的话，不加锁最坏只是多连一次服务器
+- **FastMCP 是官方 `mcp` 包自带的**（`mcp.server.fastmcp`），不用另外装
+  `fastmcp`（那是另一个 PyPI 包）。`examples/mcp_stdio_server.py` 就是这么写的，
+  零新依赖。`mcp` 包是 `langchain-mcp-adapters` 的依赖，跟着装上了
+- **adapter 自带的 `tool_name_prefix` 拼的是 `{服务器}_{工具}`**（单下划线），
+  跟项目 skill 里写的 `mcp__docs-langchain__*` 对不上，所以前缀还是得自己加。
+  改 `tool.name` 是安全的：`BaseTool.__setattr__` 在 `name` 被重新赋值时会
+  清掉缓存的 `tool_call_schema`（langchain_core/tools/base.py 的
+  `_TOOL_CALL_SCHEMA_FIELDS`）
+- **可以原地改 adapter 的工具，不用重建 `StructuredTool`**：重建会把 adapter
+  已经配好的 `handle_tool_error` 丢掉——那个 handler 负责让 MCP 自己报的错
+  （`isError=True`）保留图片等内容块，不该被拍平成一句话。本项目只改 `name`
+- **子 agent 默认继承 MCP 工具，但只读子 agent 不能继承**（实测 + 收紧）：
+  deepagents `graph.py` 里 `raw_subagent_tools = spec.get("tools") if "tools" in spec else tools`，
+  `conf/subagents.toml` 里的子 agent 没写 `tools` 就继承主 agent 的。
+  实测 general-purpose 子 agent 调通了 `mcp__demo__echo`，返回 `echo: sub-agent-test`。
+  **但声明了 `permissions` 的 `reviewer` 必须例外**：它的只读靠无 shell 的
+  `FilesystemBackend` 保证，MCP 工具不经过那层——`apply_subagent_policies()`
+  会把这类子 agent 的 `tools` 置空。另外子 agent 自己写 `interrupt_on` 会**整体
+  替换**父级的（`fixer` 因此丢了 `execute` 的确认），这个函数也做了合并
+- **调用期失败由 `tool_interceptors` 兜底**（实测）：拦截器重试一次后返回
+  `CallToolResult(isError=True)`，adapter 转成 `status="error"` 的 ToolMessage。
+  实测把加载成功的 stdio 脚本删掉再调工具，`ainvoke` 返回的是
+  `ToolMessage(status="error")`，内容里有工具名、服务器名和根因（`McpError: Connection closed`），
+  整轮 run 不会崩。**超时不重试**（`httpx.TimeoutException` / `TimeoutError`
+  直接失败）：时间预算已经烧掉了，再等一次只会更慢
+- **stdio 传输端到端跑通**（实测）：`conf/mcp.json` 里配一个 stdio 服务器
+  （`command` + `args` 指到 `examples/mcp_stdio_server.py`），重启后端后
+  agent 调 `mcp__demo__echo` 返回 `echo: hello-stdio`。http 和 stdio 是两条
+  不同的路径（一个走 streamable-http，一个拉起子进程走 stdin/stdout），
+  http 通了不代表 stdio 通了
+- **早先那版的「限时」是假的**（实测后改的）：当时只在两次重试之间看时间戳，
+  一个挂死的服务器（`command` 指到一个 `time.sleep(999)` 的脚本）照样能把
+  加载拖住。现在用 `asyncio.wait_for` 真的掐断——挂死服务器实测被 12 秒
+  **总预算**掐掉、只少它自己的工具，其余照常。**超时不再重试**：
+  早先超时也进重试循环，1 秒预算实测跑出 3.31 秒（3 次尝试）
+- **anyio 的 TaskGroup 会把真实异常包进 `ExceptionGroup`**：直接打印只看得到
+  「unhandled errors in a TaskGroup (1 sub-exception)」，看不出是网络问题、
+  超时还是 401。要一层层剥到最里层，日志里才看得到
+  `ConnectError: All connection attempts failed`
+- **pydantic 的宽松模式会悄悄改类型**：`timeout: true` → 1.0（= 1 秒超时！）、
+  `timeout: "8"` → 8.0。两种都不是用户想写的意思，得在 `mode="before"` 拦下来
+- **服务器并行加载，总耗时 ≈ 单个服务器的预算**（不是各预算之和），
+  所以「配了十个服务器九个全挂」也不会把启动拖过 launcher 的 60 秒就绪超时。
+  注意 12 秒是**含重试的总预算**，不是每次尝试的预算
+- **配置校验要逐个服务器做**（实测踩到）：一把梭抛错会让**整个 MCP 都没了**——
+  连能用的那几个服务器也一起废掉，界面上完全看不出来。真实配置里带
+  `description` 字段（Claude Desktop / VS Code 那种格式常见）就能触发。
+  现在改成逐个服务器校验，写错的只跳它自己；`description` 也认了（认了但忽略）
+- **npx 起的 MCP 服务器也能用**（实测）：`npx -y @modelcontextprotocol/server-memory`
+  这种首次要现下载包的，第一次加载会慢一点（在 12 秒预算内没超），之后走缓存很快。
+  实测 agent 调通了 `mcp__memory__create_entities` / `mcp__memory__create_relations`。
+  **冷缓存 + 慢网络仍可能超过 12 秒预算**——那台服务器就等下次重启，这是有意的取舍
+- **`conf/mcp.json` 不入库**（013 期收尾）：仓库只提供 `conf/mcp.example.json`
+  （两个只读公网服务器）。它是机器相关的；更重要的是**配 MCP 等于引入一段启动时
+  执行的第三方代码**（stdio 的 `command` 在建图时直接拉起），服务器给的工具有
+  副作用、工具描述会进模型上下文。`.gitignore` 和 `.dockerignore` 都已排除它
+
 ---
 
 ## 9. 常见问题
@@ -1272,6 +1724,38 @@ pkill -f "langgraph_cli dev"
 **工作空间选择器报错**
 正常，`/directories` 后端未实现。
 
+**agent 看不到 MCP 工具 / 工具没挂上**
+按这个顺序查：
+
+1. 后端日志里有没有「MCP 工具已加载：N 个」。没有这一行 = `conf/mcp.json`
+   没被读到（文件不存在、或 JSON 语法错误）。
+2. 有「MCP 配置不合法」= 配置写错了。错误信息会指出是哪个服务器的哪个字段
+   （比如 `type 'stio' 不支持`——手误）。
+3. 有「MCP 服务器 'xxx' 连不上」= 那个服务器挂了，其余服务器的工具有效。
+   **它不会自动恢复**，要等下次重启（静态注册的代价）。
+4. 工具挂上了但 agent 不调 = 看模型有没有别的更顺手的选择；
+   直接点名工具名（`mcp__docs-langchain__search_docs_by_lang_chain`）更稳。
+
+**改了 `conf/mcp.json` 没反应**
+改完要**重启 `scode`**（工具是建图时静态注册的）。确认改的是**项目根的
+`conf/mcp.json`**（不是工作空间里的同名文件），而且 JSON 语法没错。
+仓库里没有这个文件时，先从 `conf/mcp.example.json` 复制。
+
+**MCP 工具调用报 "调用失败"**
+那不是崩溃，是 `tool_interceptors` 把传输层的失败兜成了 `status="error"` 的
+ToolMessage（框架默认会把工具异常直接抛上去，一次网络抖动就让整个 run
+变成 internal error）。错误文本里有工具名、服务器名和根因。
+模型看到的是「这个工具没调通」，可以换个工具重试——实测过：agent 会重试几次，
+最后如实告诉用户「这个 MCP 服务器现在完全不可用」。
+
+**本地脚本 `graph.invoke()` 调 MCP 工具报 `NotImplementedError`**
+预期行为：adapter 只提供异步实现，本项目不补同步壳。用 `await graph.ainvoke(...)`
+或让 Agent Server 执行。
+
+**启动时打印「工作空间就是后端仓库本身」**
+agent 能写 `conf/mcp.json` 和后端源码，这些会在下次启动时执行。按提示用
+`SCODE_WORKSPACE=/path/to/project` 指向单独的项目目录。
+
 **前端不弹确认卡片，但命令执行了**
 先看档位：是不是传了 `auto`。`auto` 档就是全部放行。
 
@@ -1297,7 +1781,7 @@ pkill -f "langgraph_cli dev"
 **建图时报 `NotImplementedError: FilesystemMiddleware does not yet support
 permissions with backends that provide command execution`**
 有子 agent 声明了 `permissions`，而它的 backend 带 shell。看
-`graph/backend.py` 的 `apply_permission_backend()`——正常路径下 `permissions`
+`graph/backend.py` 的 `apply_subagent_policies()`——正常路径下 `permissions`
 会被摘出来换成无 shell 的中间件。出现这个报错说明有子 agent 绕过了那层处理。
 
 **`task` 工具里只有 `general-purpose`**

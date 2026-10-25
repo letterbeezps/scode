@@ -21,6 +21,9 @@
 
 # 密钥（AGENTS.md：API key 只走环境变量 / 本地文件，不入库）
 conf/config.toml
+# MCP 配置是机器相关的，而且 stdio 服务器会在启动时执行命令；
+# 容器里 conf/ 由 compose 从宿主挂载，不需要打进镜像
+conf/mcp.json
 .env
 .env.*
 !.env.example

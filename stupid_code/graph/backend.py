@@ -104,8 +104,27 @@ _FS_TOOLS_WITHOUT_EXECUTE: list[FsToolName] = [
 ]
 
 
-def apply_permission_backend(spec: SubAgent) -> SubAgent:
-    """把声明了 `permissions` 的子 agent 规格改成"无 shell"版本。
+def apply_subagent_policies(
+    spec: SubAgent,
+    *,
+    default_interrupt_on: dict[str, Any] | None = None,
+) -> SubAgent:
+    """把主 agent 的安全策略收紧到子 agent 规格上。
+
+    做两件事：
+
+    1. **继承父级的 `interrupt_on`**。框架的默认语义是「子 agent 规格里写了
+       `interrupt_on` 就整体替换父级的」——`fixer` 声明了 `write_file` /
+       `edit_file` 的确认之后，`execute` 的人工确认就静默没了。这里显式合并
+       （规格里同名的键优先，和框架合并文件权限的规则一致）。
+    2. **声明了 `permissions` 的子 agent 不继承 MCP 工具**。它的「只读」是靠
+       无 shell 的 `FilesystemBackend` 保证的，而 MCP 工具完全不经过那一层
+       ——继承过来等于给了它另一条写路径（服务器给什么它就能做什么）。
+       主 agent 传给 `create_deep_agent` 的 `tools` 只有 MCP 工具，所以
+       `tools = []` 就是「不接 MCP」；文件工具来自 FilesystemMiddleware，
+       不受影响。
+
+    声明了 `permissions` 的子 agent 还要换成“无 shell”版本：
 
     为什么要改：框架在 backend 支持命令执行时拒绝 `permissions`
     （`NotImplementedError`），而主 agent 的 backend 有 shell。这类子 agent
@@ -120,18 +139,27 @@ def apply_permission_backend(spec: SubAgent) -> SubAgent:
     这么做的，见 `deepagents.graph._build_interrupt_on_from_permissions`）：
     子 agent 规格里的 `interrupt_on` 优先级更高，和框架的合并规则一致。
     """
-    permissions = spec.get("permissions")
-    if not permissions:
-        return spec
-
     new_spec: dict[str, Any] = dict(spec)
+
+    if default_interrupt_on:
+        new_spec["interrupt_on"] = {
+            **default_interrupt_on,
+            **new_spec.get("interrupt_on", {}),
+        }
+
+    permissions = new_spec.get("permissions")
+    if not permissions:
+        return cast("SubAgent", new_spec)
+
     new_spec.pop("permissions", None)
+    # 只读子 agent 不继承 MCP 工具（见 docstring 第 2 条）
+    new_spec["tools"] = []
 
     # 中间件和 interrupt 判定用同一个 backend 实例：后者要靠它解析符号链接，
     # 否则链接指向的路径不在规则的匹配范围内，interrupt 就拦不住
     restricted = build_restricted_backend()
 
-    middleware = list(spec.get("middleware", []))
+    middleware = list(new_spec.get("middleware", []))
     middleware.append(
         FilesystemMiddleware(
             backend=restricted,
@@ -144,7 +172,10 @@ def apply_permission_backend(spec: SubAgent) -> SubAgent:
     fs_interrupts = interrupt_on_from_permissions(list(permissions), restricted)
     if fs_interrupts:
         # 规格里显式写的 interrupt_on 优先（和框架的合并规则一致）
-        new_spec["interrupt_on"] = {**fs_interrupts, **spec.get("interrupt_on", {})}
+        new_spec["interrupt_on"] = {
+            **fs_interrupts,
+            **new_spec.get("interrupt_on", {}),
+        }
 
     return cast("SubAgent", new_spec)
 

@@ -65,10 +65,14 @@ stupid_code/
 │   ├── agent.py           # create_deep_agent()，导出 graph
 │   ├── backend.py         # 真实 backend：CompositeBackend(default=LocalShellBackend)
 │   ├── memory.py          # 长期记忆：工作空间根的 .scode-memory.md（没有就创建）
+│   ├── compaction.py      # /compaction 手动压缩 + 摘要用当前选中的模型
+│   ├── model_switch.py    # 运行期切换对话模型（configurable.model）
+│   ├── mcp.py             # MCP 工具加载：建图时取一次，交给 create_deep_agent(tools=...)
 │   └── persistence.py     # SQLite 工厂：checkpoint/store → ../data/langgraph.db
 ├── config/           # 读项目根 conf/ 的那层（代码在这里，数据在 ../../conf/）
 │   ├── model.py           # conf/config.toml → 模型实例 + CRUD helpers
 │   ├── subagent.py        # conf/subagents.toml → SubAgent 规格
+│   ├── mcp.py             # conf/mcp.json → MCP 连接参数
 │   └── prompts.py         # 主 agent 的系统提示词
 ├── admin/            # 挂在 /admin 下的管理接口
 │   ├── app.py             # Starlette 子应用与路由表
@@ -80,16 +84,20 @@ stupid_code/
 |---|---|
 | **起停** | |
 | [__init__.py](__init__.py) | `start()` —— `scode` 命令入口；设 `sys.dont_write_bytecode` 保证源码目录零运行残留 |
-| [launcher.py](launcher.py) | cwd 即工作空间、生成临时派生配置、就绪探测、生命周期管理（`.langgraph_api` 保留不清理） |
+| [launcher.py](launcher.py) | 工作空间（`SCODE_WORKSPACE` 或当前目录，工作空间在仓库根时警告）、生成临时派生配置、就绪探测、生命周期管理（`.langgraph_api` 保留不清理） |
 | **图与持久化**（`graph/`） | |
 | [graph/agent.py](graph/agent.py) | `code_agent` 图：`create_deep_agent()`，导出 `graph` |
-| [graph/backend.py](graph/backend.py) | 真实 backend：`CompositeBackend(default=LocalShellBackend)`（真实磁盘 + 本机 shell，`/tmp/` 走虚拟 FS）；声明了 `permissions` 的子 agent 换成无 shell 的 backend |
+| [graph/backend.py](graph/backend.py) | 真实 backend：`CompositeBackend(default=LocalShellBackend)`（真实磁盘 + 本机 shell，`/tmp/` 走虚拟 FS）；`apply_subagent_policies()` 给声明了 `permissions` 的子 agent 换无 shell 的 backend、不继承 MCP 工具，并合并父级 `interrupt_on` |
 | [graph/memory.py](graph/memory.py) | 长期记忆：读工作空间根的 `.scode-memory.md`（不存在就创建），装成 `MemoryMiddleware` 挂进 `middleware=` |
+| [graph/compaction.py](graph/compaction.py) | `/compaction` 手动压缩历史 + 摘要用当前选中的模型；`.name` 报成框架自带那份的公开别名，顶掉而不是叠加 |
+| [graph/model_switch.py](graph/model_switch.py) | 运行期切换对话模型：中间件在每次模型调用前把 `request.model` 换成用户选中的那个 |
+| [graph/mcp.py](graph/mcp.py) | MCP 工具加载：按 `conf/mcp.json` 连服务器取工具（并行 + 总预算限时）、加 `mcp__{服务器}__{工具}` 前缀、检测重名；用 adapter 的 `tool_interceptors` 兜传输层失败并在调用期重试一次。协议本身交给 `langchain-mcp-adapters` / 官方 `mcp` SDK |
 | [graph/permissions.py](graph/permissions.py) | shell 人工确认：权限档位解析（manual/normal/auto）+ 危险命令识别 + `interrupt_on` 的 `when` 谓词 |
 | [graph/persistence.py](graph/persistence.py) | SQLite 持久化工厂：`AsyncSqliteSaver`（checkpoint）+ `AsyncSqliteStore`（store），都指向 `../data/langgraph.db` |
 | **配置解析**（`config/`） | |
 | [config/model.py](config/model.py) | 加载与校验 `../../conf/config.toml`，构建模型实例；CRUD helpers |
 | [config/subagent.py](config/subagent.py) | 加载与校验 `../../conf/subagents.toml`，转成 deepagents 的 `SubAgent` 规格 |
+| [config/mcp.py](config/mcp.py) | 加载与校验 `../../conf/mcp.json`（pydantic 声明字段，未知字段当场报错），展开 `${VAR}`，转成 MCP 客户端的连接参数（http / stdio / sse / websocket） |
 | [config/prompts.py](config/prompts.py) | 主 agent 的系统提示词。框架 0.7.28 已不提供内置基础提示词，这段就是模型唯一看到的系统提示词 |
 | **管理接口**（`admin/`） | |
 | [admin/app.py](admin/app.py) | 挂在 langgraph dev 的 Starlette 子应用与路由表（`langgraph.json` 的 `http.app` 指向它） |
@@ -122,12 +130,21 @@ stupid_code/
 > `execute` 有**人工确认**（009 期）：按运行期传来的权限档位决定拦不拦，拦下时图挂起，
 > 前端弹确认卡片，批准/拒绝后用 `command.resume` 让图继续。见
 > `../docs/backend/PROGRESS.md` 的「009 · shell 的人工确认（HITL）」一节。
+>
+> MCP 服务器配在项目根 `conf/mcp.json`（013 期，格式跟 Claude Code 一致，**不入库**——
+> 仓库只提供 `conf/mcp.example.json`，按需复制）：
+> `http` 和 `stdio` 都支持，工具在建图时静态注册（名字是 `mcp__{服务器}__{工具}`）。
+> **改完要重启后端**（跟 `conf/subagents.toml` 一样）；某个服务器连不上只少它那几个工具。
+> stdio 服务器会在启动时执行命令，只配信任的服务器。
+> 仓库根的 `examples/mcp_stdio_server.py` 是一个能直接跑的 stdio 服务器（零新依赖），
+> 拿来验 stdio 传输。字段说明见 `../docs/backend/PROGRESS.md` 的「013 · MCP 支持」一节。
 
 ## 注意
 
 - 不要给 `create_deep_agent()` 传 `checkpointer`：持久化由平台在 `langgraph.json` 层配置（`checkpointer`/`store` 指向 `graph/persistence.py`），在 agent 里显式传入会启动失败。对话历史写入 `data/langgraph.db`，重启后仍可恢复；删除该文件即重置全部历史。
 - 模型供应商配置在项目根 `conf/config.toml`（从 `conf/config.example.toml` 复制），选择顺序 `default` → `recent`，协议只支持 anthropic / openai；改配置需重启服务。
 - 子 agent 配置在项目根 `conf/subagents.toml`，同样改完要重启服务（子 agent 在 `graph/agent.py` 导入时构建一次）。`model` 必须是 `config.toml` 里配过的供应商 + 其 `models` 白名单里的模型名。
+- MCP 配置在项目根 `conf/mcp.json`（不入库，从 `conf/mcp.example.json` 复制），**改完要重启服务**（工具在建图时静态注册，跟 `conf/subagents.toml` 一样）。连接参数里的任何字符串都可以写 `${VAR}`，从进程环境展开，别写死密钥。MCP 工具只有异步实现（本地脚本 `graph.invoke()` 调它会抛 `NotImplementedError`）；声明了 `permissions` 的只读子 agent 不继承 MCP 工具。
 - 长期记忆用 `middleware=` 挂 `MemoryMiddleware`，**不要用 `create_deep_agent(memory=...)`**：后者只能用框架默认的 StateBackend，读不到磁盘上的 `.scode-memory.md`。
 - 记忆**只在会话开始时读一次**：改了 `.scode-memory.md` 要开新会话（新建 thread）才生效。
 - **backend 是真实磁盘 + 本机 shell**（`graph/backend.py`）。agent 能读工作空间里的任何文件

@@ -6,8 +6,11 @@
     uv run scode
 
 工作空间语义：
-- 在哪个目录运行 scode，那个目录就是 agent 的工作空间（子进程 cwd 不搬动）；
-  agent 的 shell / 文件工具以这里为根（backend 是真实磁盘，见 graph/backend.py）。
+- 默认就是运行 scode 的目录（子进程 cwd 不搬动）；agent 的 shell / 文件工具
+  以这里为根（backend 是真实磁盘，见 graph/backend.py）。
+- 也可以用 `SCODE_WORKSPACE` 显式指定。**推荐指向一个和仓库分开的目录**：
+  agent 能写工作空间里的任何文件，如果工作空间就是仓库，它就能改
+  `conf/mcp.json` 和后端源码，而这些会在下次启动时被执行。
 - langgraph dev 必然在 cwd 下生成 `.langgraph_api/`（inmem 运行时硬编码的
   相对路径，无法通过配置改到别处）。**这个目录要保留，不要删**：checkpoint
   确实已由 graph/persistence.py 的 SQLite saver 接管（同名的
@@ -133,6 +136,21 @@ def _graph_node_count(client: httpx.Client) -> int | None:
     return len(nodes) or None
 
 
+def _resolve_workspace() -> Path:
+    """工作空间目录：SCODE_WORKSPACE 优先，否则就是当前目录。
+
+    推荐用环境变量把工作空间和仓库分开——agent 的写权限覆盖整个工作空间，
+    而仓库里的 `conf/mcp.json`、后端源码都会在下次启动时被执行。
+    """
+    raw = os.environ.get("SCODE_WORKSPACE", "").strip()
+    if not raw:
+        return Path.cwd().resolve()
+    workspace = Path(raw).expanduser().resolve()
+    if not workspace.is_dir():
+        raise RuntimeError(f"SCODE_WORKSPACE 指向的目录不存在：{workspace}")
+    return workspace
+
+
 def _is_port_free(port: int) -> bool:
     """端口能不能拿来监听。
 
@@ -245,12 +263,12 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _handle_sigterm)
     signal.signal(signal.SIGINT, _handle_sigterm)
 
-    # 用户在哪个目录运行 scode，哪个目录就是工作空间（子进程 cwd）
-    workspace = Path.cwd()
+    # 工作空间默认是 cwd；SCODE_WORKSPACE 可以显式指定（推荐和仓库分开）
     backend_dir = _backend_dir()
 
     # 端口锁死 2024：被占用就启动失败（见 _resolve_port 的理由）
     try:
+        workspace = _resolve_workspace()
         port = _resolve_port()
     except RuntimeError as exc:
         print(f"启动失败：{exc}", file=sys.stderr)
@@ -304,6 +322,12 @@ def main() -> None:
 
         print(f"正在启动 LangGraph Agent Server（{BIND_HOST}:{port}）...")
         print(f"工作空间：{workspace}")
+        if workspace == backend_dir.parent.resolve():
+            print(
+                "⚠️  工作空间就是后端仓库本身：agent 能改写 conf/mcp.json 和后端源码，"
+                "这些会在下次启动时被执行。建议用 "
+                "SCODE_WORKSPACE=/path/to/project 指向单独的项目目录。"
+            )
         try:
             with httpx.Client(base_url=base_url) as client:
                 node_count = _wait_until_ready(client, proc)

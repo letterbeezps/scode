@@ -3,11 +3,12 @@ from deepagents import create_deep_agent
 from stupid_code.config.model import load_model
 from stupid_code.config.prompts import SYSTEM_PROMPT
 from stupid_code.config.subagent import load_subagents
-from stupid_code.graph.backend import apply_permission_backend, build_backend
+from stupid_code.graph.backend import apply_subagent_policies, build_backend
 from stupid_code.graph.compaction import (
     build_compaction_middleware,
     build_compaction_tool_middleware,
 )
+from stupid_code.graph.mcp import load_mcp_tools
 from stupid_code.graph.memory import build_memory_middleware
 from stupid_code.graph.model_switch import ChatModelSwitchMiddleware
 from stupid_code.graph.permissions import build_interrupt_on
@@ -24,13 +25,24 @@ default_model = load_model()
 # 加两件事——用户发 /compaction 时强制压缩一次；写摘要用当前选中的模型。
 compaction = build_compaction_middleware(default_model, backend)
 
+# 执行命令前的人工确认：按运行期传来的权限档位决定拦不拦，
+# 拦下时图挂起等前端批准/拒绝——见 graph/permissions.py
+interrupt_on = build_interrupt_on()
+
 graph = create_deep_agent(
     model=default_model,
     system_prompt=SYSTEM_PROMPT,
     # 来自 conf/subagents.toml；文件不存在时为空列表，
     # deepagents 自带的 general-purpose subagent 照常可用。
-    # 声明了 permissions 的子 agent 要换成无 shell 的 backend（见 graph/backend.py）
-    subagents=[apply_permission_backend(spec) for spec in load_subagents()],
+    # 这里统一收紧策略：子 agent 继承父级 interrupt_on；声明了 permissions 的
+    # 子 agent 换无 shell 的 backend，并且不继承 MCP 工具（见 graph/backend.py）
+    subagents=[
+        apply_subagent_policies(spec, default_interrupt_on=interrupt_on)
+        for spec in load_subagents()
+    ],
+    # MCP 服务器的工具：建图时按 conf/mcp.json 取一次，交给框架当普通工具。
+    # 服务器连不上只少它那几个工具，不会让后端起不来。见 graph/mcp.py
+    tools=load_mcp_tools(),
     backend=backend,
     # 长期记忆：读工作空间根的 .scode-memory.md（没有就创建）。
     # 走 middleware 参数而不是 create_deep_agent 的 memory 参数，
@@ -46,7 +58,5 @@ graph = create_deep_agent(
         build_compaction_tool_middleware(compaction),
         build_memory_middleware(),
     ],
-    # 执行命令前的人工确认：按运行期传来的权限档位决定拦不拦，
-    # 拦下时图挂起等前端批准/拒绝——见 graph/permissions.py
-    interrupt_on=build_interrupt_on(),
+    interrupt_on=interrupt_on,
 )

@@ -108,11 +108,77 @@ system_prompt = "你是一个严格的代码审查员。"
 文件不存在 = 不配置子 agent，deepagents 自带的 `general-purpose` 照常可用。
 完整字段表见 [`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md) 的「004 · 子 agent 配置」一节。
 
+### 3.2 配 MCP 服务器（可选）
+
+**建在根目录 `conf/mcp.json`**（013 期，**不入库**——按需从
+`conf/mcp.example.json` 复制）。格式跟 Claude Code / Cursor 一致，
+`http` 和 `stdio` 两种传输都支持：
+
+```bash
+cp conf/mcp.example.json conf/mcp.json
+```
+
+```json
+{
+  "mcpServers": {
+    "docs-langchain": {
+      "type": "http",
+      "url": "https://docs.langchain.com/mcp"
+    },
+    "local-fs": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    }
+  }
+}
+```
+
+> **配 MCP = 把第三方代码接进你的 agent**：stdio 服务器在**每次启动后端时
+> 直接执行命令**，服务器提供的工具有副作用（写文件、发请求……），工具描述
+> 也会进入模型上下文。只配你信任的服务器。
+
+- `type` 可以不写：有 `command` 当作 stdio，有 `url` 当作 http
+- `description` 那种给界面看的字段可以留着，认了但会忽略
+- 密钥别写死在文件里——连接参数里的任何字符串（`url` / `command` / `args` /
+  `cwd` / `env` 的值 / `headers` 的值）都可以写 `${VAR}`，从进程环境展开
+- **改完要重启后端**（工具是建图时静态注册的，跟 `conf/subagents.toml` 一样）
+- 某个服务器连不上只少它那几个工具，其余照常；它要等下次重启才会自动回来
+- 某个服务器**配置写错**也只跳它自己，其余照常（日志里会说明为什么）
+- agent 看到的工具名是 `mcp__<服务器>__<工具>`，比如 `mcp__docs-langchain__search_docs_by_lang_chain`
+- 子 agent 默认也能用这些工具；但声明了 `permissions` 的只读子 agent
+  （`reviewer`）**不会**继承（MCP 不经过文件权限层，继承等于另开一条写路径）
+- MCP 工具只有异步实现：Agent Server 里正常用，本地脚本 `graph.invoke()` 调它会抛 `NotImplementedError`
+
+**想试 stdio 传输？** 仓库里带了一个现成的本地服务器
+（`examples/mcp_stdio_server.py`，用官方 `mcp` 包自带的 FastMCP，不用装任何东西）：
+
+```json
+{
+  "mcpServers": {
+    "demo": {
+      "type": "stdio",
+      "command": "/绝对路径/stupid-code/.venv/bin/python",
+      "args": ["/绝对路径/stupid-code/examples/mcp_stdio_server.py"]
+    }
+  }
+}
+```
+
+文件不存在 = 不接任何 MCP 服务器。完整字段表见
+[`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md) 的「013 · MCP 支持」一节。
+
 ### 4. 跑起来
 
 ```bash
-uv run scode
+# 推荐：工作空间和仓库分开
+cd ~/projects/my-work
+uv run --project /path/to/stupid-code scode
 ```
+
+也可以直接在仓库根 `uv run scode`（工作空间就是仓库）——但 agent 有工作空间的
+写权限，它能改 `conf/mcp.json` 和后端源码，而这些会在下次启动时执行。scode
+检测到这种情况会打印警告。
 
 看到这两行才算启动成功（`/ok` 通了 + `code_agent` 图能加载）：
 
@@ -220,7 +286,7 @@ docker compose up --build
 
 要点：
 
-- **工作空间默认是仓库本身** —— `SCODE_WORKSPACE` 指向的目录挂到容器里的 `/workspace`，agent 的文件 / shell 工具以此为根。想让它改别的项目：`SCODE_WORKSPACE=~/projects/other docker compose up`。
+- **工作空间默认是仓库本身** —— `SCODE_WORKSPACE` 指向的目录挂到容器里的 `/workspace`，agent 的文件 / shell 工具以此为根。**建议指向单独的项目目录**：指向仓库时，agent 能改 `conf/mcp.json` 和后端源码，下次启动就会执行。想让它改别的项目：`SCODE_WORKSPACE=~/projects/other docker compose up`。
 - **历史不会丢** —— thread 索引（`.langgraph_api/`）落在工作空间里，checkpoint（`stupid_code/data/langgraph.db`）挂在宿主上，容器重建后接着用。
 - **api_key 不进镜像** —— `conf/config.toml` 被 `.dockerignore` 排除，靠 volume 挂进去。
 - **端口只绑 127.0.0.1** —— 容器内后端进程绑 `0.0.0.0`（不然容器之间连不上），但宿主侧的端口映射只绑本机，对外依然只有本机能访问。
@@ -233,16 +299,17 @@ docker compose up --build
 
 跑起来就会撞上的几件事：
 
-- **在哪个目录运行 `uv run scode`，那个目录就是 agent 的工作空间** —— langgraph 子进程的 cwd 就是它，agent 的文件 / shell 工具以此为根。
+- **工作空间默认是运行 scode 的目录，也可以用 `SCODE_WORKSPACE` 指定** —— langgraph 子进程的 cwd 就是它，agent 的文件 / shell 工具以此为根。**别把仓库根当工作空间**：agent 能写工作空间里的任何文件，包括 `conf/mcp.json` 和后端源码，这些会在下次启动时执行，等于绕开 `execute` 的人工确认。
 - **端口锁死 2024** —— 被占用时 `scode` 直接启动失败并说明是谁占着，**不会自动换端口**（自动换会让就绪检查打到旧服务上，误报"已就绪"，前端连的是旧代码）。
 - **持久状态分两处，缺一不可** —— thread 索引在工作空间的 `.langgraph_api/`，checkpoint / store 在 `stupid_code/data/langgraph.db`（已 gitignore，删掉即重置历史）。
-- **人工确认只拦 `execute`** —— 文件类工具（`write_file` / `edit_file` / `delete`）不拦，那是 code agent 的日常。agent 仍能读工作空间里的任何文件。
+- **人工确认只拦 `execute`** —— 文件类工具（`write_file` / `edit_file` / `delete`）不拦，那是 code agent 的日常。agent 能读**也能写**工作空间里的任何文件。
 - **恢复挂起的运行** —— 请求体要带同一个 `configurable.permissions`；`command.resume.decisions` 的个数必须和挂起时的 `action_requests` 一样多，否则框架直接抛错。
 - **换模型不用重启后端** —— 但 harness profile 和摘要阈值是建图时定死的，不跟着换；子 agent 一律用各自配置里的模型。
 - **记忆只在会话开始时读一次** —— 改完 `.scode-memory.md` 要开新会话才生效。
 - **框架 0.7.x 不再提供内置系统提示词** —— `create_deep_agent(system_prompt=...)` 传进去的就是模型唯一看到的系统提示词，行为准则写在 `stupid_code/config/prompts.py`。
 - **API key 走 `conf/config.toml`**，已 gitignore，别硬编码进代码。
 - **工作空间选择器在真后端下报 404 属预期** —— `GET /directories` 后端还没实现，前端已按契约写好。
+- **MCP 服务器配在 `conf/mcp.json`**（不入库，按需从 `conf/mcp.example.json` 复制）—— http 和 stdio 都支持，**改完要重启后端**（跟 `conf/subagents.toml` 一样）；某个服务器连不上只少它那几个工具，不会弄死整轮对话。stdio 服务器会在启动时执行命令，只配信任的服务器。
 
 完整的踩坑清单（含代码位置、原因、验证方式）见 [`AGENTS.md`](AGENTS.md)；已知缺口见 [`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md) 的「已知缺口」一节。
 

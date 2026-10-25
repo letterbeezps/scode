@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "docs-langchain": {
+      "description": "LangChain 文档搜索（公网，只读）",
+      "type": "http",
+      "url": "https://docs.langchain.com/mcp"
+    },
+    "reference-langchain": {
+      "description": "LangChain API 参考（公网，只读）",
+      "type": "http",
+      "url": "https://reference.langchain.com/mcp"
+    }
+  }
+}
