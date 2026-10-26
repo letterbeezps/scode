@@ -35,7 +35,7 @@ import logging
 import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langchain_core.messages import SystemMessage
@@ -88,8 +88,34 @@ def default_workspace() -> Path:
     return _default_workspace
 
 
-_resolved_cache: dict[str, Path] = {}
-"""原始路径 -> 解析后的真实路径。
+class WorkspaceRoot(NamedTuple):
+    """一个工作空间的两种路径形态。
+
+    - `resolved`：真实路径（软链已展开）。**文件系统工具的根目录用这个**，
+      越界检查要拿真实位置比。
+    - `given`：用户给的那条路径（`~` 展开、`.`/`..` 归一化，但**不展开软链**）。
+
+    为什么要两个：模型手里可能有任一种形态的绝对路径。系统提示词里给的是
+    `resolved`，但用户在对话里打的是 `given`（比如手打 `/tmp/proj`，而真实
+    路径是 `/private/tmp/proj`——macOS 上 `/tmp` 是软链）。
+
+    拿 `resolved` 去剥 `given` 形态的前缀会失配，`relative_to` 直接抛
+    ValueError → 前缀剥不掉 → 框架把绝对路径当虚拟路径 → 文件落到
+    `<工作空间>/tmp/proj/...` 这种嵌套目录里，**还不报错**（实测踩到）。
+    """
+
+    resolved: Path
+    given: Path
+
+    def candidates(self) -> tuple[Path, ...]:
+        """剥前缀时依次尝试的根目录（去重）。"""
+        if self.given == self.resolved:
+            return (self.resolved,)
+        return (self.resolved, self.given)
+
+
+_resolved_cache: dict[str, WorkspaceRoot] = {}
+"""原始路径 -> 解析后的工作空间（两种形态）。
 
 解析（`resolve()` 展开软链、`exists()` / `is_dir()` 校验）要读文件系统，
 在事件循环里会被 blockbuster 拦下。所以解析结果缓存起来：每轮运行开跑前
@@ -101,7 +127,7 @@ _resolved_cache: dict[str, Path] = {}
 """
 
 
-def _normalize_workspace(raw: str) -> Path:
+def _normalize_workspace(raw: str) -> WorkspaceRoot:
     """把用户给的路径归一化成真实存在的目录。**会读文件系统。**
 
     - `~` 展开成用户主目录
@@ -127,7 +153,10 @@ def _normalize_workspace(raw: str) -> Path:
         raise WorkspaceError(f"工作空间不存在：{resolved}")
     if not resolved.is_dir():
         raise WorkspaceError(f"工作空间不是目录：{resolved}")
-    return resolved
+    # given 形态：只做纯字符串归一化（`normpath` 收掉 `.` / `..`），
+    # 不碰文件系统、不展开软链
+    given = Path(os.path.normpath(str(path)))
+    return WorkspaceRoot(resolved=resolved, given=given)
 
 
 def resolve_workspace_path(raw: str) -> Path:
@@ -140,10 +169,10 @@ def resolve_workspace_path(raw: str) -> Path:
     """
     cached = _resolved_cache.get(raw)
     if cached is not None:
-        return cached
-    resolved = _normalize_workspace(raw)
-    _resolved_cache[raw] = resolved
-    return resolved
+        return cached.resolved
+    root = _normalize_workspace(raw)
+    _resolved_cache[raw] = root
+    return root.resolved
 
 
 def workspace_from_configurable(configurable: Any) -> str | None:
@@ -204,6 +233,32 @@ def current_workspace() -> Path:
     return resolve_workspace_path(raw)
 
 
+def current_workspace_root() -> WorkspaceRoot:
+    """当前运行的工作空间（两种路径形态）。
+
+    热路径用：每次工具调用都要拿根目录来剥绝对路径前缀。
+    跟 `current_workspace()` 一样不读文件系统——解析结果由中间件在每轮开跑前
+    校验并缓存好（见 `_validate_workspace`）。
+    """
+    try:
+        config = get_config()
+    except RuntimeError:
+        resolved = default_workspace()
+        return WorkspaceRoot(resolved=resolved, given=resolved)
+    configurable = config.get("configurable") if isinstance(config, dict) else None
+    raw = workspace_from_configurable(configurable)
+    if raw is None:
+        resolved = default_workspace()
+        return WorkspaceRoot(resolved=resolved, given=resolved)
+    cached = _resolved_cache.get(raw)
+    if cached is not None:
+        return cached
+    # 缓存未命中：解析一次（只能在事件循环之外跑，由调用方保证走线程）
+    root = _normalize_workspace(raw)
+    _resolved_cache[raw] = root
+    return root
+
+
 def _config_or_none() -> RunnableConfig | None:
     """当前 runnable config；取不到（建图阶段 / 本地脚本）返回 None。"""
     try:
@@ -235,13 +290,13 @@ def _raw_workspace(config: RunnableConfig | None) -> str | None:
 def _refresh_workspace(raw: str) -> Path:
     """重新校验一个工作空间并刷新缓存。**会读文件系统。**"""
     try:
-        resolved = _normalize_workspace(raw)
+        root = _normalize_workspace(raw)
     except WorkspaceError:
         # 已经失效的路径不能留在缓存里：后面的热路径会把它当成合法工作空间
         _resolved_cache.pop(raw, None)
         raise
-    _resolved_cache[raw] = resolved
-    return resolved
+    _resolved_cache[raw] = root
+    return root.resolved
 
 
 def _validate_workspace(config: RunnableConfig | None) -> Path:

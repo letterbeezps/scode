@@ -64,7 +64,35 @@ from deepagents.middleware.filesystem import (
     FsToolName,
 )
 
-from stupid_code.graph.workspace import current_workspace, default_workspace
+from stupid_code.graph.workspace import (
+    current_workspace,
+    current_workspace_root,
+    default_workspace,
+)
+
+
+def _workspace_relative(key: str) -> str | None:
+    """这个 key 是不是「工作空间里的宿主绝对路径」？是的话返回相对工作空间的部分。
+
+    返回 None 表示不是（那它是虚拟路径，或者工作空间之外的绝对路径）。
+
+    **对着两种路径形态各试一次**：工作空间根的 `resolved`（软链已展开）和
+    `given`（用户给的那条）。macOS 上 `/tmp` → `/private/tmp` 是软链，用户
+    手打 `/tmp/proj` 时，只有 `given` 形态能匹配上；反过来，模型拿系统提示词
+    里的真实路径来，只有 `resolved` 形态能匹配上。两种都试才不会失配——
+    失配的后果是前缀剥不掉，文件落进工作空间里的嵌套目录，**还不报错**。
+
+    `/` 单独放行：它是虚拟根（`ls("/")` 要保留 composite 的聚合行为）。
+    """
+    path = Path(key)
+    if not path.is_absolute() or path == Path("/"):
+        return None
+    for root in current_workspace_root().candidates():
+        try:
+            return path.relative_to(root).as_posix()
+        except ValueError:
+            continue
+    return None
 
 
 class _WorkspaceRoot:
@@ -106,18 +134,17 @@ class _WorkspaceRoot:
         文件。剥不掉的（工作空间之外的绝对路径）交回框架按虚拟路径处理——
         它出不去工作空间，只是落到工作空间内的同名子目录里。
 
+        **要对着两种路径形态剥**（`resolved` 真实路径 + `given` 用户给的那条）：
+        macOS 上 `/tmp` 是软链（真实路径 `/private/tmp`），用户可能打的是
+        `/tmp/proj` 而工作空间根是 `/private/tmp/proj`。只拿 `resolved` 去比，
+        `relative_to` 直接失配 → 前缀剥不掉 → 文件落进嵌套目录，还不报错。
+
         用 `Path.is_absolute()` 而不是 `startswith("/")`：Windows 的盘符路径
         （`C:\\...`）也是绝对路径，只认 `/` 的话前缀永远剥不掉。
         """
-        root = self.cwd
-        path = Path(key)
-        if path.is_absolute():
-            try:
-                relative = path.relative_to(root)
-            except ValueError:
-                relative = None
-            if relative is not None:
-                return super()._resolve_path(f"/{relative.as_posix()}")
+        relative = _workspace_relative(key)
+        if relative is not None:
+            return super()._resolve_path(f"/{relative}")
         return super()._resolve_path(key)
 
 
@@ -148,17 +175,7 @@ class WorkspaceCompositeBackend(CompositeBackend):
 
         `/` 单独放行：它是虚拟根，`ls("/")` 要保留 composite 的聚合行为。
         """
-        path = Path(key)
-        if not path.is_absolute() or path == Path("/"):
-            return False
-        # 先取根目录再试相对化：WorkspaceError 是 ValueError 的子类，
-        # 放在 try 里会被下面的 except 静默吞掉（坏工作空间就悄悄路由到虚拟 FS 了）
-        root = current_workspace()
-        try:
-            path.relative_to(root)
-        except ValueError:
-            return False
-        return True
+        return _workspace_relative(key) is not None
 
     def _get_backend_and_key(self, key: str) -> tuple[Any, str]:
         if self._is_workspace_path(key):
