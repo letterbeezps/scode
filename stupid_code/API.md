@@ -28,6 +28,7 @@
 | 管理端 | DELETE | [`/admin/models/{id}`](#delete-adminmodelsid) | 删除模型 | ✅（003 起） |
 | 前端 | GET | [`/admin/memory`](#get-adminmemory) | 读两份长期记忆 | ✅（017 起） |
 | 前端 | PUT | [`/admin/memory`](#put-adminmemory) | 写一份长期记忆 | ✅（017 起） |
+| 前端 | GET | [`/admin/skills`](#get-adminskills) | 列可用的 skill | ✅（018 起） |
 
 ---
 
@@ -682,6 +683,72 @@ agent 的长期记忆有**两个作用域**：
 
 ---
 
+## 技能清单
+
+agent 能用的 skill 有**两个来源**（见 `stupid_code/graph/skills.py`）：
+
+| 作用域 | 磁盘位置 | 跟着谁走 |
+|---|---|---|
+| `user` | `~/.scode/.agents/skills/`（`$SCODE_HOME` 可改） | 用户，跨所有工作空间共用 |
+| `project` | `<工作空间>/.agents/skills/` | 项目 |
+
+**全局是静态的，项目级不是**——项目级在工作空间里，而工作空间是运行期参数
+（`configurable["workspace"]`），所以它每轮现算（见 `graph/skills.py` 的模块说明）。
+
+### `GET /admin/skills`
+
+列出可用的 skill，给前端的斜杠菜单用——用户在输入框敲 `/` 就能看到并勾选。
+
+**Query 参数**
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `workspace` | 否 | 项目级 skill 对应的工作空间绝对路径。不给就用后端默认工作空间（`SCODE_WORKSPACE` 或启动时的 cwd） |
+
+**响应 `200`**
+
+```json
+{
+  "workspace": "/Users/me/projects/demo",
+  "skills": [
+    {
+      "name": "code-review",
+      "description": "提交前自查：读改动、找缺陷和安全问题，只输出问题清单",
+      "scope": "user",
+      "source": "/user-skills/",
+      "path": "/user-skills/code-review/SKILL.md"
+    },
+    {
+      "name": "run-tests",
+      "description": "这个项目的测试怎么跑、怎么挑要跑哪几个",
+      "scope": "project",
+      "source": "/.agents/skills/",
+      "path": "/.agents/skills/run-tests/SKILL.md"
+    }
+  ]
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `name` | skill 名。同时也是**勾选时用的名字**（放进 `configurable.skills`） |
+| `description` | 来自 `SKILL.md` 的 YAML frontmatter |
+| `scope` | `user`（全局）/ `project`（项目级） |
+| `source` | 来源目录的**虚拟路径前缀** |
+| `path` | `SKILL.md` 的**虚拟路径**——不是宿主绝对路径 |
+
+**同名时项目级覆盖全局**（框架按源顺序读，后面的覆盖前面的）。
+
+> `path` 是虚拟路径，由 agent 的 backend 在运行期解析：项目级的相对当前工作空间根，
+> 全局的走 `/user-skills/` 路由指向 `~/.scode/.agents/skills/`。**前端不要把它拼成
+> 绝对路径**。
+
+**响应 `400`** — 工作空间不合法：`{"error": "工作空间不存在：/Users/me/nope"}`
+
+**响应 `500`** — 读目录失败：`{"error": "读 skill 目录失败：..."}`
+
+---
+
 ## 未实现
 
 （暂无。014 期起工作空间走 `POST /workspaces/pick`，不再需要目录列表端点。）
@@ -764,6 +831,25 @@ agent 的长期记忆有**两个作用域**：
   写普通文件返回 False 不拦。路径判定是**纯字符串**操作（`os.path.basename` /
   `expanduser`），不碰文件系统：`when` 谓词跑在工具调用链上，而 `langgraph dev`
   装了 blockbuster，事件循环里的同步 FS 调用会把整轮 run 带崩
+
+### 2026-10-26 实测（skill，018 期）
+
+- **`configurable.skills` 里的名字会被框架 pin 进对话历史**：`SKILL.md` 全文（去掉
+  frontmatter）作为一条 `HumanMessage` 追加进去，形状是
+  `<skill name="xxx" path="...">正文</skill>`
+- **pin 是追加语义**：同一条正文在同一个 thread 里只出现一次（框架用
+  `Overwrite([])` 清 `pinned_skills` 再追加）。**取消勾选不会把它从历史里拿掉**
+- **全局 skill 的虚拟路径是 `/user-skills/<name>/SKILL.md`**，项目级是
+  `/.agents/skills/<name>/SKILL.md`——都不是宿主绝对路径
+- **`FilesystemBackend.__init__` 会读文件系统**（`Path(root_dir).resolve()`）：
+  在 `langgraph dev` 的事件循环里直接构造会被 blockbuster 拦下来
+  （`BlockingError: Blocking call to os.readlink`），请求 500。`GET /admin/skills`
+  的 backend 构造必须走 `asyncio.to_thread`
+- **框架的 `SkillsMiddleware.before_agent` 见到 state 里已有 `skills_metadata` 就跳过**：
+  一个 thread 只读一次。摘掉那个 key 才会重读
+- **`deepagents` 按中间件 `.name` 合并**：撞名原地替换（保留 core 栈里的位置），
+  不撞名就追加到 core 区之后。**两份 skill 中间件同时跑会往系统提示词里塞两块
+  skill 列表**
 
 ### 官方文档
 

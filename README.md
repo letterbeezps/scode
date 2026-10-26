@@ -13,9 +13,9 @@
 - **后端**（`stupid_code/`）—— 基于 Deep Agents + LangGraph 的 Agent Server，真实磁盘 + 本机 shell，`uv run scode` 起在 `127.0.0.1:2024`
 - **前端**（`web/`）—— 独立的 Vite + React SPA，5173，通过 HTTP 调后端
 
-agent 具备：读写工作空间里的文件、跑 shell 命令、多轮对话、流式输出与工具调用可视化、子 agent 委派、跨会话长期记忆、危险命令人工确认、运行期切换对话模型、手动压缩对话历史。
+agent 具备：读写工作空间里的文件、跑 shell 命令、多轮对话、流式输出与工具调用可视化、子 agent 委派、跨会话长期记忆、危险命令人工确认、运行期切换对话模型、手动压缩对话历史、加载 skill（全局 + 项目级）。
 
-**当前状态**：后端 001–011 期均已落地，前端已连真后端完成整轮对话。每期做了什么、为什么这么做、还欠什么，见 [`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md)。
+**当前状态**：后端 001–018 期均已落地，前端已连真后端完成整轮对话。每期做了什么、为什么这么做、还欠什么，见 [`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md)。
 
 ### 技术栈
 
@@ -36,6 +36,8 @@ agent 具备：读写工作空间里的文件、跑 shell 命令、多轮对话�
 ### 1. 装 skills
 
 `.agents/` 和 `.claude/` 写进了 `.gitignore`，clone 之后必须自己装一遍——这 22 个 skill 是**开发时的参考资料**（框架选型、中间件、持久化……），你的编码 Agent 看不到就会凭记忆写：
+
+> ⚠️ 这里说的是**开发这个项目时**给编码 Agent 用的参考资料。**agent 运行时加载的 skill** 是另一回事——那个由使用者自己放在 `~/.scode/.agents/skills/`（全局）和 `<工作空间>/.agents/skills/`（项目级），见下面「注意事项」里的 skill 那条。两者目录名相同（`.agents/skills/`），但用途完全不同。
 
 ```bash
 npx skills add langchain-ai/langchain-skills --skill '*' --yes
@@ -324,6 +326,7 @@ docker compose up --build
 - **API key 走 `conf/config.toml`**，已 gitignore，别硬编码进代码。
 - **工作空间按任务生效，也可以不选** —— 点按钮会弹系统原生的目录选择框（`POST /workspaces/pick`）；不选 = 用后端启动时的目录。刷新页面后工作空间/权限会从 thread metadata 回填。
 - **MCP 服务器配在 `conf/mcp.json`**（不入库，按需从 `conf/mcp.example.json` 复制）—— http 和 stdio 都支持，**改完要重启后端**（跟 `conf/subagents.toml` 一样）；每个服务器一条长会话（有状态服务器不会被重置），调用失败会自动重连；某个服务器连不上只少它那几个工具，不会弄死整轮对话。stdio 服务器会执行命令，只配信任的服务器。`manual` 档下非只读的 MCP 工具也要人工确认。
+- **skill 分两个作用域** —— 全局在 `~/.scode/.agents/skills/`（跟着你走，跨所有项目），项目级在 `<工作空间>/.agents/skills/`（跟着项目走）。输入框敲 `/` 弹出的菜单里混着命令和 skill，**选 skill 是勾选**（不发消息），勾中的显示成输入框上方的 chip。勾选的 `SKILL.md` 全文会被**钉进对话上下文**，不用等 agent 自己去读；没勾的也在系统提示词的列表里，agent 觉得相关会自己 `read_file`。
 
 完整的踩坑清单（含代码位置、原因、验证方式）见 [`AGENTS.md`](AGENTS.md)；已知缺口见 [`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md) 的「已知缺口」一节。
 
@@ -355,6 +358,7 @@ docker compose up --build
 - 危险命令的批准流程用 `HumanInTheLoopMiddleware` 搭；中断恢复需要的 checkpointer 由 `langgraph dev` 平台自动提供，**不要手动传给 `create_deep_agent()`**（会直接抛 ValueError）
 - **只监听 `127.0.0.1`**。`scode` 已经写死了这个地址，别改成 `0.0.0.0` —— 一个天生带 shell 执行和文件写权限的 agent 暴露到局域网，等于把整台机器交出去
 - 目录选择走系统原生弹窗（`POST /workspaces/pick`），后端不提供「列目录」接口；这个端点会阻塞到用户选完（上限 600 秒），后端仍只监听 `127.0.0.1`
+- 文件工具有**两条工作空间之外的路径**，都只覆盖一个目录：`/user-memory/`（`~/.scode/`，**可写**——用户级记忆）和 `/user-skills/`（`~/.scode/.agents/skills/`，**只读**——全局 skill）。这是这两个功能本身要求的权限面，工作空间内的路径依然出不去
 - API key 永远走 `conf/config.toml` 或环境变量，别硬编码进代码
 
 ---

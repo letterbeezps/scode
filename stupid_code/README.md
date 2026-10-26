@@ -69,6 +69,7 @@ stupid_code/
 │   ├── workspace.py       # 解析 configurable.workspace + 每轮校验/缓存
 │   ├── memory.py          # 长期记忆：项目级 .scode-memory.md + 用户级 ~/.scode/memory.md
 │   ├── memory_home.py     # 用户级记忆的家目录（$SCODE_HOME）与 /user-memory/ 路由常量
+│   ├── skills.py          # skill 发现：全局（静态）+ 项目级（运行期）+ 用户勾选的 pin
 │   ├── compaction.py      # /compaction 手动压缩 + 摘要用当前选中的模型
 │   ├── model_switch.py    # 运行期切换对话模型（configurable.model）
 │   ├── mcp.py             # MCP 工具加载：建图时取一次，交给 create_deep_agent(tools=...)
@@ -82,6 +83,7 @@ stupid_code/
 │   ├── app.py             # Starlette 子应用与路由表
 │   ├── models.py          # /admin/models 五个端点的处理函数
 │   ├── memory.py          # /admin/memory：读和写两份长期记忆
+│   ├── skills.py          # GET /admin/skills：列全局 + 项目级两份 skill
 │   └── workspaces.py      # POST /workspaces/pick（弹系统目录选择框）
 └── data/             # SQLite 数据库目录（gitignore）
 ```
@@ -97,6 +99,7 @@ stupid_code/
 | [graph/workspace.py](graph/workspace.py) | 工作空间：解析 `configurable.workspace`；每轮开跑前校验（线程里）并刷新缓存；`WorkspaceMiddleware` 把绝对路径写进系统提示词 |
 | [graph/memory.py](graph/memory.py) | 长期记忆：读**项目级**（工作空间根的 `.scode-memory.md`）和**用户级**（`~/.scode/memory.md`）两份，**不自动创建**（没记忆就当空的），装成 `MemoryMiddleware` 挂进 `middleware=` |
 | [graph/memory_home.py](graph/memory_home.py) | 记忆落点的单一事实来源：用户级记忆的家目录（`$SCODE_HOME`）、两个作用域的文件名与虚拟路径、`/user-memory/` 路由前缀 |
+| [graph/skills.py](graph/skills.py) | skill：两个来源（**全局** `~/.scode/.agents/skills/` 是静态常量、**项目级** `<工作空间>/.agents/skills/` 走运行期虚拟路径）；用户勾选的 skill 由 `configurable.skills` 送来，正文钉进上下文；换工作空间或换勾选都重读 |
 | [graph/compaction.py](graph/compaction.py) | `/compaction` 手动压缩历史 + 摘要用当前选中的模型；`.name` 报成框架自带那份的公开别名，顶掉而不是叠加 |
 | [graph/model_switch.py](graph/model_switch.py) | 运行期切换对话模型：中间件在每次模型调用前把 `request.model` 换成用户选中的那个 |
 | [graph/mcp.py](graph/mcp.py) | MCP 工具加载：按 `conf/mcp.json` 连服务器取工具（并行 + 总预算限时）、加 `mcp__{服务器}__{工具}` 前缀、检测重名；**每个服务器一条长会话**（专用 MCP 线程 + worker 队列，同服务器调用串行，失败自动重连）；用 adapter 的 `tool_interceptors` 兜传输层失败并在调用期重试一次。协议本身交给 `langchain-mcp-adapters` / 官方 `mcp` SDK |
@@ -111,6 +114,7 @@ stupid_code/
 | [admin/app.py](admin/app.py) | 挂在 langgraph dev 的 Starlette 子应用与路由表（`langgraph.json` 的 `http.app` 指向它） |
 | [admin/models.py](admin/models.py) | `/admin/models` 路由处理函数 |
 | [admin/memory.py](admin/memory.py) | `/admin/memory`：`GET` 读两份长期记忆、`PUT` 写一份（给前端的记忆面板用） |
+| [admin/skills.py](admin/skills.py) | `GET /admin/skills`：列可用的 skill（全局 + 项目级），给前端的斜杠菜单用 |
 | [admin/workspaces.py](admin/workspaces.py) | `POST /workspaces/pick`：弹系统原生目录选择框（osascript / zenity / FolderBrowserDialog），阻塞到用户选完（上限 600 秒） |
 | **配置与产物** | |
 | [langgraph.json](langgraph.json) | LangGraph 配置：图注册、依赖、`http.app` 挂载、checkpointer/store 指向 SQLite；路径均相对本目录（scode 启动时改写为绝对路径） |
@@ -148,6 +152,17 @@ stupid_code/
 > `.scode/blobs/`），落点由 backend 的 `artifacts_root` 决定。这些目录已 gitignore，
 > 用户项目里不会冒出未忽略的临时文件；agent 需要时可以用 `read_file` 读回来，
 > 所以**不能挪出工作空间**。详见 `../docs/backend/PROGRESS.md` 的「8.10 agent 自己的中间产物」。
+>
+> skill 也分**两个作用域**：全局在 `~/.scode/.agents/skills/`（跟着用户走，跨所有
+> 工作空间共用），项目级在 `<工作空间>/.agents/skills/`（跟着项目走）。**全局是静态
+> 的**（不依赖工作空间，可以写死成常量），**项目级不是**（工作空间是运行期参数，
+> 每轮现算——它用虚拟路径 `/.agents/skills/` 实现，由主 backend 的运行期根目录
+> 解析）。用户在输入框敲 `/` 勾选的 skill，正文会被**钉进对话上下文**
+> （`configurable.skills` 传过来）；没勾的也在系统提示词的列表里，agent 觉得相关
+> 会自己 `read_file` 加载。全局 skill 走主 backend 的 `/user-skills/` 路由，
+> agent 能用 `read_file("/user-skills/<名字>/SKILL.md", ...)` 读全文。
+> 前端用 `GET /admin/skills` 拿清单。详见
+> `../docs/backend/PROGRESS.md` 的「8.12 skill（018 期）」一节。
 >
 > `execute` 有**人工确认**（009 期）：按运行期传来的权限档位决定拦不拦，拦下时图挂起，
 > 前端弹确认卡片，批准/拒绝后用 `command.resume` 让图继续。见

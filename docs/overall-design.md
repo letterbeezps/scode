@@ -33,13 +33,14 @@
 | 部分 | 文档描述 | 代码现状 |
 |---|---|---|
 | 前端 `web/` | 完整实现 | ✅ 已完成 5920 行 TS/TSX，mock 与真后端两套都能跑 |
-| 后端 Agent | §3 完整设计 | ⚠️ 001–017 期均已落地（真实磁盘 + shell、长期记忆、shell 人工确认、子 agent 配置、运行期切模型、手动压缩历史、MCP、按任务生效的工作空间、用户级记忆 + 记忆面板）。运行护栏等自研中间件仍未做 |
+| 后端 Agent | §3 完整设计 | ⚠️ 001–018 期均已落地（真实磁盘 + shell、长期记忆、shell 人工确认、子 agent 配置、运行期切模型、手动压缩历史、MCP、按任务生效的工作空间、用户级记忆 + 记忆面板、skill 两个作用域）。运行护栏等自研中间件仍未做 |
 | 后端依赖 | Deep Agents + LangGraph | ✅ 已装齐并锁进 `uv.lock` |
 | `langgraph.json` | §3.2 已给出 | ✅ 在 `stupid_code/` 目录（不是根目录），图注册 + http.app + checkpointer/store 都已配 |
 | 模型配置 | §4 多供应商 | ✅ `conf/config.toml` + `/admin/models` 管理接口（002 / 003 期） |
 | 子 agent | §3 委派机制 | ✅ `conf/subagents.toml` 声明，`task` 工具可调（004 期） |
 | MCP 工具 | —（013 期新增） | ✅ `conf/mcp.json` 声明，http / stdio 都支持；建图时静态注册（改配置需重启），每个服务器一条长会话；`manual` 档下非只读工具走人工确认 |
-| 目录浏览端点 | §4.1 已定义 | ❌ 后端未实现（前端已按此契约调用） |
+| 目录浏览端点 | §4.1 已定义 | ✅ 已实现（014 期）：`POST /workspaces/pick` 弹系统原生目录选择框 |
+| skill | —（018 期新增） | ✅ 全局 `~/.scode/.agents/skills/` + 项目级 `<工作空间>/.agents/skills/`；`GET /admin/skills` 列清单；用户勾选的 `SKILL.md` 全文钉进上下文 |
 
 **这意味着：写后端时不需要"对齐已有实现"，而是要"实现前端已经假定的契约"。** 契约清单见 §4。
 
@@ -175,14 +176,19 @@ langgraph up
 
 ### 3.3 前端调用约定的参数传递
 
-前端通过 `config.configurable` 传递两个任务参数，后端在图入口处读取：
+前端通过 `config.configurable` 传递任务参数，后端在图入口处读取：
 
 | configurable key | 取值 | 含义 |
 |---|---|---|
 | `workspace` | 绝对路径字符串，空字符串表示未选择 | 工作空间根路径（§5.2） |
 | `permissions` | `'manual'` \| `'normal'` \| `'auto'` | 危险操作确认档位（§5.3） |
+| `model` | `'供应商名:模型名'`，空字符串表示未选择 | 运行期切换对话模型（010 期） |
+| `skills` | 字符串数组 | 本次对话勾选的 skill 名字（018 期） |
 
 > ⚠️ **命名冲突警告**：前端传的 `permissions`（确认档位）与 Deep Agents `create_deep_agent(permissions=...)` 参数（文件读写的路径 ACL 规则）**是两个完全不同的东西**，只是重名。后端代码里建议把档位变量命名为 `permission_level` 以免混淆，但对前端暴露的 configurable key 保持 `permissions` 不变（前端已硬编码）。
+
+> **`workspace` / `permissions` / `skills` 是任务级参数**（按 thread 存），`model` 是全局偏好。
+> **恢复挂起的运行时，这几个都要原样带回去**——后端在恢复时会重新读它们。
 
 ---
 
@@ -203,8 +209,9 @@ langgraph up
 | POST | `/threads/{thread_id}/runs/{run_id}/cancel` | 取消运行 | LangGraph 提供 |
 | GET | `/threads/{thread_id}/runs/{run_id}/stream` | **重新接入已有运行的流**（断线恢复，§6.4） | LangGraph 提供 |
 | POST | `/workspaces/pick` | **弹系统原生目录选择框，选一个工作空间** | **自研实现**（014 期） |
+| GET | `/admin/skills` | **列可用的 skill（全局 + 项目级）** | **自研实现**（018 期） |
 
-> 端点列表已与 `web/src/api/*.ts` 的实际调用逐一核对（2026-10-16）。
+> 端点列表已与 `web/src/api/*.ts` 的实际调用逐一核对（2026-10-16；`/admin/skills` 于 2026-10-26 补）。
 
 **历史消息从哪里来**：前端不调用 `/threads/{tid}/history`，而是从 `GET /threads/{tid}/state` 返回的 `values.messages` 里自行转换（见 `web/src/api/thread.ts`）。后端无需额外处理，但要知道前端依赖这个结构——`values.messages` 必须是完整的 LangChain 消息数组。
 
@@ -469,6 +476,12 @@ LangChain 提供 `HumanInTheLoopMiddleware`，通过 `interrupt_on` 声明哪些
 
 否则被重试、或作为无效回答处理的工具调用可能**绕过审批**直接执行——这是安全漏洞，不只是风格问题。
 
+**skill 中间件排在记忆中间件之前**（018 期）：记忆块要留在系统提示词的**最后一块**
+（prompt-caching 的断点落在那一块上），skill 块在它之前，同样在缓存范围内。
+⚠️ **别给 `create_deep_agent(skills=...)`**——传了 deepagents 会在 core 栈挂一份自己的
+`SkillsMiddleware`，我们的中间件只能顶替它，而顶替保留的是 core 栈的位置（更内层），
+skill 块就会跑到记忆块后面。
+
 ### 6.4 断线恢复
 
 当前 `stream_resumable: false`，用户刷新页面会丢失进行中的运行。低成本兜底方案（P1 实现）：
@@ -487,6 +500,7 @@ LangChain 提供 `HumanInTheLoopMiddleware`，通过 `interrupt_on` 声明哪些
 | `../` 路径逃逸 | realpath 归一化 + 前缀校验（§5.2） |
 | 符号链接逃逸 | 校验前必须 `os.path.realpath()` 而非 `abspath()` |
 | 读取敏感文件（.ssh / .env / .aws） | 在工作空间约束内则天然隔离；显式黑名单 `[待核实: 具体清单需按项目实际环境确定]` |
+| 读取工作空间之外的目录 | 两条**只覆盖一个目录**的例外：`/user-memory/`（`~/.scode/`，可写——用户级记忆）和 `/user-skills/`（`~/.scode/.agents/skills/`，只读——全局 skill）。工作空间内的路径依然出不去（017/018 期） |
 | 危险 shell 命令（`rm -rf` / `curl \| sh`） | 命中危险模式的命令走 `manual` 档确认；模式规则需按项目实际需要制定 |
 | 日志泄露 | 工具入参出参中的凭据、token 需脱敏后再落日志（§7） |
 

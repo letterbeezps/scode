@@ -53,10 +53,10 @@ VITE_USE_MOCK=true pnpm dev
 
 工作空间**不通过环境变量预设**，只能在界面上点选，见下文「工作空间」。
 
-## 两个任务级参数：工作空间 + 权限
+## 三个任务级参数：工作空间 + 权限 + 勾选的 skill
 
 输入区下方有两个选择器，按**任务**（threadId）存，不是全局设置 ——
-同一个任务里前后两条消息可能针对不同目录、不同确认策略。
+同一个任务里前后两条消息可能针对不同目录、不同确认策略、不同 skill。
 新任务在创建 thread 之前就要能配，所以额外留一份 `draft`，
 `createThread()` 时用 `adoptDraft()` 固化并把 draft 重置回默认值，
 否则两个任务的运行边界会互相串。删除任务时一并清掉。
@@ -93,6 +93,25 @@ POST /workspaces/pick
 工作空间和权限都记进 thread 的 `metadata`（发消息那一刻写），刷新页面后
 前端用它们回填 `taskStore`；审批卡片挂着时两个选择器会被禁用——恢复请求
 会原样带回这两个参数，改了就会出现「批准的是 A 目录的命令，却在 B 目录执行」。
+
+### skill：在输入框敲 `/` 勾选
+
+跟通用 code agent 一样，**输入框敲 `/`** 弹出菜单，里面混着命令和 skill：
+
+- **命令**（`/compaction`）：选中后当普通消息发出去，后端认出命令就执行
+- **skill**（`/<名字>`）：**不发送**，只是把这个 skill 勾进本次对话
+
+skill 清单来自 `GET /admin/skills?workspace=<当前工作空间>`，有**两个作用域**：
+全局（`~/.scode/.agents/skills/`，跟着用户走）和项目级（`<工作空间>/.agents/skills/`，
+跟着项目走）。菜单里 skill 行标了作用域，已勾选的标「已选」。
+
+**勾选的语义是「钉进上下文 + 全部可见」**：勾选的 `SKILL.md` 全文会被后端追加进
+对话历史（不用等 agent 自己去读）；没勾的也在系统提示词的列表里，agent 觉得相关
+会自己 `read_file`。
+
+勾中的显示成输入框上方的 chip（带 × 删除）。可以连着勾多个。
+`skills` 跟工作空间、权限一样是**任务级**的，随 `configurable.skills` 发给后端，
+也记进 thread 的 `metadata`。
 
 ### 权限：三级确认策略，不是能力白名单
 
@@ -136,13 +155,16 @@ src/
 │   ├── sse.ts            # SSE 解析器（有状态，一条事件可能横跨两个 chunk）
 │   ├── events.ts         # 事件归一化：LangGraph 原生事件 → 前端语义事件
 │   ├── thread.ts         # 线程 CRUD + 历史消息还原
-│   ├── run.ts            # 流式运行与取消（带 workspace / permissions）
+│   ├── run.ts            # 流式运行与取消（带 workspace / permissions / model / skills）
 │   ├── workspace.ts      # 工作空间：POST /workspaces/pick（弹系统目录框）
+│   ├── skills.ts         # skill 清单：GET /admin/skills
 │   └── mock/             # 无后端时的假实现
 ├── store/                # Zustand：conversation / ui / todo / settings / task
 ├── lib/
 │   ├── cn.ts             # className 合并、文件扩展名 → shiki 语言名
 │   ├── permissions.ts    # 三级确认策略的取值与说明
+│   ├── skills.ts         # configurable 的 skills key
+│   ├── commands.ts       # 斜杠菜单项：命令 + skill（skillToMenuItem）
 │   ├── tools.ts          # 工具名 → 类型分类（纯逻辑，不含 React）
 │   ├── diff.ts           # 从工具参数/结果拼出 diff 的新旧文本
 │   └── highlight.ts      # Shiki 单例（动态 import）
@@ -239,26 +261,23 @@ Shiki 和 `react-diff-viewer-continued` 都用动态 import 拆出主 chunk。
 
 对应设计文档 11 的待决项，以及本期明确不做的：
 
-- **危险操作确认的前端入口**：`permissions` 已经会传给后端，
-  但 `manual` 触发时后端要能挂起工具调用、前端要能展示确认卡片 —— 这套协议还没设计
 - 右侧文件预览面板
 - 历史消息分页加载
-- 多模型切换的真正透传（`/settings` 里的模型选择目前只写 localStorage，
-  后端这一轮实际用哪个模型由 `conf/config.toml` 的 `default` 决定）
 - 移动端适配（本期优先桌面端）
 
 ## 已知取舍
 
-- **工作空间和权限按任务存，但内存不是唯一副本**：发消息时写进 thread 的
+- **工作空间、权限、勾选的 skill 按任务存，但内存不是唯一副本**：发消息时写进 thread 的
   `metadata`，刷新页面后从它回填 `taskStore`。写 localStorage 不合适——那是
   全局的，分不清哪个任务用了哪个目录。
+- **skill 勾选走斜杠菜单，不做独立按钮**：skill 的数量随项目变（项目级 skill 跟着
+  工作空间走），固定位置的下拉放不下；斜杠菜单本来就是「这次要用什么」的入口。
+- **勾选的 skill 是「钉进上下文」，不是白名单**：没勾的 skill 也在系统提示词的列表里，
+  agent 自主 `read_file` 加载。钉进的是全文（省掉一轮读文件），代价是占上下文。
 - **Docker / 无图形界面里弹不出系统目录框**：只能手动输入容器内可见的路径
   （默认 `/workspace`）；宿主路径在容器里不存在。
 - **虚拟滚动还没启用**：`index.css` 里定义了 `.cv-auto`（`content-visibility: auto`），
   但目前没有元素挂这个类，消息列表是全量渲染。
   不走 JS 虚拟化是因为代码块和 diff 高度不定，手写高度测量容易抖动；
   等消息量上来了，把这个类加到 `MessageList` 的消息容器就行。
-- **模型下拉和后端实际用的模型不是一回事**：下拉读的是 `/admin/models` 拉来的列表
-  （不再是写死的几项），在下拉里选一个只写 localStorage；后端这一轮实际用哪个
-  模型由 `conf/config.toml` 的 `default` 决定，改完要重启后端才生效。
 - **Diff 统一视图**，分栏视图留着 `splitView` 属性没开 —— 窄栏下分栏每行只剩十几个字符。

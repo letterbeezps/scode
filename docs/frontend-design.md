@@ -115,7 +115,10 @@ v0.1 把两者都叫"任务"，侧边栏同时出现两个同名区域，用户�
   - `权限` —— `manual` / `normal` / `auto` 三选一
 - **旁边还有一个「记忆」按钮**（017 期）：点开是记忆面板，查看/编辑 agent 的
   两份长期记忆（详见 7.9）
-- 右侧常驻提示「Enter 发送 · Shift+Enter 换行」
+- **斜杠菜单里混排命令和 skill**（018 期）：输入框敲 `/` 弹列表，
+  里面既有 `/compaction` 这种命令，也有 `/<skill 名>`。选中 skill 是**勾选**
+  （不发送消息），勾中的显示成输入框上方的 chip，带 × 删除（详见 7.10）
+- 右侧常驻提示「Enter 发送 · Shift+Enter 换行 · `/` 命令与技能」
 
 > v0.1 里的「附件按钮（上传文件、截图）」和「@提及文件」本期未实现，见 11。
 
@@ -249,10 +252,14 @@ interface TodoState {
 工作空间和权限是**任务级参数**，不是全局设置：同一个任务里前后两条消息可能针对不同目录、
 不同确认策略。但新任务在创建 thread 之前就要能配，所以额外留一份 `draft`。
 
+018 期起**勾选的 skill 也是任务级参数**——项目级 skill 在工作空间里，工作空间是
+运行期参数，skill 选择不能是全局的。
+
 ```typescript
 interface TaskSettings {
   workspace: string            // 绝对路径；空字符串 = 本次任务不选工作空间
   permissions: PermissionLevel // 'manual' | 'normal' | 'auto'
+  skills: string[]             // 勾选的 skill 名字（018 期）
 }
 
 interface TaskStore {
@@ -271,7 +278,7 @@ interface TaskStore {
 并把 draft 重置回默认值 —— 否则这个任务会一直回退到 draft，参数被后续新任务改掉。
 删除任务时一并 `reset` + `clearTodos`。
 
-设置只在内存里，刷新页面会丢。所以发消息时把 `workspace` / `permissions` 一并写进
+设置只在内存里，刷新页面会丢。所以发消息时把 `workspace` / `permissions` / `skills` 一并写进
 thread 的 `metadata`（`PATCH /threads/{id}` 是合并语义，不会覆盖平台的键），
 `loadThreads` / `selectThread` 时用 `hydrate()` 回填；已经有内存设置的任务不覆盖。
 审批卡片挂着时两个选择器禁用 —— 恢复请求会原样带回这两个参数，改了就会出现
@@ -325,18 +332,25 @@ interface Message {
 
 封装 `src/api/` 目录，隔离后端细节。
 
-### 5.7 斜杠命令
+### 5.7 斜杠命令与 skill
 
-输入框**开头**敲 `/` 弹出命令菜单（↑↓ 选、回车/Tab 确认、Esc 关闭）。只在开头是
+输入框**开头**敲 `/` 弹出菜单（↑↓ 选、回车/Tab 确认、Esc 关闭）。只在开头是
 `/` 且还没打空格时才弹——`/usr/local/bin` 这种路径不会误弹。
 
-命令表在 `web/src/lib/commands.ts`。**命令就是一条普通消息**：选中后按普通消息发
-出去，后端认出命令就执行对应动作。加新命令不用改接口，后端按消息内容认即可
-（`/compaction` 的识别在后端 `stupid_code/graph/compaction.py` 的
-`COMPACTION_COMMAND`，两边的字面量要一致）。
+菜单里**混着两类东西**：
+
+| | 选中后发生什么 | 后端怎么认 |
+|---|---|---|
+| **命令**（`/compaction`） | 当普通消息发出去 | 按消息内容认（`/compaction` 的识别在后端 `stupid_code/graph/compaction.py` 的 `COMPACTION_COMMAND`，两边的字面量要一致） |
+| **skill**（`/<skill 名>`） | **不发送**，勾进本次对话 | 不走消息；勾选的名字随 `configurable.skills` 发过去 |
+
+命令表在 `web/src/lib/commands.ts`；skill 来自 `GET /admin/skills`，由
+`skillToMenuItem()` 转成同一种菜单项（`kind: 'skill'`，多带一个 `scope`）。
+
+**加新命令不用改接口**，后端按消息内容认即可。
 
 命令消息在消息列表里渲染成「命令气泡」而不是普通聊天气泡——`/compaction`
-显示成一句话看着像用户在说胡话。
+显示成一句话看着像用户在说胡话。**skill 不是消息**，不会出现在消息列表里。
 
 ### 6.1 目录结构
 
@@ -349,6 +363,7 @@ src/api/
 ├── run.ts             # 运行相关 API（含流式与取消）
 ├── workspace.ts       # 工作空间：弹系统目录选择框（POST /workspaces/pick）
 ├── memory.ts          # 记忆：读两份（GET /admin/memory）、写一份（PUT /admin/memory）
+├── skills.ts          # skill 清单（GET /admin/skills）
 ├── types.ts           # 请求/响应类型定义
 └── mock/              # 无后端时的假实现（接口签名与真实后端完全一致）
 ```
@@ -363,7 +378,7 @@ src/api/
 export function streamRun(
   threadId: string,
   message: string,
-  options: RunOptions,          // { workspace, permissions }
+  options: RunOptions,          // { workspace, permissions, model, skills }
   handlers: RunHandlers,        // { onToken, onToolCall, onToolResult, onTodos, onError, onEnd, onRunId? }
 ): () => void                   // 返回取消函数
 ```
@@ -380,7 +395,9 @@ POST /threads/{thread_id}/runs/stream
   "config": {
     "configurable": {
       "workspace": "",              // 空字符串 = 不选工作空间
-      "permissions": "normal"
+      "permissions": "normal",
+      "model": "",                  // 空字符串 = 用后端默认模型
+      "skills": []                  // 本次对话勾选的 skill 名字（018 期）
     }
   }
 }
@@ -389,7 +406,9 @@ POST /threads/{thread_id}/runs/stream
 `stream_mode` 只请求 `["updates"]` —— `values` 每次都回传全量状态，噪音大且没必要。
 `on_disconnect: "continue"` 让浏览器断开后后端继续跑完，避免半途中断留下脏状态。
 
-`config.configurable` 是任务参数的落点。后端在图入口读 `workspace` / `permissions`。
+`config.configurable` 是任务参数的落点。后端在图入口读 `workspace` / `permissions` /
+`model` / `skills`。**恢复挂起的运行时也要原样带回去**（`resumeRun` 同样带这几个值）——
+带空了就跟批准前用的不是同一套配置。
 
 ### 6.3 SSE 解析
 
@@ -603,6 +622,46 @@ Deep Agents 的内置工具名固定，但自定义工具（终端、git 等）�
 - **取数放在 effect 里的 async IIFE**，所有 `setState` 都在 `await` 之后：oxlint
   不做控制流分析，只看到「effect 里调了一个会 setState 的函数」就会报
 
+### 7.10 skill 勾选（018 期）
+
+**入口是输入框敲 `/`**——和通用 code agent 的习惯一致。没有独立按钮。
+
+**为什么走斜杠菜单**：skill 的数量随项目变（项目级 skill 跟着工作空间走），
+做成固定的按钮或下拉，位置和数量都不可控。斜杠菜单本来就是「这次要用什么」的
+入口，命令和 skill 混在一起，用户一个手势就能挑。
+
+**交互**
+
+1. 输入框开头敲 `/` → 菜单弹出，命令和 skill 混排
+2. skill 行标了作用域（**全局** / **项目**），已勾选的标「已选」
+3. 选中 skill = **勾选**（toggle），**不发消息**；输入框清空，菜单留着，
+   可以接着敲 `/` 再选一个——所以支持多选
+4. 勾中的显示成输入框**上方的 chip**，带 × 删除
+5. ↑↓ 移动高亮、回车选中、Esc 关闭（键盘全程可用）
+
+**勾选的语义是「钉进上下文 + 全部可见」**
+
+- **钉进上下文**：勾选的 `SKILL.md` 全文（去掉 frontmatter）作为一条消息进对话
+  历史——不用等 agent 自己去读，也不用赌它会不会读
+- **全部可见**：没勾选的 skill 也在系统提示词的列表里，agent 觉得相关会自己
+  `read_file` 加载
+
+所以勾选不是「白名单」，是「我确定这次要用它，先给它全文」。
+
+**几个实现要点**
+
+- **skill 清单按工作空间取**（`GET /admin/skills?workspace=`）：项目级的那份跟着
+  当前任务的工作空间走，工作空间变了要重新取。取数放在 effect 里的 async IIFE，
+  跟记忆面板一个套路（oxlint 的 `set-state-in-effect`）
+- **skill 选择是任务级的**（`taskStore.skills`）：项目级 skill 在工作空间里，
+  工作空间是运行期参数，skill 选择不能是全局的
+- **审批挂起期间禁用勾选**：恢复请求会原样带回 `skills`，改了批准的就不是同一件事了
+- **`skills` 要跟着 `resumeRun` 一起带回去**（跟 workspace / permissions / model 一样）
+- **菜单项的 key 要带类别**：命令和 skill 可能重名（`/compaction` 既可能是命令也
+  可能是技能），只用 `command` 当 key 会撞
+- **mock 模式也要回显**：mock 的 `stream` 里加一句「已把 xxx 的 SKILL.md 全文钉进
+  上下文」，让前端开发时能看出勾选确实随请求发出去了
+
 ---
 
 ## 8. 样式与设计系统
@@ -750,6 +809,7 @@ refractor 的语言包，属于按需加载，不在首屏关键路径上。
 - [x] 斜杠命令菜单（011 期）：`/compaction` 手动压缩对话历史
 - [x] 工作空间按任务生效（014 期）：弹系统目录框选目录，agent 的写操作落在那个目录里
 - [x] 记忆面板（017 期）：查看/编辑用户级 + 项目级两份长期记忆
+- [x] skill 勾选（018 期）：斜杠菜单里混排 skill，勾中的 `SKILL.md` 全文钉进上下文
 
 ### 11.2 待定的
 
@@ -785,6 +845,7 @@ refractor 的语言包，属于按需加载，不在首屏关键路径上。
 | 工作空间选择器（系统原生目录框，014 期） | ✅ |
 | 权限三级下拉 + 参数传递 | ✅（拦截点待后端实现） |
 | 记忆面板（用户级 + 项目级，017 期） | ✅ |
+| skill 勾选（斜杠菜单 + chip + 随请求下发，018 期） | ✅ |
 | Mock 模式 | ✅ |
 | 自动滚动（ResizeObserver）+ 回到底部 | ✅ |
 | 虚拟滚动 | ❌ `.cv-auto` 已定义但未挂载（见 11.2） |

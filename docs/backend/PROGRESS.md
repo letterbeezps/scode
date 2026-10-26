@@ -44,6 +44,7 @@
 | 015 | 记忆块模板 + 长度上限；HITL 档位钉进图状态 + `delete` 进关卡 | ✅ 已落地 | `stupid_code/graph/memory.py` + `stupid_code/graph/permissions.py` |
 | 016 | agent 自己的中间产物收拢到 `.scode/` | ✅ 已落地 | `stupid_code/graph/backend.py` |
 | 017 | 长期记忆分两个作用域（用户级 + 项目级）+ 前端记忆面板 + 写记忆走人工确认 | ✅ 已落地 | `stupid_code/graph/memory_home.py` + `stupid_code/admin/memory.py` + `graph/permissions.py` + 前端 `components/memory/` |
+| 018 | skill（全局 `~/.scode/.agents/skills/` + 项目级 `<工作空间>/.agents/skills/`）+ 前端斜杠菜单勾选 | ✅ 已落地 | `stupid_code/graph/skills.py` + `stupid_code/admin/skills.py` + 前端 `lib/skills.ts` |
 
 ### 1.3 前端完成度
 
@@ -58,6 +59,7 @@
 - 模型管理界面（直连 `/admin/models`）
 - **对话模型切换**（侧边栏下拉框，选中即生效，不用重启后端——010 期）
 - **斜杠命令菜单**（输入 `/` 弹列表，`/compaction` 手动压缩对话历史——011 期）
+- **skill 勾选**（同一个斜杠菜单里混排 skill，勾中的 `SKILL.md` 全文钉进上下文——018 期）
 - **记忆面板**（输入区「记忆」按钮，查看/编辑用户级 + 项目级两份记忆——017 期）
 - mock 模式（`VITE_USE_MOCK=true`，签名与真实后端完全一致）
 
@@ -94,6 +96,7 @@ stupid-code/
 │   │   ├── memory_home.py      # 用户级记忆的家目录（$SCODE_HOME / ~/.scode）
 │   │   ├── model_switch.py     # 运行期切换对话模型的中间件
 │   │   ├── permissions.py      # 人工确认的档位与危险判定
+│   │   ├── skills.py           # skill 发现（全局 + 项目级）+ 运行期源 + pin
 │   │   └── persistence.py      # SQLite 工厂：checkpoint/store → ../data/langgraph.db
 │   ├── config/
 │   │   ├── model.py            # conf/config.toml → 模型实例 + CRUD
@@ -103,6 +106,7 @@ stupid-code/
 │   │   ├── app.py              # Starlette 子应用与路由表
 │   │   ├── memory.py           # /admin/memory 两个端点（记忆读写）
 │   │   ├── models.py           # /admin/models 五个端点
+│   │   ├── skills.py           # GET /admin/skills（skill 清单）
 │   │   └── workspaces.py       # POST /workspaces/pick（系统目录选择框）
 │   └── data/                   # SQLite 数据库目录（gitignore）
 ├── web/                       # 前端（独立 pnpm 项目，不参与 uv 依赖管理）
@@ -1717,13 +1721,18 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 | `workspace` | `WORKSPACE_KEY` | 工作空间绝对路径 | ✅ 已实现（014 期，`graph/workspace.py`）：文件工具和 `execute` 的 cwd 都跟着它走 |
 | `permissions` | `PERMISSIONS_KEY` | 确认档位 manual/normal/auto | ✅ 已实现（`graph/permissions.py`） |
 | `model` | `MODEL_KEY`（`web/src/lib/model.ts`） | 对话模型 id `供应商名:模型名` | ✅ 已实现（`graph/model_switch.py`） |
+| `skills` | `SKILLS_KEY`（`web/src/lib/skills.ts`） | 本次对话勾选的 skill 名字列表 | ✅ 已实现（018 期，`graph/skills.py`）：勾选的 `SKILL.md` 全文钉进对话历史 |
 
-`workspace` / `permissions` **按 `threadId` 存而非全局**——同任务内前后两条消息可能针对
-不同目录。另有 `draft` 副本供新任务用，`createThread()` 时 `adoptDraft()` 固化并重置。
+`workspace` / `permissions` / `skills` **按 `threadId` 存而非全局**——同任务内前后两条消息可能针对
+不同目录、不同 skill。另有 `draft` 副本供新任务用，`createThread()` 时 `adoptDraft()` 固化并重置。
+
+`skills` 之所以也是任务级：项目级 skill 在**工作空间里**（`<工作空间>/.agents/skills/`），
+而工作空间是运行期参数——skill 选择不能建图时定死，只能每次运行带过去。
 
 `model` 是**全局偏好**（localStorage），每次运行都随请求带过去，所以刷新页面、
 后端重启都还在。**恢复挂起的运行时也要原样带回去**：恢复时后端同样按
 `configurable.model` 换模型，带空了就退回默认模型，跟批准前用的不是同一个模型。
+`skills` 同理——恢复那一轮不该跟批准前不是同一组 skill。
 
 ### 4.5 端点速查
 
@@ -1732,7 +1741,8 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 `/threads/{id}/state`、`/threads/{id}/runs/stream`、`/threads/{id}/runs/{runId}/cancel`。
 
 自定义：`/admin/models` 五个端点 + `POST /workspaces/pick`（弹系统目录选择框，014 期）
-+ `/admin/memory` 两个端点（GET 读两份记忆 / PUT 写一份，017 期）。
++ `/admin/memory` 两个端点（GET 读两份记忆 / PUT 写一份，017 期）
++ `GET /admin/skills`（列 skill 清单，018 期）。
 
 完整清单与请求/响应示例见 [`stupid_code/API.md`](../../stupid_code/API.md)。
 
@@ -1749,6 +1759,7 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 | 文件写入 | **不拦**（`write_file`/`edit_file`）——那是 code agent 的日常。**例外：写记忆文件要拦**（017 期），`normal` 和 `manual` 档都拦 |
 | 文件路径 | 文件工具锁在工作空间内（`virtual_mode=True`），**shell 不受此限** |
 | 工作空间之外的写路径 | **有一条**（017 期）：`/user-memory/` 路由指向 `~/.scode/`，agent 能用 `write_file` 在那个目录里建/改文件。范围限于这一个目录——**跟"文件工具锁在工作空间内"不矛盾**，工作空间内的路径依然出不去 |
+| 工作空间之外的读路径 | **有一条**（018 期）：`/user-skills/` 路由指向 `~/.scode/.agents/skills/`，agent 能用 `read_file` 读全局 skill 的全文。同样只覆盖这一个目录 |
 | 读取范围 | agent 能读工作空间里的任何文件，**包括 `conf/config.toml` 里的 api_key**——这块没被 HITL 覆盖 |
 | 子 agent 权限 | 只有声明了 `permissions` 的子 agent 才是硬约束；没声明的拿的是主 agent 那套带 shell 的 backend |
 | 危险判定 | 正则匹配，不是语义分析。**宁可漏拦也不误拦** |
@@ -1771,6 +1782,9 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 | 用户级记忆是全局的，不按项目隔离 | 写错的用户级记忆会跟着你到**每一个**项目 | 有意为之：用户级就是跨项目的；模板里提示"分不清放哪就放项目级" |
 | agent 能读写 `~/.scode/` 整个目录 | `/user-memory/` 那条路由覆盖整个目录，不只是 `memory.md` | 只覆盖这一个目录；这是"用户级记忆"这个功能要求的权限面 |
 | 记忆面板和 agent 同时改会互相覆盖 | 后写的赢，可能吃掉对方刚写的内容 | 两边都是普通文件写者；面板底部写了这句话 |
+| 取消勾选不会把已钉进上下文的 skill 拿掉 | 那个 `SKILL.md` 全文还留在对话历史里，每轮都会重发 | 框架的 pin 语义是追加（`Overwrite([])` 清 `pinned_skills` + 追加消息），改不了 |
+| 目录不存在时框架会打一条 warning 日志 | 后端日志里有 `Cannot load skills from '/.agents/skills/': path_not_found` | **提示词里已过滤掉**（不留噪音），但**日志里仍会出现**——框架自己打的，控制不了 |
+| skill 的 `SKILL.md` 正文没有长度上限 | 一个巨大的 `SKILL.md` 会整篇进上下文 | 框架只限制文件大小（10MB），不限注入长度；记忆那块有 8000 字上限，skill 这边没有 |
 | langgraph store 配了但没用上 | `langgraph.json` 里的 `store` 至今零调用，`data/langgraph.db` 的 `store` 表是空的 | 有意为之：记忆走文件（人能看、人能手改）；留着的 store 以后给别的用途 |
 | general-purpose 子 agent 的档位来自 `configurable` | 它是框架自动加的，我们没机会给它挂 `PermissionLevelMiddleware`（它的中间件继承靠 `.name` 匹配，我们那个名字不在它的默认栈里）。所以它 state 里没有档位记录，谓词退回读客户端回传的值 | 真实使用中没问题：前端恢复时原样带回发起那轮的档位（审批挂起期间选择器禁用）。客户端**不**原样带回就会翻转 |
 | 记忆文件只增不减 | `edit_file` 追加，老的、错的条目一直躺在文件里（8000 字上限只管**注入**，不管磁盘上的文件） | 靠前端记忆面板手动清理 |
@@ -2490,6 +2504,63 @@ pgrep -f "langgraph_cli dev"        # 应该没有输出
   ——但它**没有**我们的 `PermissionLevelMiddleware`（继承靠 `.name` 匹配，
   我们那个名字不在它的默认栈里），所以它的档位来自 `configurable`，见已知缺口
 
+### 8.12 skill（018 期）
+
+**两个作用域的发现**
+
+- 全局（`$SCODE_HOME/.agents/skills/`）与项目级（`<工作空间>/.agents/skills/`）
+  都被发现，描述都进了系统提示词的 skill 列表 ✔
+- **同名时项目级覆盖全局**（框架按源顺序读，后面的覆盖前面的）✔
+- **全局 skill 跨工作空间可见**，项目级 skill 跟着工作空间换 ✔
+- 换工作空间会**重读** skill 列表（新 skill 出现、旧 skill 消失、全局 skill 保留）✔
+- 工作空间里没有 `.agents/` 时，**提示词里不出现 `path_not_found` 警告** ✔
+  （框架自己打的日志 warning 仍在，见已知缺口）
+
+**skill 块的位置**
+
+- 系统提示词里**只有一块** skill 列表（我们的中间件顶掉了框架自带那份，没有两块）✔
+- **skill 块排在记忆块之前**——记忆块仍在最后一块，prompt-caching 的断点落在
+  记忆块上，前面的块（含 skill 块）全在缓存前缀里 ✔
+  （这靠「不给 `create_deep_agent(skills=...)`」实现，见 `graph/agent.py` 的注释）
+
+**pin（勾选的 skill 钉进上下文）**
+
+- 勾选的项目级 skill，正文作为一条 `HumanMessage` 进对话历史 ✔
+- 勾选的全局 skill 同样能钉 ✔（路径是虚拟的 `/user-skills/<name>/SKILL.md`）
+- **没勾选的不会进** ✔
+- **第二轮不重复 pin**：同一个 thread 里正文只出现 1 次 ✔
+- **取消勾选不会把已钉进去的内容拿掉**（框架语义是追加，见已知缺口）
+
+**agent 自主读取（渐进式披露）**
+
+- `read_file("/user-skills/<name>/SKILL.md")` → 读到全局 skill 全文 ✔
+- `read_file("/.agents/skills/<name>/SKILL.md")` → 读到项目级 skill 全文 ✔
+- 读不存在的 → 报错（`Error: File '.../SKILL.md' not found`），不静默 ✔
+
+**接口**
+
+- `GET /admin/skills?workspace=<绝对路径>` → `{workspace, skills:[{name, description, scope, source, path}]}` ✔
+  - `workspace` 可以不给 → 用后端默认工作空间
+  - `scope` 是 `user`（全局）/ `project`（项目级）
+  - `path` 是**虚拟路径**（`/user-skills/...` 或 `/.agents/skills/...`），不是宿主绝对路径
+  - 工作空间不合法 → 400
+  - ⚠️ **backend 的构造必须走 `asyncio.to_thread`**：`FilesystemBackend.__init__` 里有
+    `Path(root_dir).resolve()`，在事件循环里直接调会被 blockbuster 拦下来
+    （`BlockingError: Blocking call to os.readlink`），整个请求 500
+
+**前端（真实浏览器实测）**
+
+- 输入框敲 `/` → 菜单里**混排**命令和 skill ✔
+- skill 行标了作用域（**全局** / **项目**）✔
+- 勾选后输入框上方出现 chip（带 × 删除），**输入框清空、菜单关闭** ✔
+- 已勾选的 skill 在菜单里标「已选」✔
+- **支持多选**：连着勾两个，chip 并排显示 ✔
+- **键盘可用**：↑↓ 移动高亮、回车选中、Esc 关闭 ✔
+- 勾选 skill **不发送消息**（skill 不是命令）✔
+- **勾选的 skill 真的随请求发给了后端**：thread 的 `metadata.skills` 是
+  `["hello-global", "hello-project"]` ✔
+- **对话历史里两个 skill 的全文都在**，模型明确回复「已按两个 skill 的指示执行」✔
+
 ---
 
 ## 9. 常见问题
@@ -2558,6 +2629,20 @@ pkill -f "langgraph_cli dev"
 
 017 期起 **agent 写记忆本身就要人工确认**（`normal` 和 `manual` 档），所以上面
 这些是兜底，不是常态。
+
+**斜杠菜单里没有 skill / 勾了没生效**
+
+按这个顺序查：
+
+1. `GET /admin/skills?workspace=<工作空间>` 返回空 → 那个目录下没有 `SKILL.md`。
+   **全局的看 `~/.scode/.agents/skills/`（或 `$SCODE_HOME`），项目级的看
+   `<工作空间>/.agents/skills/`**——目录名是 `.agents`，不是 `.skills`。
+2. 接口有但菜单里没有 → 前端的工作空间和接口用的不是同一个。菜单跟着**当前任务**
+   的工作空间走，换了工作空间要重新取。
+3. 勾了但 agent 没用 → 勾选的是「**钉进上下文**」，不是「只允许用这些」。
+   没勾的 skill 也在系统提示词的列表里，agent 自己决定要不要 `read_file`。
+4. agent 明明该读却没读 → 让它用 `read_file` 读**列表里给的路径**，并且带
+   `limit=1000`（默认 100 行太小，多数 `SKILL.md` 都超）。
 
 **agent 看不到 MCP 工具 / 工具没挂上**
 按这个顺序查：
