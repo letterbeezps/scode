@@ -305,13 +305,70 @@ subagent 配置里重复写。
   会把 `memory_contents` 摘掉逼框架重读**，否则会拿 A 项目的记忆指导 B 项目的活。
 - **不会自动创建 `.scode-memory.md`**（014 期改的）：启动和开跑时都不往工作空间写文件，
   避免用户选中一个项目就凭空多出这个文件。框架遇到读不到的文件会 `continue` 跳过
-  （当没记忆），所以 `WorkspaceMemoryMiddleware.modify_request` 会追加一段说明，
-  告诉模型文件不存在时先用 `write_file` 创建。
+  （当没记忆），所以记忆块里要告诉模型文件不存在时先用 `write_file` 创建。
 - **记忆文件叫 `.scode-memory.md`，不用框架默认的 `AGENTS.md`**。后者是
   "写给编码 agent 看的项目约定"（本项目根目录那份就是），和"agent 自己攒的长期记忆"
   是两回事。工作空间正好是项目根时，沿用默认名会把开发者的项目说明当记忆注入。
 - **工作空间 = 运行期选中 / 默认目录**：006 期时是 `Path.cwd()`（launcher 把子进程的
   cwd 设成用户工作空间）；014 期起按 `configurable.workspace` 动态解析，见 014。
+
+**015 期改动：记忆块换成本项目自己的模板 + 加长度上限**
+
+014 期之前用的是框架自带的 `MEMORY_SYSTEM_PROMPT`（英文通用模板），有两个问题：
+
+- **它教模型用错工具**。框架那段写的是 "you can save new knowledge by calling the
+  `edit_file` tool"，但本项目的记忆文件**可能根本不存在**（可选、不自动创建），
+  `edit_file` 打在不存在的文件上会直接返回 error。模型每个新工作空间都要白白浪费
+  一轮失败的工具调用，才读到我们另外追加的中文说明。
+- **它跟本项目的真实语义对不上**，也没说"可选 / 每个工作空间一份 / 一次会话读一次"，
+  而且整段英文跟项目的中文系统提示词不一致。
+
+现在 `build_memory_middleware()` 通过框架公开的 `system_prompt=` 扩展点换成
+`memory.py` 里的 `_MEMORY_TEMPLATE`（中文），把上面三件事写进去，并明确
+**第一次用 `write_file`、之后才 `edit_file`**。同时覆盖 `_format_agent_memory()`：
+框架那份在记忆为空时填英文的 `(No memory loaded)`，现在改成模板自己的说法
+（"为空表示还没有记忆"）；顺带让「剥 HTML 注释 / 跳过空段」的行为跟框架一致——
+不然会出现"框架说没记忆、我们说有记忆"的自相矛盾（实测：记忆文件里只有一行
+`<!-- 注释 -->` 就会踩到）。
+
+**记忆文件加了长度上限**（`MEMORY_MAX_CHARS = 8000`）：框架把记忆文件**整个**读进
+系统提示词，不截断。记忆文件是 agent 自己写的（`edit_file` 追加），会一直涨——
+实测一个 20 万字符的记忆文件能把系统提示词撑到 20 万字符，直接顶爆上下文窗口，
+这一轮 run 就废了。超限时**保留头尾、中间省略**（头是 `write_file` 整体重写时整理过的
+核心，尾是 `edit_file` 追加的最新记录），并插一行说明。截断只影响注入提示词的内容，
+磁盘上的文件不动。
+
+**记忆文件是谁创建的：只有 agent 调 `write_file`**
+
+中间件**只读不写**——`before_agent` 走 `download_files`，读不到就是「没记忆」，
+不建文件（这是 014 期刻意的：别往用户选的项目里凭空塞文件）。实测：
+
+| agent 的动作 | 结果 |
+|---|---|
+| `edit_file` 写记忆（文件还不存在） | `Error: File '/.scode-memory.md' not found` —— **不创建** |
+| `write_file` 写记忆（文件还不存在） | `Updated file /.scode-memory.md` —— **创建** |
+
+所以「模型会不会用错工具」直接决定记忆能不能存下来。框架默认那份英文模板教的是
+`edit_file`，在本项目会白白失败一轮；换成项目自己的模板后第一个动作就是
+`write_file`（模板里写明「`edit_file` 要求文件已经存在，对不存在的文件会直接报错」）。
+
+**015 期修：绝对路径写记忆会落进嵌套目录**
+
+工作空间根是**软链展开后**的真实路径（`resolved`），但模型手里的绝对路径可能是
+用户手打的那条（`given`，没展开软链）——macOS 上 `/tmp` → `/private/tmp` 就是这种。
+只拿 `resolved` 去剥前缀，`relative_to` 直接失配 → 前缀剥不掉 → 框架把绝对路径
+当虚拟路径 → 文件落到 `<工作空间>/tmp/x/.scode-memory.md` 这种嵌套目录里，
+**还不报错**（014 期只修了一半：软链形态一致时是好的）。
+
+现在 `graph/workspace.py` 的 `WorkspaceRoot` 同时记两种形态，解析时一起算好缓存
+（热路径只读缓存，不碰文件系统）；`graph/backend.py` 的 `_workspace_relative()`
+对两种形态各试一次。实测（工作空间 `/tmp/scode-sym-xxx`）：
+
+| 模型传的路径 | 落点 |
+|---|---|
+| `/tmp/scode-sym-xxx/.scode-memory.md`（软链形态） | `<工作空间>/.scode-memory.md` ✔ |
+| `/private/tmp/scode-sym-xxx/.scode-memory.md`（真实形态） | `<工作空间>/.scode-memory.md` ✔ |
+| `/.scode-memory.md`（虚拟路径） | `<工作空间>/.scode-memory.md` ✔ |
 
 ### 007 · 真实 backend（CompositeBackend + LocalShellBackend）
 
@@ -1197,7 +1254,7 @@ During task with name 'WorkspaceMiddleware.before_agent'
 
 之前启动/开跑时都会补一份 `/.scode-memory.md`，用户选中一个项目就会凭空多出
 一个文件（还会进 git status）。现在改成**可选文件**：不存在就当没记忆，
-`WorkspaceMemoryMiddleware.modify_request` 在系统提示词里追加一段说明，告诉模型
+记忆块（`memory.py` 的 `_MEMORY_TEMPLATE`）里说明文件是可选的、告诉模型
 不存在时先用 `write_file` 创建、之后再 `edit_file`。第一次写记忆是 agent 的主动
 行为，不是框架的副作用。
 
@@ -1294,7 +1351,11 @@ ls -la "$WS"
   `Exception`，真实服务上只看到一句内部错误；改成继承 `ValueError` 后才带出
   具体路径（`graph/backend.py` 里那个 `except ValueError` 也因此收窄，避免
   把 WorkspaceError 当成「路径不在工作空间下」吞掉）✔
-- 记忆缺失时，系统提示词里会出现「记忆文件不会自动创建」的说明；已有记忆时不重复加 ✔
+- 记忆块用本项目自己的中文模板（015 期）：里面写明「文件可选、不会自动创建、
+  第一次用 `write_file`、之后用 `edit_file`、每个工作空间一份、一次会话读一次」。
+  不再出现框架的英文 `(No memory loaded)` ✔
+- 记忆文件超 `MEMORY_MAX_CHARS`（8000 字）时保留头尾、中间省略并插一行说明；
+  磁盘上的文件不动 ✔（015 期实测：20 万字符的记忆文件 → 系统提示词 9212 字符）
 
 ---
 
@@ -1691,9 +1752,11 @@ pgrep -f "langgraph_cli dev"        # 应该没有输出
 - `execute` 真能跑本机命令：cwd = 工作空间，`$HOME` 等环境变量继承得到
 - agent 的 `write_file` 写进 `/.scode-memory.md` 后，磁盘上那个文件的内容真的变了
 - 记忆文件**不会自动创建**（014 期起）：空工作空间里不会再凭空出现
-  `.scode-memory.md`；agent 第一次用 `write_file` 写记忆时才建（系统提示词里
-  追加了一段说明）
-- 用假模型抓 `request.system_message`：记忆内容确实在系统提示词的 `<agent_memory>` 块里
+  `.scode-memory.md`；agent 第一次用 `write_file` 写记忆时才建（记忆块里说明了这一点）
+- 用假模型抓 `request.system_message`：记忆内容确实在系统提示词的长期记忆块里
+  （015 期起换成项目自己的中文模板，不再是框架的 `<agent_memory>` 英文块）
+- 记忆读的是**选中工作空间**根目录那份：同一 thread 换工作空间会重读，
+  换 thread 各自独立读 ✔（015 期对 `WorkspaceMemoryMiddleware` 单独复测）
 - 真实服务里模型能原样念出记忆文件里的内容
 - 服务端的图节点列表出现 `MemoryMiddleware.before_agent`；
   不传 `memory=` 参数时框架不会自己挂这个中间件——本项目是自己挂的
