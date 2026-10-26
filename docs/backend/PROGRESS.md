@@ -388,8 +388,39 @@ CompositeBackend(
         inherit_env=True,           # shell 继承当前环境，否则 PATH 是空的
     ),
     routes={"/tmp/": StateBackend()},   # 临时区走虚拟 FS，不落盘
+    artifacts_root="/.scode",           # agent 自己的中间产物收在这一个目录里
 )
 ```
+
+**016 期改动：agent 自己的产物收拢到 `.scode/`**
+
+deepagents 会往 backend 里写三样东西，落点由 `CompositeBackend.artifacts_root`
+决定（默认 `/`，也就是工作空间根目录）：
+
+| 内容 | 默认路径 | 本项目路径 |
+|---|---|---|
+| 被压缩掉的对话历史 | `/conversation_history/<session_id>.md` | `<工作空间>/.scode/conversation_history/<session_id>.md` |
+| 超大的工具结果（eviction） | `/large_tool_results/<tool_call_id>` | `<工作空间>/.scode/large_tool_results/<tool_call_id>` |
+| 二进制内容块（默认关着） | `/blobs/<sha256>` | `<工作空间>/.scode/blobs/<sha256>` |
+
+**问题**：默认路径全在工作空间根目录，用户的项目里会冒出三个顶层目录；而
+`large_tool_results/` 和 `blobs/` **此前压根没进 `.gitignore`**——实测一次
+120KB 的工具结果 eviction 就在工作空间里留下一个未忽略的临时文件。
+
+**改法**：把 `artifacts_root` 设成 `/.scode`，三个子目录跟着前缀走。理由：
+
+- 一个隐藏目录、一条 gitignore 规则，命名跟项目已有的 `.scode-memory.md` 一致。
+- **产物必须在工作空间里**：工具消息里就是这么告诉 agent 的「结果太大，存到这个
+  路径，你可以 `read_file` 读回来」。路径出了 `virtual_mode` 的边界就读不回来，
+  eviction 会退化成「存了但读不到」。
+- **受限子 agent 也套一层没有路由的 CompositeBackend**（原来是裸
+  `FilesystemBackend`）：框架读 `artifacts_root` 的条件是
+  `isinstance(backend, CompositeBackend)`，裸 backend 拿不到这个属性，产物就会
+  退回 `/` 根目录，跟主 agent 分叉。没有路由 = 行为跟裸 FilesystemBackend 完全
+  一致，框架的权限判定路径（`_resolve_real_path`）也显式认 CompositeBackend。
+
+**代价**：在途对话里旧的摘要记着 `conversation_history/...` 旧路径，读不到了。
+判断为可接受——那是 scratch 文件，agent 读不到就当没有。
 
 **关键取舍**
 
@@ -2116,6 +2147,46 @@ pgrep -f "langgraph_cli dev"        # 应该没有输出
   **不报错**。实测模型调 `write_file("/private/var/.../hello.txt")`，文件跑到了
   工作空间里的 `private/var/.../`。现在 `_resolve_path()` 会先剥掉工作空间
   前缀，两种写法指向同一个文件 ✔
+
+### 8.10 agent 自己的中间产物（016 期）
+
+**产物落点**
+
+- **`CompositeBackend.artifacts_root` 是唯一的开关**，同时决定三类产物的路径前缀：
+  `FilesystemMiddleware` 和 `SummarizationMiddleware` 都从它读
+  （`isinstance(backend, CompositeBackend)` 才认，否则退回 `/`）。
+- 本项目设成 `/.scode`，实测三类前缀分别是 `/.scode/large_tool_results`、
+  `/.scode/conversation_history`、`/.scode/blobs` ✔
+- eviction 的落盘发生在**工具执行之后**：结果超过
+  `tool_token_limit_before_evict`（默认 20000 tokens）就写进
+  `large_tool_results/<tool_call_id>`，工具消息换成
+  「Tool result too large, the result of this tool call c1 was saved in the
+  filesystem at this path: /.scode/large_tool_results/c1」 ✔
+- 实测 120000 字节的工具结果 → `<工作空间>/.scode/large_tool_results/c1`
+  （120000 字节）落盘，`<工作空间>/large_tool_results/` 不存在，工作空间根目录
+  只多出 `.scode` 一个条目 ✔
+- **agent 能把落盘的结果读回来**：下一轮 `read_file("/.scode/large_tool_results/c1")`
+  读到了内容（会被 read_file 自己的输出上限截断，但路径是通的）✔
+- 对话历史：`SummarizationMiddleware._get_history_path()` 给出
+  `/.scode/conversation_history/<session_id>.md`，按这个路径写就落在
+  `<工作空间>/.scode/conversation_history/` ✔
+- **`blobs/` 默认不生成**：二进制内容块要开 `offload_binary_content` 才有 ✔
+
+**受限子 agent**
+
+- 换成 `CompositeBackend`（没有路由）之后，**只读权限照样拦得住**：实测
+  `write_file("/evil.txt")` 返回 `Error: permission denied for write on /evil.txt`，
+  文件没被写出来 ✔
+- 框架的权限判定路径（`deepagents/middleware/filesystem.py` 的
+  `_resolve_real_path()`）显式认 `CompositeBackend`——先路由再解析软链——
+  所以套一层 composite 不影响 `interrupt_on` 谓词的软链解析 ✔
+
+**一个容易踩的点**
+
+- `artifacts_root` **必须留在工作空间里**：工具消息让 agent `read_file` 那个路径，
+  出了 `virtual_mode` 的边界就读不回来，eviction 会退化成「存了但读不到」。
+- 产物路径是**虚拟路径**（以 `/` 开头，相对工作空间根），不是宿主绝对路径。
+  宿主绝对路径会走 `graph/backend.py` 的 `_workspace_relative()` 剥前缀。
 
 ---
 

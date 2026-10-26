@@ -131,8 +131,12 @@
 > 📌 **007 期落地**：`stupid_code/graph/backend.py` 构造 `CompositeBackend(default=LocalShellBackend)`
 > ——真实磁盘 + 本机 shell（`execute` 由此而来），`/tmp/` 路由到 `StateBackend`。
 > 框架的硬限制：**backend 支持命令执行时不能同时用 `permissions`**（shell 能绕过任何权限），
-> 所以声明了 `permissions` 的子 agent 会被换成无 shell 的 `FilesystemBackend`。
+> 所以声明了 `permissions` 的子 agent 会被换成无 shell 的 backend。
 > 详见 `docs/backend/PROGRESS.md` 的「007 · 真实 backend」一节。
+>
+> 📌 **016 期补充**：`CompositeBackend` 的 `artifacts_root` 决定 agent 自己的中间产物落在哪
+> （对话历史 / 超大工具结果 / 二进制块，默认 `/` = 工作空间根目录）。本项目设成 `/.scode`，
+> 收成一个隐藏目录，详见 `docs/backend/PROGRESS.md` 的「8.10 agent 自己的中间产物」。
 
 **子 Agent**：框架内置 `task` 工具与 general-purpose 子 Agent，可通过 `subagents` 参数扩展。子 Agent 会继承父 Agent 的工具限制（§5.2 的 allowlist），但**不自动继承权限档位**——见 §5.3 的注意事项。
 

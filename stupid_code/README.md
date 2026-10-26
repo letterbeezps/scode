@@ -91,7 +91,7 @@ stupid_code/
 | [launcher.py](launcher.py) | 工作空间（`SCODE_WORKSPACE` 或当前目录，工作空间在仓库根时警告）、生成临时派生配置、就绪探测、生命周期管理（`.langgraph_api` 保留不清理） |
 | **图与持久化**（`graph/`） | |
 | [graph/agent.py](graph/agent.py) | `code_agent` 图：`create_deep_agent()`，导出 `graph` |
-| [graph/backend.py](graph/backend.py) | 真实 backend：`WorkspaceCompositeBackend(default=LocalShellBackend)`（真实磁盘 + 本机 shell，`/tmp/` 走虚拟 FS；工作空间自己的绝对路径不会被 `/tmp/` 路由吞掉）；`apply_subagent_policies()` 给声明了 `permissions` 的子 agent 换无 shell 的 backend、不继承 MCP 工具，并合并父级 `interrupt_on` |
+| [graph/backend.py](graph/backend.py) | 真实 backend：`WorkspaceCompositeBackend(default=LocalShellBackend)`（真实磁盘 + 本机 shell，`/tmp/` 走虚拟 FS；工作空间自己的绝对路径不会被 `/tmp/` 路由吞掉；`artifacts_root="/.scode"` 把 agent 自己的产物收进一个隐藏目录）；`apply_subagent_policies()` 给声明了 `permissions` 的子 agent 换无 shell 的 backend、不继承 MCP 工具，并合并父级 `interrupt_on` |
 | [graph/workspace.py](graph/workspace.py) | 工作空间：解析 `configurable.workspace`；每轮开跑前校验（线程里）并刷新缓存；`WorkspaceMiddleware` 把绝对路径写进系统提示词 |
 | [graph/memory.py](graph/memory.py) | 长期记忆：读工作空间根的 `.scode-memory.md`（**不自动创建**，没记忆就当空的），装成 `MemoryMiddleware` 挂进 `middleware=` |
 | [graph/compaction.py](graph/compaction.py) | `/compaction` 手动压缩历史 + 摘要用当前选中的模型；`.name` 报成框架自带那份的公开别名，顶掉而不是叠加 |
@@ -133,6 +133,12 @@ stupid_code/
 > agent 的文件操作落在工作空间的**真实磁盘**上，`execute` 直接在本机跑 shell：
 > backend 是 `CompositeBackend(default=LocalShellBackend)`，见
 > `../docs/backend/PROGRESS.md` 的「007 · 真实 backend」一节。
+>
+> agent 自己的**中间产物**（被压缩掉的对话历史、超大的工具结果、二进制块）落在
+> 工作空间的 `.scode/` 下（`.scode/conversation_history/`、`.scode/large_tool_results/`、
+> `.scode/blobs/`），落点由 backend 的 `artifacts_root` 决定。这些目录已 gitignore，
+> 用户项目里不会冒出未忽略的临时文件；agent 需要时可以用 `read_file` 读回来，
+> 所以**不能挪出工作空间**。详见 `../docs/backend/PROGRESS.md` 的「8.10 agent 自己的中间产物」。
 >
 > `execute` 有**人工确认**（009 期）：按运行期传来的权限档位决定拦不拦，拦下时图挂起，
 > 前端弹确认卡片，批准/拒绝后用 `command.resume` 让图继续。见

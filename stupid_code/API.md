@@ -273,7 +273,7 @@ Accept: text/event-stream
   后端会强制压缩一次对话历史（不等待阈值）。这是普通消息，没有单独的端点——
   命令表在前端 `web/src/lib/commands.ts`，后端认哪个命令见
   `stupid_code/graph/compaction.py` 的 `COMPACTION_COMMAND`。
-  压缩掉的旧对话会落到工作空间的 `conversation_history/<session_id>.md`，
+  压缩掉的旧对话会落到工作空间的 `.scode/conversation_history/<session_id>.md`，
   agent 之后可以用 `read_file` 读回来
 
 **响应 `200`** — SSE 流，事件类型：
