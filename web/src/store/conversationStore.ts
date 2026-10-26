@@ -15,8 +15,9 @@ import {
   streamRun,
   type RunHandlers,
 } from '../api/run'
+import { isPermissionLevel } from '../lib/permissions'
 import { useTodoStore } from './todoStore'
-import { useTaskStore } from './taskStore'
+import { useTaskStore, type TaskSettings } from './taskStore'
 import { useSettingsStore } from './settingsStore'
 import type {
   ApprovalDecision,
@@ -60,6 +61,25 @@ function emptyAssistant(threadId: string): Message {
 
 function isActiveRun(run: { status: string }): boolean {
   return run.status === 'running' || run.status === 'pending'
+}
+
+/**
+ * 用 thread metadata 回填任务参数。
+ *
+ * taskStore 只在内存里，刷新页面就丢。thread metadata 记着这个任务上次实际
+ * 用过的 workspace / permissions（见 sendMessage），加载线程时回填。否则旧
+ * 任务会退回默认目录——HITL 恢复时尤其危险：批准的命令会在错误的目录里执行。
+ */
+function hydrateTaskSettings(thread: Thread): void {
+  const metadata = thread.metadata
+  if (!metadata) return
+
+  const patch: Partial<TaskSettings> = {}
+  if (typeof metadata.workspace === 'string') patch.workspace = metadata.workspace
+  if (isPermissionLevel(metadata.permissions)) patch.permissions = metadata.permissions
+  if (Object.keys(patch).length === 0) return
+
+  useTaskStore.getState().hydrate(thread.thread_id, patch)
 }
 
 /**
@@ -617,6 +637,8 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
     set({ loading: true })
     try {
       const threads = await threadApi.listThreads()
+      // 刷新页面后 taskStore 是空的：用线程 metadata 回填工作空间/权限
+      threads.forEach(hydrateTaskSettings)
       set((state) => ({
         threads,
         titles: {
@@ -671,11 +693,19 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       cancelRequested: false,
     })
 
+    // 刷新后 taskStore 是空的；先试一次。loadThreads 可能比这个请求慢，
+    // 所以下面拿到快照之后还会再试（两次都是幂等的，已有设置不会被覆盖）。
+    const known = get().threads.find((t) => t.thread_id === id)
+    if (known) hydrateTaskSettings(known)
+
     try {
       // 每次都读 state：缓存不能代表“run 是否还在跑”，刷新/断线恢复必须看 next/interrupts
       const snapshot = await threadApi.loadThreadSnapshot(id)
       // 读盘期间用户已经切走：别把旧线程的结果塞进当前 UI
       if (get().activeThreadId !== id) return
+
+      const thread = get().threads.find((t) => t.thread_id === id)
+      if (thread) hydrateTaskSettings(thread)
 
       const active = snapshot.next.length > 0 || snapshot.interrupts.length > 0
       const messages = threadApi.restoreMessages(id, snapshot.rawMessages, {
@@ -805,14 +835,6 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       error: null,
     }))
 
-    // 标题写进后端的 metadata：平台的 Thread 没有 title 字段，
-    // 只存前端内存的话刷新页面侧边栏就全变成"新任务"了。
-    // 写失败不影响主流程，标题退回从首条消息推导。
-    const title = get().titles[threadId!]
-    if (title && title !== '新任务') {
-      void threadApi.updateThreadMetadata(threadId!, { title }).catch(() => {})
-    }
-
     // 工作空间与权限按任务存；发送这一刻读一次快照，跑完之前再改不影响本次运行。
     // 模型是全局偏好（侧边栏下拉框），存在 settingsStore 里，同样在发送这一刻取快照。
     const taskSettings = useTaskStore.getState().resolve(threadId)
@@ -820,6 +842,34 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       ...taskSettings,
       model: useSettingsStore.getState().selectedId,
     }
+
+    // 标题写进后端的 metadata：平台的 Thread 没有 title 字段，
+    // 只存前端内存的话刷新页面侧边栏就全变成"新任务"了。
+    // 写失败不影响主流程，标题退回从首条消息推导。
+    //
+    // 工作空间和权限也一起写：它们按任务存，但 taskStore 只在内存里（刷新就丢）。
+    // 记进 thread metadata 后，加载线程时能回填（hydrateTaskSettings），HITL
+    // 恢复时批准的命令才不会跑错目录；「最近用过的项目」也从这里读。
+    // PATCH 返回的是合并后的完整 metadata，顺手更新本地列表，免得最近项目
+    // 要刷新页面才出现。
+    const title = get().titles[threadId!]
+    const metadata: Record<string, unknown> = {
+      workspace: taskSettings.workspace,
+      permissions: taskSettings.permissions,
+    }
+    if (title && title !== '新任务') metadata.title = title
+    void threadApi
+      .updateThreadMetadata(threadId!, metadata)
+      .then((updated) => {
+        set((prev) => ({
+          threads: prev.threads.map((thread) =>
+            thread.thread_id === updated.thread_id
+              ? { ...thread, metadata: updated.metadata }
+              : thread,
+          ),
+        }))
+      })
+      .catch(() => {})
 
     cancelCurrentRun = streamRun(threadId, text, runOptions, createRunHandlers(threadId))
   },
@@ -859,8 +909,10 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       ),
     }))
 
-    // 档位要原样带回去：后端的拦截判定在恢复时会再跑一次，档位变了结论就可能变
-    // 模型同理：恢复时后端按 configurable 里的 model 换模型，带空了就退回默认模型
+    // 工作空间和档位要原样带回去：恢复时后端会用它们继续跑（权限判定还会再跑
+    // 一次）。审批挂起期间两个选择器是禁用的，刷新后则靠 thread metadata 回填，
+    // 所以这里读到的就是发起 run 时的值——否则批准的命令会跑到别的目录里。
+    // 模型同理：恢复时后端按 configurable 里的 model 换模型，带空了就退回默认模型。
     const taskSettings = useTaskStore.getState().resolve(pending.threadId)
     const runOptions: RunOptions = {
       ...taskSettings,

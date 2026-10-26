@@ -89,10 +89,11 @@ export async function deleteThread(threadId: string): Promise<void> {
 }
 
 /**
- * 改线程的 metadata，用来把标题持久化到后端。
+ * 改线程的 metadata：标题 + 任务级运行参数（workspace / permissions）。
  *
- * 平台也会往 metadata 里塞 graph_id / assistant_id，所以这里只增量写 title，
- * 不覆盖整个 metadata。
+ * 平台也会往 metadata 里塞 graph_id / assistant_id；PATCH 是**合并**语义
+ * （后端 `Threads.patch` 做 `{**旧, **新}`），所以只传要写的字段，
+ * 不会覆盖平台自己的键。
  */
 export async function updateThreadMetadata(
   threadId: string,

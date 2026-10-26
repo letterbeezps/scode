@@ -33,7 +33,7 @@
 | 部分 | 文档描述 | 代码现状 |
 |---|---|---|
 | 前端 `web/` | 完整实现 | ✅ 已完成 5920 行 TS/TSX，mock 与真后端两套都能跑 |
-| 后端 Agent | §3 完整设计 | ⚠️ 001–011 期均已落地（真实磁盘 + shell、长期记忆、shell 人工确认、子 agent 配置、运行期切模型、手动压缩历史）。工作空间校验、运行护栏等自研中间件仍未做 |
+| 后端 Agent | §3 完整设计 | ⚠️ 001–014 期均已落地（真实磁盘 + shell、长期记忆、shell 人工确认、子 agent 配置、运行期切模型、手动压缩历史、MCP、按任务生效的工作空间）。运行护栏等自研中间件仍未做 |
 | 后端依赖 | Deep Agents + LangGraph | ✅ 已装齐并锁进 `uv.lock` |
 | `langgraph.json` | §3.2 已给出 | ✅ 在 `stupid_code/` 目录（不是根目录），图注册 + http.app + checkpointer/store 都已配 |
 | 模型配置 | §4 多供应商 | ✅ `conf/config.toml` + `/admin/models` 管理接口（002 / 003 期） |
@@ -198,27 +198,33 @@ langgraph up
 | GET | `/threads/{thread_id}/state` | 获取线程当前状态 | LangGraph 提供 |
 | POST | `/threads/{thread_id}/runs/{run_id}/cancel` | 取消运行 | LangGraph 提供 |
 | GET | `/threads/{thread_id}/runs/{run_id}/stream` | **重新接入已有运行的流**（断线恢复，§6.4） | LangGraph 提供 |
-| GET | `/directories?path=<绝对路径>` | **列出目录，供工作空间选择器使用** | **需自研实现** |
+| POST | `/workspaces/pick` | **弹系统原生目录选择框，选一个工作空间** | **自研实现**（014 期） |
 
 > 端点列表已与 `web/src/api/*.ts` 的实际调用逐一核对（2026-10-16）。
 
 **历史消息从哪里来**：前端不调用 `/threads/{tid}/history`，而是从 `GET /threads/{tid}/state` 返回的 `values.messages` 里自行转换（见 `web/src/api/thread.ts`）。后端无需额外处理，但要知道前端依赖这个结构——`values.messages` 必须是完整的 LangChain 消息数组。
 
-`/directories` 的响应结构（前端已按此解析）：
+### 4.1.1 工作空间怎么选（014 期定的方案）
 
-```typescript
-interface DirectoryListing {
-  path: string              // 当前列出的目录
-  parent: string | null     // 上级目录，根目录时为 null
-  directories: Array<{ name: string; path: string }>
-}
+**点工作空间按钮 → 弹系统原生文件浏览窗口 → 选一个文件夹。**
+
+```
+POST /workspaces/pick
+  → {"path": "/abs/path"}              选中了
+  → {"path": null, "cancelled": true}  用户点了取消（不是错误）
+  → 503 {"error": "..."}               弹不出来（无图形界面等）
+  → 409 {"error": "..."}               已经有一个弹窗在等（同一时刻只允许一个）
 ```
 
-不传 `path` 表示从根目录开始。
+**为什么由后端弹窗**：浏览器的 File System Access API 与 `<input webkitdirectory>` 都**故意不暴露绝对路径**（只给 name / 相对路径），这是防泄漏设计，无法绕过。而工作空间需要的就是绝对路径。
 
-**为什么必须走后端**：浏览器的 File System Access API 与 `<input webkitdirectory>` 都**故意不暴露绝对路径**（只给 name / 相对路径），这是防泄漏设计，无法绕过。而工作空间需要的就是绝对路径。
+后端跑在用户自己机器上，它能调起系统的目录选择框（macOS 的 `choose folder`、Linux 的 zenity、Windows 的 FolderBrowserDialog），弹窗就弹在用户眼前——跟「cd 到项目目录里再跑 claude」是同一个心智模型。
 
-**安全要求**：该端点能枚举用户整个文件系统目录树，必须做路径白名单校验，并仅监听 `127.0.0.1`（§6.1）。
+**为什么不是「后端返回目录列表」**（原设计里的 `GET /directories?path=...`）：那等于把文件系统目录树开放成一个 HTTP 接口，得配路径白名单、403 语义、一堆安全说明，而它解决的问题（让用户选个目录）用系统弹窗更直接。后端不需要"知道有哪些目录"。
+
+**「之前聊过的项目」列表不走后端**：工作空间记在每个 thread 的 `metadata.workspace` 里，前端从线程列表里直接读（见 `web/src/components/chat/WorkspacePicker.tsx`）。
+
+**安全要求**：这个端点会**阻塞**到用户在弹窗里选完（上限 600 秒），别做成同步阻塞整个事件循环的写法（§6.1 的 `127.0.0.1` 限制照旧）。
 
 ### 4.2 SSE 事件契约
 
@@ -300,19 +306,23 @@ interface Message {
 
 ### 5.2 工作空间隔离
 
-前端已实现工作空间选择器，并把绝对路径通过 `configurable.workspace` 传给后端。后端必须实现约束：
+前端已实现工作空间选择器，并把绝对路径通过 `configurable.workspace` 传给后端。**014 期已落地**（见 `stupid_code/graph/workspace.py`）。
 
-**约束规则**：
+**实际做法**：
 
-1. **路径归一化后前缀校验**：所有文件工具收到的路径，先 `os.path.realpath()` 解析（含符号链接），再校验是否位于 `workspace` 之内。仅做字符串 `startswith` 校验会被 `../` 和符号链接绕过。
-2. **workspace 解析同样归一化**：`workspace` 自身也要 realpath，否则软链目录会失效。
-3. **workspace 在一次 run 内锁定**：Agent 不允许中途切换工作空间，避免把文件写到意外位置。
-4. **空字符串的处理**：未选择工作空间时，**禁止一切文件写入与命令执行**，只允许读操作——或更严格：完全拒绝文件类工具调用，返回明确错误告知用户先选择工作空间。推荐后者，行为更可预期。
-5. **越界时的错误信息要对模型友好**：告诉它"路径不在允许的工作空间内，请改用工作空间内的相对路径"，而不是抛栈。
+- **根目录是运行期属性**：框架把 backend 的根目录存在 `self.cwd` 里，所有路径解析都从它出发。本项目把它做成 property，每次取值读当前运行的 `configurable.workspace`——同一张图能服务不同项目目录的对话（contextvar 天然按运行隔离）。
+- **文件工具的路径由框架自己兜住**：`virtual_mode=True` 时 `FilesystemBackend._resolve_path` 会 `resolve()` 展开软链再校验是否落在根目录内，`..` / `~` / 越界绝对路径都进不来。
+- **workspace 自己也 realpath**：否则软链目录会失效（macOS 上 `/tmp` → `/private/tmp`，不解析的话框架的越界检查会误判）。
+- **`/tmp/` 虚拟路由不会吃掉工作空间**：工作空间在 `/tmp/...` 时（Linux 的 `mktemp -d` 默认就在那儿），以工作空间绝对路径开头的 key 优先交给 default backend；不在工作空间下的虚拟 `/tmp/...` 仍走 `StateBackend`。
+- **每轮运行开跑前重新校验**：存在性 / 目录类型 / 软链解析都在 `before_agent` 里重做（放线程），结果刷进缓存供热路径读取——只缓存首次结果的话，目录被删掉后校验会永远命中缓存、形同虚设。
+- **一次 run 内锁定**：`configurable` 是运行级参数，一轮对话中途改不了。
+- **空字符串 = 用后端默认工作空间**（`SCODE_WORKSPACE` 或启动时的 cwd），不是拒绝一切操作——原生跑法（`cd project && uv run scode`）里用户没有前端可选。
+- **刷新页面后从 thread metadata 回填**：前端把 `workspace` / `permissions` 写进 thread 的 metadata，`loadThreads` / `selectThread` 时回填本地的任务参数；审批挂起期间选择器禁用，恢复时带回的就是发起 run 时的值。
+- **工作空间不合法 = 这一轮直接失败**（「工作空间不存在：xxx」），**不静默退回默认目录**——那等于把 agent 的写操作落到用户没选过的目录里。
 
-**实现位置**：建议用一个自定义中间件包裹所有工具调用做前置校验，而不是在每个工具里各写一遍——集中式才不会有遗漏。
+**没做的**：§6.1 之外没有更细的沙箱。deepagents 是 "trust the LLM" 模型，agent 有 shell 就能碰整个文件系统；工作空间是"默认在哪干活"，不是安全边界。
 
-**Deep Agents 自带机制**：`create_deep_agent(permissions=[...])` 提供文件读写的路径 ACL（glob 模式 + allow/deny，first-match-wins）。它可以作为**第二道防线**，但不能替代上述校验——因为它管不到通过 `tools=` 传入的自定义工具，也管不到 shell 命令里的路径。
+**Deep Agents 自带机制**：`create_deep_agent(permissions=[...])` 提供文件读写的路径 ACL（glob 模式 + allow/deny，first-match-wins）。本项目只在**子 agent** 上用它（`conf/subagents.toml` 里 `reviewer` 的只读），主 agent 走的是「根目录就是工作空间」这条路——因为主 agent 有 shell，框架明确拒绝「backend 支持命令执行 + 文件权限」这种组合（见 `graph/backend.py`）。
 
 ### 5.3 危险操作确认机制
 
@@ -570,7 +580,7 @@ stupid-code/
 │   │   ├── agent.py         # create_deep_agent 构建入口，导出 graph
 │   │   ├── backend.py       # 真实 backend：CompositeBackend(default=LocalShellBackend)
 │   │   ├── compaction.py    # /compaction 手动压缩历史 + 摘要用当前选中的模型
-│   │   ├── memory.py        # 长期记忆：工作空间根的 .scode-memory.md（不存在则创建）
+│   │   ├── memory.py        # 长期记忆：工作空间根的 .scode-memory.md（不自动创建，跟工作空间走）
 │   │   ├── model_switch.py  # 运行期切换对话模型的中间件
 │   │   ├── mcp.py           # MCP 工具加载：建图时取工具 + 调用期重试 / 错误兜底
 │   │   ├── permissions.py   # shell 人工确认：档位与危险判定
@@ -580,11 +590,11 @@ stupid-code/
 │   │   ├── subagent.py      # 读 conf/subagents.toml、校验、转成 deepagents 的 SubAgent 规格
 │   │   ├── mcp.py           # 读 conf/mcp.json、校验、转成 MCP 客户端的连接参数
 │   │   └── prompts.py       # 主 agent 的系统提示词（框架已无内置提示词，见 §3.1）
-│   ├── admin/               # 挂在 /admin 下的管理接口
+│   ├── admin/               # 挂在 /admin 下的管理接口 + /workspaces/pick（弹系统目录框）
 │   │   ├── app.py           # Starlette 子应用与路由表
 │   │   └── models.py        # /admin/models 端点处理
 │   ├── data/                # SQLite 数据库目录（gitignore，checkpoint/store 落这儿）
-│   ├── middlewares/         # 自研中间件（护栏、工作空间校验、埋点）—— 待建
+│   ├── middlewares/         # 自研中间件（护栏、埋点）—— 待建（工作空间中间件已落在 graph/workspace.py）
 │   ├── tools/               # 自定义工具 —— 待建
 │   └── prompts/             # 版本化提示词（§8）—— 待建
 └── .agents/skills/          # langchain-skills（gitignore，需自行安装）
@@ -639,7 +649,7 @@ stupid-code/
 | 中间件顺序错误导致绕过审批 | 中 | 高 | 顺序写入代码规范并加测试（§6.3） |
 | 意外绑定 `0.0.0.0` 导致命令执行暴露 | 低 | 极高 | 配置层强制 127.0.0.1（§6.1） |
 | Agent 失控循环烧钱 | 中 | 中 | 护栏四件套（§5.4） |
-| `/directories` 泄露文件系统结构 | 中 | 中 | 路径白名单 + 仅本地监听（§4.1） |
+| 目录选择框把文件系统暴露给前端 | 低 | 低 | 只弹系统原生窗口（不返回目录列表），后端仍只监听 `127.0.0.1`（§4.1.1） |
 | 刷新页面丢失运行状态 | 高 | 低 | §6.4 低成本兜底；根治需开 `stream_resumable` |
 | 大文件 Diff 渲染卡顿 | 中 | 低 | 虚拟滚动或截断展示 |
 | 会话持久化 | — | — | 开发期 InMemory 重启丢失，生产换 Postgres |

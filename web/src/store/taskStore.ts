@@ -28,6 +28,14 @@ export interface TaskStore {
   /** threadId 为 null 时读写 draft */
   resolve: (threadId: string | null) => TaskSettings
   update: (threadId: string | null, patch: Partial<TaskSettings>) => void
+  /**
+   * 用 thread metadata 回填任务参数；该任务已经有内存设置时不覆盖。
+   *
+   * 设置本身只存在内存里，刷新页面就没了。thread metadata 里记着这个任务
+   * 上次实际用过的 workspace / permissions（见 conversationStore.sendMessage），
+   * 加载线程时用它回填，否则旧任务会退回默认目录。
+   */
+  hydrate: (threadId: string, patch: Partial<TaskSettings>) => void
   reset: (threadId: string | null) => void
   /**
    * 把 draft 固化到指定任务上，并把 draft 重置为默认值。
@@ -52,6 +60,18 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       const next: TaskSettings = { ...current, ...patch }
       if (threadId) return { settings: { ...state.settings, [threadId]: next } }
       return { draft: next }
+    }),
+
+  hydrate: (threadId, patch) =>
+    set((state) => {
+      // 内存里已经有设置（本次会话里改过）就不覆盖——metadata 可能是旧的
+      if (state.settings[threadId]) return {}
+      return {
+        settings: {
+          ...state.settings,
+          [threadId]: { ...defaultSettings(), ...patch },
+        },
+      }
     }),
 
   reset: (threadId) =>

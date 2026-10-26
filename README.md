@@ -245,7 +245,7 @@ VITE_USE_MOCK=true pnpm dev
 
 `src/api/mock/` 用与真后端**完全相同的接口签名**实现假数据，覆盖流式 token、工具调用状态流转、todo 同步、Diff 渲染、停止生成等路径，侧边栏有黄色提示条提示当前是假数据。注意 mock **默认是关的** —— `VITE_USE_MOCK` 不设即为 false，前端会直接去连后端然后满屏报错。
 
-界面细节、接口契约、`GET /directories` 的约定都在 [`web/README.md`](web/README.md)。
+界面细节、接口契约、工作空间的选择方式都在 [`web/README.md`](web/README.md)。
 
 ### 7. 或者：整个项目跑在 Docker 里
 
@@ -286,7 +286,7 @@ docker compose up --build
 
 要点：
 
-- **工作空间默认是仓库本身** —— `SCODE_WORKSPACE` 指向的目录挂到容器里的 `/workspace`，agent 的文件 / shell 工具以此为根。**建议指向单独的项目目录**：指向仓库时，agent 能改 `conf/mcp.json` 和后端源码，下次启动就会执行。想让它改别的项目：`SCODE_WORKSPACE=~/projects/other docker compose up`。
+- **工作空间默认是仓库本身** —— `SCODE_WORKSPACE` 指向的目录挂到容器里的 `/workspace`，agent 的文件 / shell 工具以此为根。**建议指向单独的项目目录**：指向仓库时，agent 能改 `conf/mcp.json` 和后端源码，下次启动就会执行。想让它改别的项目：`SCODE_WORKSPACE=~/projects/other docker compose up`。容器里没有图形界面，前端弹不出系统目录框；想手动输入只能用容器内可见的路径（`/workspace`），宿主路径在容器里不存在。
 - **历史不会丢** —— thread 索引（`.langgraph_api/`）落在工作空间里，checkpoint（`stupid_code/data/langgraph.db`）挂在宿主上，容器重建后接着用。
 - **api_key 不进镜像** —— `conf/config.toml` 被 `.dockerignore` 排除，靠 volume 挂进去。
 - **端口只绑 127.0.0.1** —— 容器内后端进程绑 `0.0.0.0`（不然容器之间连不上），但宿主侧的端口映射只绑本机，对外依然只有本机能访问。
@@ -299,16 +299,16 @@ docker compose up --build
 
 跑起来就会撞上的几件事：
 
-- **工作空间默认是运行 scode 的目录，也可以用 `SCODE_WORKSPACE` 指定** —— langgraph 子进程的 cwd 就是它，agent 的文件 / shell 工具以此为根。**别把仓库根当工作空间**：agent 能写工作空间里的任何文件，包括 `conf/mcp.json` 和后端源码，这些会在下次启动时执行，等于绕开 `execute` 的人工确认。
+- **工作空间默认是运行 scode 的目录，也可以用 `SCODE_WORKSPACE` 指定** —— langgraph 子进程的 cwd 就是它，agent 的文件 / shell 工具以此为根。前端选的工作空间按消息生效，会覆盖这个默认值；刷新页面后工作空间/权限会从 thread metadata 回填。**别把仓库根当工作空间**：agent 能写工作空间里的任何文件，包括 `conf/mcp.json` 和后端源码，这些会在下次启动时执行，等于绕开 `execute` 的人工确认。
 - **端口锁死 2024** —— 被占用时 `scode` 直接启动失败并说明是谁占着，**不会自动换端口**（自动换会让就绪检查打到旧服务上，误报"已就绪"，前端连的是旧代码）。
 - **持久状态分两处，缺一不可** —— thread 索引在工作空间的 `.langgraph_api/`，checkpoint / store 在 `stupid_code/data/langgraph.db`（已 gitignore，删掉即重置历史）。
 - **人工确认只拦 `execute`** —— 文件类工具（`write_file` / `edit_file` / `delete`）不拦，那是 code agent 的日常。agent 能读**也能写**工作空间里的任何文件。
 - **恢复挂起的运行** —— 请求体要带同一个 `configurable.permissions`；`command.resume.decisions` 的个数必须和挂起时的 `action_requests` 一样多，否则框架直接抛错。
 - **换模型不用重启后端** —— 但 harness profile 和摘要阈值是建图时定死的，不跟着换；子 agent 一律用各自配置里的模型。
-- **记忆只在会话开始时读一次** —— 改完 `.scode-memory.md` 要开新会话才生效。
+- **记忆文件不会自动创建** —— 同一工作空间内只在会话开始时读一次，改完 `.scode-memory.md` 要开新会话才生效；换工作空间会重新读。第一次保存记忆时 agent 自己用 `write_file` 创建，不会往你选的项目里凭空塞文件。
 - **框架 0.7.x 不再提供内置系统提示词** —— `create_deep_agent(system_prompt=...)` 传进去的就是模型唯一看到的系统提示词，行为准则写在 `stupid_code/config/prompts.py`。
 - **API key 走 `conf/config.toml`**，已 gitignore，别硬编码进代码。
-- **工作空间选择器在真后端下报 404 属预期** —— `GET /directories` 后端还没实现，前端已按契约写好。
+- **工作空间按任务生效，也可以不选** —— 点按钮会弹系统原生的目录选择框（`POST /workspaces/pick`）；不选 = 用后端启动时的目录。刷新页面后工作空间/权限会从 thread metadata 回填。
 - **MCP 服务器配在 `conf/mcp.json`**（不入库，按需从 `conf/mcp.example.json` 复制）—— http 和 stdio 都支持，**改完要重启后端**（跟 `conf/subagents.toml` 一样）；某个服务器连不上只少它那几个工具，不会弄死整轮对话。stdio 服务器会在启动时执行命令，只配信任的服务器。
 
 完整的踩坑清单（含代码位置、原因、验证方式）见 [`AGENTS.md`](AGENTS.md)；已知缺口见 [`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md) 的「已知缺口」一节。
@@ -340,7 +340,7 @@ docker compose up --build
 - 跑在真实仓库里之前，先在容器或一次性沙箱里试
 - 危险命令的批准流程用 `HumanInTheLoopMiddleware` 搭；中断恢复需要的 checkpointer 由 `langgraph dev` 平台自动提供，**不要手动传给 `create_deep_agent()`**（会直接抛 ValueError）
 - **只监听 `127.0.0.1`**。`scode` 已经写死了这个地址，别改成 `0.0.0.0` —— 一个天生带 shell 执行和文件写权限的 agent 暴露到局域网，等于把整台机器交出去
-- `/directories` 这类会暴露文件系统结构的端点，用之前必须加路径白名单
+- 目录选择走系统原生弹窗（`POST /workspaces/pick`），后端不提供「列目录」接口；这个端点会阻塞到用户选完（上限 600 秒），后端仍只监听 `127.0.0.1`
 - API key 永远走 `conf/config.toml` 或环境变量，别硬编码进代码
 
 ---

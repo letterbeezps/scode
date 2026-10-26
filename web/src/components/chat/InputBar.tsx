@@ -15,6 +15,7 @@ import { SLASH_COMMANDS, type SlashCommand } from '../../lib/commands'
 import { SlashCommandMenu } from './SlashCommandMenu'
 import { WorkspacePicker } from './WorkspacePicker'
 import { PermissionPicker } from './PermissionPicker'
+import { useConversationStore } from '../../store/conversationStore'
 
 const MAX_HEIGHT_PX = 200
 
@@ -57,6 +58,8 @@ export function InputBar({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const [activeIndex, setActiveIndex] = useState(0)
   const [dismissed, setDismissed] = useState(false)
+  /** 审批卡片挂着时任务参数不能改：恢复请求会原样带回 workspace / permissions */
+  const approvalPending = useConversationStore((s) => s.pendingApproval !== null)
 
   // 高度跟随内容，但封顶后交给内部滚动
   useLayoutEffect(() => {
@@ -186,8 +189,8 @@ export function InputBar({
         </div>
 
         <div className="mt-2 flex flex-wrap items-center gap-2 px-1">
-          <WorkspacePicker threadId={threadId} disabled={isGenerating} />
-          <PermissionPicker threadId={threadId} disabled={isGenerating} />
+          <WorkspacePicker threadId={threadId} disabled={isGenerating || approvalPending} />
+          <PermissionPicker threadId={threadId} disabled={isGenerating || approvalPending} />
           <p className="ml-auto flex items-center gap-1 text-[11px] text-fg-muted">
             <CornerDownLeft className="size-3" />
             Enter 发送 · Shift+Enter 换行 · <span className="font-mono">/</span> 命令

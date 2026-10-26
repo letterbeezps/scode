@@ -30,6 +30,21 @@ agent 的 `write_file` / `edit_file` 写的是内存里的副本，落不了盘�
 声明了 `permissions`（只读）。两件事直接冲突——不处理的话图在建的时候
 就炸了。处理办法见 `build_restricted_backend()`：给声明了 permissions 的
 子 agent 换一个**没有 shell** 的 backend，权限就真的拦得住。
+
+## 根目录是运行期定的，不是建图时定的
+
+前端按任务选工作空间，同一张图要服务不同项目目录的对话，所以根目录不能
+在建图时写死。框架的 `FilesystemBackend` 把根目录存在 `self.cwd` 里，
+所有路径解析都从它出发（`_resolve_path`、glob/grep 的搜索根、
+`LocalShellBackend.execute` 的 shell cwd）。
+
+所以这里把 `cwd` 做成 property：取值时读当前运行的 `configurable`
+（见 `graph/workspace.py`）。这样一次工具调用落在哪个目录，取决于这一轮
+对话选了哪个工作空间，而不是后端启动时在哪个目录。
+
+用 property 而不是"运行期换 backend 实例"有两个原因：backend 实例在建图时
+就注册进框架的工具里了，运行期换不了；而且同一时刻可能有多个对话在跑，
+property 背后是 contextvar，天然按运行隔离，改共享实例的属性则会串目录。
 """
 
 from __future__ import annotations
@@ -41,6 +56,7 @@ from deepagents import SubAgent
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.local_shell import LocalShellBackend
+from deepagents.backends.protocol import GlobResult, GrepResult, LsResult
 from deepagents.backends.state import StateBackend
 from deepagents.middleware.filesystem import (
     FilesystemMiddleware,
@@ -48,14 +64,150 @@ from deepagents.middleware.filesystem import (
     FsToolName,
 )
 
+from stupid_code.graph.workspace import current_workspace, default_workspace
 
-def workspace_dir() -> Path:
-    """工作空间目录 = 当前进程 cwd。
 
-    launcher 起 langgraph 子进程时把 cwd 设成用户的工作空间，graph 也在那个
-    进程里导入，所以这里拿到的就是工作空间。
+class _WorkspaceRoot:
+    """让 backend 的根目录跟着「当前运行的工作空间」走。
+
+    框架里所有路径解析都从 `self.cwd` 出发，所以改这一个属性就够：
+    文件工具的路径、`execute` 的 shell cwd、glob/grep 的搜索根。
+
+    `cwd` 在框架里本来是个普通实例属性，这里换成 property：属性查找时
+    类上的数据描述符优先于实例 `__dict__`，所以父类 `__init__` 里那句
+    `self.cwd = ...` 会落到下面的 setter（被忽略），而每次读取拿到的都是
+    当前运行的工作空间。
     """
-    return Path.cwd()
+
+    @property
+    def cwd(self) -> Path:
+        """当前运行的工作空间（读不到就退回后端默认工作空间）。"""
+        return current_workspace()
+
+    @cwd.setter
+    def cwd(self, value: Path) -> None:
+        """父类构造时会给 `cwd` 赋值，这里忽略。
+
+        真正的根目录由 `current_workspace()` 在每次使用时决定，
+        构造时传进来的 `root_dir` 只在建图阶段有意义（那时还没有运行上下文，
+        读到的就是默认工作空间）。
+        """
+
+    def _resolve_path(self, key: str) -> Path:
+        """把模型给的路径解析成真实文件。
+
+        框架的 `virtual_mode` 语义：`/foo` → `<工作空间>/foo`（虚拟路径，
+        `/` 是工作空间根）。但模型看到系统提示词里的**绝对路径**之后，
+        有时会把绝对路径直接传给文件工具（`/Users/me/proj/src/x.py`）——
+        框架会把它当虚拟路径处理，于是文件落到
+        `<工作空间>/Users/me/proj/src/x.py` 这种奇怪的地方，**还不报错**。
+
+        这里把「以工作空间绝对路径开头」的写法先剥掉前缀，两种写法指向同一个
+        文件。剥不掉的（工作空间之外的绝对路径）交回框架按虚拟路径处理——
+        它出不去工作空间，只是落到工作空间内的同名子目录里。
+
+        用 `Path.is_absolute()` 而不是 `startswith("/")`：Windows 的盘符路径
+        （`C:\\...`）也是绝对路径，只认 `/` 的话前缀永远剥不掉。
+        """
+        root = self.cwd
+        path = Path(key)
+        if path.is_absolute():
+            try:
+                relative = path.relative_to(root)
+            except ValueError:
+                relative = None
+            if relative is not None:
+                return super()._resolve_path(f"/{relative.as_posix()}")
+        return super()._resolve_path(key)
+
+
+class WorkspaceShellBackend(_WorkspaceRoot, LocalShellBackend):
+    """真实磁盘 + 本机 shell，根目录跟着当前运行的工作空间走。"""
+
+
+class WorkspaceFilesBackend(_WorkspaceRoot, FilesystemBackend):
+    """真实磁盘、没有 shell，根目录同样跟着当前运行的工作空间走。"""
+
+
+class WorkspaceCompositeBackend(CompositeBackend):
+    """CompositeBackend + 「工作空间绝对路径优先走 default」的守卫。
+
+    路由是按**虚拟前缀**匹配的，而且发生在 default backend 剥掉工作空间前缀
+    之前。工作空间本身位于 `/tmp/...` 时（Linux 的 `mktemp -d` 默认就在那儿），
+    模型传进来的宿主绝对路径 `/tmp/ws/x.py` 会被 `/tmp/` 路由吃掉，写进
+    `StateBackend`——文件不落盘、还报成功。
+
+    所以路由前先判断 key 是不是「以当前工作空间绝对路径开头」：是的话一律交给
+    default backend（它会把前缀剥掉）。不在工作空间下的虚拟 `/tmp/...` 仍然走
+    `StateBackend`，临时产物的语义不变。
+    """
+
+    @staticmethod
+    def _is_workspace_path(key: str) -> bool:
+        """这个 key 是不是当前工作空间里的宿主绝对路径。
+
+        `/` 单独放行：它是虚拟根，`ls("/")` 要保留 composite 的聚合行为。
+        """
+        path = Path(key)
+        if not path.is_absolute() or path == Path("/"):
+            return False
+        # 先取根目录再试相对化：WorkspaceError 是 ValueError 的子类，
+        # 放在 try 里会被下面的 except 静默吞掉（坏工作空间就悄悄路由到虚拟 FS 了）
+        root = current_workspace()
+        try:
+            path.relative_to(root)
+        except ValueError:
+            return False
+        return True
+
+    def _get_backend_and_key(self, key: str) -> tuple[Any, str]:
+        if self._is_workspace_path(key):
+            return self.default, key
+        return super()._get_backend_and_key(key)
+
+    def ls(self, path: str) -> LsResult:
+        if self._is_workspace_path(path):
+            return self._coerce_ls_result(self.default.ls(path))
+        return super().ls(path)
+
+    async def als(self, path: str) -> LsResult:
+        if self._is_workspace_path(path):
+            return self._coerce_ls_result(await self.default.als(path))
+        return await super().als(path)
+
+    def grep(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        *,
+        max_count: int | None = None,
+    ) -> GrepResult:
+        if path is not None and self._is_workspace_path(path):
+            return self._grep_backend(self.default, pattern, path, glob, max_count)
+        return super().grep(pattern, path, glob, max_count=max_count)
+
+    async def agrep(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        *,
+        max_count: int | None = None,
+    ) -> GrepResult:
+        if path is not None and self._is_workspace_path(path):
+            return await self._agrep_backend(self.default, pattern, path, glob, max_count)
+        return await super().agrep(pattern, path, glob, max_count=max_count)
+
+    def glob(self, pattern: str, path: str | None = None) -> GlobResult:
+        if path is not None and self._is_workspace_path(path):
+            return self.default.glob(pattern, path)
+        return super().glob(pattern, path)
+
+    async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
+        if path is not None and self._is_workspace_path(path):
+            return await self.default.aglob(pattern, path)
+        return await super().aglob(pattern, path)
 
 
 def build_backend() -> CompositeBackend:
@@ -66,10 +218,12 @@ def build_backend() -> CompositeBackend:
     - `inherit_env=True`：shell 继承当前进程的环境变量。默认是空环境，
       PATH 是空的，`uv` / `python` / `node` 这些全都找不到。
     - `/tmp/` 路由到 StateBackend：临时产物走虚拟 FS，不在用户磁盘上留垃圾。
+      工作空间自己的绝对路径（比如 `/tmp/ws/x`）不会被这条路由吃掉，见
+      `WorkspaceCompositeBackend`。
     """
-    return CompositeBackend(
-        default=LocalShellBackend(
-            root_dir=workspace_dir(),
+    return WorkspaceCompositeBackend(
+        default=WorkspaceShellBackend(
+            root_dir=default_workspace(),
             virtual_mode=True,
             inherit_env=True,
         ),
@@ -85,8 +239,8 @@ def build_restricted_backend() -> FilesystemBackend:
     没有 shell，`permissions` 才拦得住（见模块 docstring 里框架那条限制）。
     文件操作仍然落在真实磁盘上——子 agent 要读的就是用户工作空间里的真文件。
     """
-    return FilesystemBackend(
-        root_dir=workspace_dir(),
+    return WorkspaceFilesBackend(
+        root_dir=default_workspace(),
         virtual_mode=True,
     )
 

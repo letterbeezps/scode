@@ -258,6 +258,7 @@ interface TaskStore {
 
   resolve: (threadId: string | null) => TaskSettings
   update: (threadId: string | null, patch: Partial<TaskSettings>) => void
+  hydrate: (threadId: string, patch: Partial<TaskSettings>) => void
   reset: (threadId: string | null) => void
   adoptDraft: (threadId: string) => void
 }
@@ -266,6 +267,12 @@ interface TaskStore {
 `threadId` 为 null 时读写 `draft`。`createThread` 时调 `adoptDraft()` 把 draft 固化到新任务上
 并把 draft 重置回默认值 —— 否则这个任务会一直回退到 draft，参数被后续新任务改掉。
 删除任务时一并 `reset` + `clearTodos`。
+
+设置只在内存里，刷新页面会丢。所以发消息时把 `workspace` / `permissions` 一并写进
+thread 的 `metadata`（`PATCH /threads/{id}` 是合并语义，不会覆盖平台的键），
+`loadThreads` / `selectThread` 时用 `hydrate()` 回填；已经有内存设置的任务不覆盖。
+审批卡片挂着时两个选择器禁用 —— 恢复请求会原样带回这两个参数，改了就会出现
+「批准的是 A 目录的命令，却在 B 目录执行」。
 
 组件里要用 selector 订阅（`useTaskSettings(threadId)`），**不要在 selector 里调 `resolve()`**：
 `resolve` 读的是 `get()` 快照，在 selector 里调用拿不到订阅关系，改了不会重渲染。
@@ -337,7 +344,7 @@ src/api/
 ├── events.ts          # 事件归一化：两套协议 → 一套前端语义事件，并去重
 ├── thread.ts          # 线程 CRUD + 历史消息还原
 ├── run.ts             # 运行相关 API（含流式与取消）
-├── directory.ts       # 工作空间选择器用的目录浏览
+├── workspace.ts       # 工作空间：弹系统目录选择框（POST /workspaces/pick）
 ├── types.ts           # 请求/响应类型定义
 └── mock/              # 无后端时的假实现（接口签名与真实后端完全一致）
 ```
@@ -409,30 +416,41 @@ type NormalizedEvent =
   | { type: 'end' }
 ```
 
-### 6.4 目录浏览端点（v0.2 新增）
+### 6.4 工作空间选择（014 期改）
 
-工作空间选择器需要列目录，因此新增一个端点契约：
+工作空间用**系统原生目录选择框**选：点按钮 → 后端弹系统的文件浏览窗口 →
+用户选一个文件夹 → 拿到绝对路径。
 
 ```
-GET /directories?path=<绝对路径>
+POST /workspaces/pick
 
-→ {
-    "path": "/Users/1token/Desktop/project",
-    "parent": "/Users/1token/Desktop",
-    "directories": [{ "name": "stupid-code", "path": "/Users/1token/Desktop/project/stupid-code" }]
-  }
+→ {"path": "/Users/1token/Desktop/project/stupid-code"}   选中了
+→ {"path": null, "cancelled": true}                        用户点了取消（不是错误）
+→ 503 {"error": "..."}                                     弹不出来（无图形界面等）
+→ 409 {"error": "..."}                                     已经有一个弹窗在等
 ```
 
-`path` 省略时等价于根目录；根目录的 `parent` 为 `null`。只返回子目录，不返回文件。
-路径不可读时返回 4xx/5xx，前端在面板内就地显示错误，不会白屏。
+**为什么不是浏览器的目录选择 API**：File System Access API（`showDirectoryPicker()`）和
+`<input webkitdirectory>` 都**故意不暴露绝对路径**（只给 name / 相对路径），这是浏览器的
+安全设计，绕不过去。而工作空间要的恰恰是绝对路径。后端跑在用户自己机器上，它能弹系统窗口。
 
-> **后端尚未实现该端点**，目前只是契约。见 11。
+**为什么不是「后端返回目录列表」**（v0.2 的原设计）：那等于把文件系统目录树开放成
+一个 HTTP 接口，得配路径白名单、403 语义、一堆安全说明，而它解决的问题（让用户选个
+目录）用系统弹窗更直接。
+
+**下拉菜单里还有两样**：
+
+- 「最近用过的项目」——来自对话历史（每个 thread 的 `metadata.workspace`），前端从
+  线程列表里直接读，不需要后端再列目录
+- 「手动输入绝对路径」——后端在无图形界面环境（Docker、纯 SSH）弹不出窗口时的唯一出路
+
+弹窗期间按钮显示「等待选择…」。用户取消**不算错误**，保留原来的选择。
 
 ### 6.5 Mock 模式
 
 `VITE_USE_MOCK=true` 时，`src/api/mock/` 按与真实后端**完全相同的接口签名**提供假数据，
 覆盖流式 token、工具调用状态流转、待办同步、Diff 渲染、停止生成等全部路径，
-外加一棵写死的假文件树 `MOCK_FS` 供目录浏览用。
+以及一个假的「选目录」实现（直接返回一个假路径）。
 
 mock 回复末尾会把本次收到的 `workspace` / `permissions` 原样回显出来，方便确认参数确实传到了。
 侧边栏显示黄色提示条标明当前是 mock。**生产构建务必关闭。**
@@ -694,10 +712,10 @@ refractor 的语言包，属于按需加载，不在首屏关键路径上。
 - [x] 任务运行参数：工作空间 + 三级权限（`manual` / `normal` / `auto`）
 - [x] 对话模型切换（010 期）：选中即生效，不用重启后端
 - [x] 斜杠命令菜单（011 期）：`/compaction` 手动压缩对话历史
+- [x] 工作空间按任务生效（014 期）：弹系统目录框选目录，agent 的写操作落在那个目录里
 
 ### 11.2 待定的
 
-- [ ] **`GET /directories` 的后端实现** —— 契约已定（6.4），后端还没写
 - [ ] **危险操作确认的前端入口** —— `permissions` 已经会传给后端，但 `manual` 触发时
       后端要能挂起工具调用、前端要能展示确认卡片，**这套协议还没设计**
 - [ ] 右侧文件预览面板（本期布局已按两栏设计，接上不影响）
@@ -722,7 +740,7 @@ refractor 的语言包，属于按需加载，不在首屏关键路径上。
 | Shiki 代码高亮 + 复制 | ✅ |
 | 待办实时同步 + 点击跳转到对应工具调用 | ✅ |
 | 亮/暗主题 | ✅ |
-| 工作空间文件夹浏览器 | ✅（依赖后端 6.4，端点未实现） |
+| 工作空间选择器（系统原生目录框，014 期） | ✅ |
 | 权限三级下拉 + 参数传递 | ✅（拦截点待后端实现） |
 | Mock 模式 | ✅ |
 | 自动滚动（ResizeObserver）+ 回到底部 | ✅ |

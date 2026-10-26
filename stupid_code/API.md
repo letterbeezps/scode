@@ -20,7 +20,7 @@
 | 前端 | GET | [`/threads/{id}/state`](#get-threadsidstate) | 历史消息 | ✅ |
 | 前端 | POST | [`/threads/{id}/runs/stream`](#post-threadsidrunsstream) | 流式运行 / 恢复挂起的运行 | ✅ |
 | 前端 | POST | [`/threads/{id}/runs/{runId}/cancel`](#post-threadsidrunsrunidcancel) | 停止运行 | ✅ |
-| 前端 | GET | [`/directories`](#get-directories未实现) | 浏览目录（工作空间） | ❌ 未实现 |
+| 前端 | POST | [`/workspaces/pick`](#post-workspacespick) | 弹系统文件浏览窗口选工作空间 | ✅（014 起） |
 | 管理端 | GET | [`/admin/models`](#get-adminmodels) | 列出全部模型 | ✅（003 起） |
 | 管理端 | GET | [`/admin/models/{id}`](#get-adminmodelsid) | 单个模型详情 | ✅（003 起） |
 | 管理端 | POST | [`/admin/models`](#post-adminmodels) | 新增模型 | ✅（003 起） |
@@ -255,9 +255,15 @@ Accept: text/event-stream
 - `assistant_id`：来自 `VITE_ASSISTANT_ID`，默认 `code_agent`
 - `stream_mode`：只取 `updates`（`values` 会回传全量状态，噪音大）
 - `on_disconnect: "continue"`：浏览器断开后后端继续跑完，避免脏状态
-- `config.configurable.workspace` / `permissions`：工作空间路径与权限档位。
-  `workspace` 目前只是透传（`GET /directories` 未实现，前端的工作空间选择器在真后端下报错是预期的）；
-  `permissions` 已被后端读取（009 期），决定 `execute` 要不要先问人——见 `stupid_code/graph/permissions.py`
+- `config.configurable.workspace`：**这一轮的工作空间绝对路径**（014 期起真正生效）。
+  agent 的文件工具（`read_file` / `write_file` / `edit_file` / `delete` / `ls` /
+  `glob` / `grep`）和 `execute`（shell 的工作目录）都落在这个目录里。
+  空字符串或不带这个 key = 用后端启动时的工作空间（`SCODE_WORKSPACE` 或运行
+  `uv run scode` 时所在的目录）。
+  路径不存在 / 不是目录 → **这一轮直接失败**，错误信息是「工作空间不存在：xxx」，
+  不会静默退回默认目录（那等于把 agent 的写操作落到用户没选过的目录里）。
+  见 `stupid_code/graph/workspace.py`
+- `config.configurable.permissions`：权限档位（009 期），决定 `execute` 要不要先问人——见 `stupid_code/graph/permissions.py`
 - `config.configurable.model`：**选中的对话模型 id**（`供应商名:模型名`，010 期）。
   后端在**每次模型调用前**按这个 id 把模型换掉——用该供应商在 `conf/config.toml` 里的
   `base_url` / `api_key` / `protocol`——所以**切换不需要重启后端**。
@@ -329,6 +335,59 @@ Accept: text/event-stream
 **请求**：无 body。
 
 **响应 `200`**。
+
+---
+
+## 工作空间
+
+### `POST /workspaces/pick`
+
+弹**系统原生**的文件浏览窗口，让用户选一个目录作为工作空间（014 期）。
+
+**为什么由后端弹窗**：浏览器的目录选择 API（File System Access API 的
+`showDirectoryPicker()`、`<input webkitdirectory>`）**故意不暴露绝对路径**，
+只给目录名 / 相对路径，绕不过去；而工作空间要的恰恰是绝对路径。后端跑在用户
+自己机器上，它能调起系统的目录选择框（macOS 的 `choose folder`、Linux 的
+zenity、Windows 的 FolderBrowserDialog），弹窗就弹在用户眼前——跟
+「cd 到项目目录里再跑 claude」是同一个心智模型。
+
+**请求**：无 body。
+
+**响应 `200`** —— 三种情况：
+
+```json
+{"path": "/Users/me/projects/demo"}
+```
+
+用户选中了目录（`path` 是绝对路径）。
+
+```json
+{"path": null, "cancelled": true}
+```
+
+用户点了取消（**不是错误**，前端保持原来的选择）。
+
+**响应 `503`**
+
+```json
+{"error": "系统里没有 zenity，弹不出目录选择框。"}
+```
+
+弹不出来（后端跑在无图形界面的环境里：Docker、纯 SSH 的服务器；或系统缺
+zenity / osascript）。前端这时把「手动输入路径」的输入框亮出来。
+
+**响应 `409`**
+
+```json
+{"error": "已经有一个目录选择框在等待用户选择，请先完成或取消它。"}
+```
+
+同一时刻只允许一个弹窗：弹窗会占住一个默认 executor 线程最多 600 秒，
+并发请求既会弹出一堆窗口，也会把文件工具 / 记忆读写共用的线程池占满。
+
+> 这个端点会**阻塞**到用户在弹窗里选完（上限 600 秒）。前端按钮显示
+> 「等待选择…」。中途后端被关掉的话，这次请求不会有响应（`scode` 会整组
+> 杀掉子进程，弹窗也随之消失）。
 
 ---
 
@@ -511,23 +570,7 @@ Content-Type: application/json
 
 ## 未实现
 
-### `GET /directories`（未实现）
-
-工作空间选择器用，约定为 `GET /directories?path=<绝对路径>`，返回当前目录下的子目录列表。
-
-**期望响应**
-
-```json
-{
-  "path": "/Users/me/dev",
-  "parent": "/Users/me",
-  "directories": [
-    {"name": "project-a", "path": "/Users/me/dev/project-a"}
-  ]
-}
-```
-
-`langgraph dev` 不提供该端点，前端调用会报 404（属预期，见 [进度快照的已知缺口](file:///Users/1token/Desktop/project/stupid-code/docs/backend/PROGRESS.md)），留到后续实现。
+（暂无。014 期起工作空间走 `POST /workspaces/pick`，不再需要目录列表端点。）
 
 ---
 
@@ -555,6 +598,10 @@ Content-Type: application/json
   **这是正常收尾，不是前端 bug**。error 事件在关闭之前已经送到，前端能正常显示
 - 平台 `error` 事件是 `{"error": "AnthropicAuthenticationError", "message": "An internal error occurred"}`，
   只显示 message 等于什么都没说，两个字段要合起来给用户看
+- **自定义异常的 message 会被打码**：平台只对内置异常（`ValueError` / `TypeError` /
+  `RuntimeError` 等）透传 `str(exc)`，其它一律 `"An internal error occurred"`
+  （`langgraph_api/serde.py` 的 `_orjson_default`）。图里要抛面向用户的错误
+  （如 `WorkspaceError`），必须继承 `ValueError` 之类的内置类型
 - **重启后 thread 会整体"消失"，除非保留 `.langgraph_api/`**：checkpoint 快照确实持久化在
   `stupid_code/data/langgraph.db`（`checkpoints` / `writes` 两张表），但 **thread 索引**
   （会话列表、metadata、status）存在工作空间的 `.langgraph_api/.langgraph_ops.pckl` 里。

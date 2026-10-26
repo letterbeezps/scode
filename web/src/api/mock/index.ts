@@ -9,7 +9,7 @@
  * 启用方式：`.env.local` 里设 `VITE_USE_MOCK=true`。生产构建默认关闭。
  */
 import type { RunHandlers } from '../run'
-import type { DirectoryListing } from '../directory'
+import type { PickWorkspaceResult } from '../workspace'
 import { permissionMeta } from '../../lib/permissions'
 import { ApiError } from '../client'
 import type {
@@ -126,56 +126,17 @@ export const mockThreads = {
   },
 }
 
-/* -------------------------------------------------------------- 目录浏览 */
+/* ------------------------------------------------------------ 目录选择 */
 
-/** 假文件系统，只为让文件夹选择器能跑起来；真实目录由后端列 */
-const MOCK_FS: Record<string, string[]> = {
-  '/': ['Applications', 'Library', 'System', 'Users', 'Volumes'],
-  '/Applications': ['Safari.app', 'Utilities'],
-  '/Library': ['Fonts'],
-  '/System': ['Library'],
-  '/Users': ['Shared', '1token'],
-  '/Users/Shared': [],
-  '/Users/1token': ['Desktop', 'Documents', 'Downloads', 'Movies'],
-  '/Users/1token/Desktop': ['project', 'screenshots'],
-  '/Users/1token/Desktop/project': ['stupid-code', 'notes-site'],
-  '/Users/1token/Desktop/project/stupid-code': ['docs', 'stupid_code', 'web'],
-  '/Users/1token/Desktop/project/stupid-code/docs': [],
-  '/Users/1token/Desktop/project/stupid-code/stupid_code': [],
-  '/Users/1token/Desktop/project/stupid-code/web': ['src', 'public'],
-  '/Users/1token/Desktop/project/stupid-code/web/src': [],
-  '/Users/1token/Desktop/project/stupid-code/web/public': [],
-  '/Users/1token/Desktop/project/notes-site': ['src'],
-  '/Users/1token/Desktop/project/notes-site/src': [],
-  '/Users/1token/Desktop/screenshots': [],
-  '/Users/1token/Documents': ['receipts'],
-  '/Users/1token/Documents/receipts': [],
-  '/Users/1token/Downloads': [],
-  '/Users/1token/Movies': [],
-  '/Volumes': [],
-}
-
-function normalizePath(path: string): string {
-  const trimmed = path.trim().replace(/\/+$/, '')
-  if (trimmed === '' || trimmed === '/') return '/'
-  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`
-}
-
-export async function mockBrowseDirectories(path?: string): Promise<DirectoryListing> {
-  const current = normalizePath(path ?? '/')
-  const names = MOCK_FS[current]
-  if (!names) {
-    throw new Error(`mock 文件系统里没有 ${current}`)
-  }
-
-  return {
-    path: current,
-    parent: current === '/' ? null : normalizePath(current.slice(0, current.lastIndexOf('/')) || '/'),
-    directories: names
-      .filter((name) => MOCK_FS[`${current === '/' ? '' : current}/${name}`] !== undefined)
-      .map((name) => ({ name, path: `${current === '/' ? '' : current}/${name}` }))
-      .sort((a, b) => a.name.localeCompare(b.name)),
-  }
+/**
+ * mock 的目录选择框：模拟后端弹系统窗口后返回一个绝对路径。
+ *
+ * 真实后端（POST /workspaces/pick）会弹系统的文件浏览窗口，用户选完才返回。
+ * mock 这里直接给一个假路径，让 UI 流程能跑通。
+ */
+export async function mockPickWorkspace(): Promise<PickWorkspaceResult> {
+  await sleep(300)
+  return { path: '/Users/1token/Desktop/project/stupid-code', cancelled: false }
 }
 
 /* ---------------------------------------------------------------- 运行 */

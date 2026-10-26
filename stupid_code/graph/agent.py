@@ -12,6 +12,7 @@ from stupid_code.graph.mcp import load_mcp_tools
 from stupid_code.graph.memory import build_memory_middleware
 from stupid_code.graph.model_switch import ChatModelSwitchMiddleware
 from stupid_code.graph.permissions import build_interrupt_on
+from stupid_code.graph.workspace import WorkspaceMiddleware
 
 # 真实 backend：文件操作落工作空间的真实磁盘，execute 直接在本机跑 shell。
 backend = build_backend()
@@ -44,15 +45,20 @@ graph = create_deep_agent(
     # 服务器连不上只少它那几个工具，不会让后端起不来。见 graph/mcp.py
     tools=load_mcp_tools(),
     backend=backend,
-    # 长期记忆：读工作空间根的 .scode-memory.md（没有就创建）。
+    # 长期记忆：读工作空间根的 .scode-memory.md（可选文件，不会自动创建）。
     # 走 middleware 参数而不是 create_deep_agent 的 memory 参数，
     # 这样能自己指定读文件的 backend——见 graph/memory.py 的说明
     #
     # 顺序：切换中间件放在最前，让它在最外层——这样内层的
     # AnthropicPromptCachingMiddleware / MemoryMiddleware 看到的是
     # 已经换过的模型，缓存断点才会按新模型决定加不加。
+    #
+    # 工作空间中间件紧随其后：它每轮开跑前校验工作空间（不存在就直接报错），
+    # 把解析结果刷进缓存，并把绝对路径写进系统提示词。它必须排在记忆中间件
+    # 前面——记忆中间件要用同一份缓存决定从哪个目录读记忆。
     middleware=[
         ChatModelSwitchMiddleware(default_model),
+        WorkspaceMiddleware(),
         compaction,
         # compact_conversation 工具：模型自己也能压缩上下文窗口
         build_compaction_tool_middleware(compaction),

@@ -19,9 +19,11 @@ uv run --project /path/to/stupid-code scode
 
 `scode`（入口见 [launcher.py](launcher.py)）把 langgraph 服务器当成「用完即弃」的本地计算进程：
 
-1. **工作空间 = 当前目录**：langgraph 子进程的 cwd 就是你运行 scode 的目录，
+1. **工作空间默认 = 当前目录**：langgraph 子进程的 cwd 就是你运行 scode 的目录，
    agent 的 shell / 文件工具以它为根（backend 是真实磁盘 + 本机 shell，见
-   [graph/backend.py](graph/backend.py)）；
+   [graph/backend.py](graph/backend.py)）。前端选的工作空间通过
+   `configurable.workspace` 按消息生效，会覆盖这个默认值（见
+   [graph/workspace.py](graph/workspace.py)）；
 2. **`.langgraph_api/` 保留不动**：langgraph inmem 运行时必然在 cwd 下生成它
    （路径硬编码，无法配置改位）。里面的 `.langgraph_ops.pckl` 是 **thread 索引**——
    会话列表与 metadata 的来源。删掉它，平台重启后认不出已有 thread：
@@ -64,7 +66,8 @@ stupid_code/
 ├── graph/            # 图与它的持久化
 │   ├── agent.py           # create_deep_agent()，导出 graph
 │   ├── backend.py         # 真实 backend：CompositeBackend(default=LocalShellBackend)
-│   ├── memory.py          # 长期记忆：工作空间根的 .scode-memory.md（没有就创建）
+│   ├── workspace.py       # 解析 configurable.workspace + 每轮校验/缓存
+│   ├── memory.py          # 长期记忆：工作空间根的 .scode-memory.md（不自动创建）
 │   ├── compaction.py      # /compaction 手动压缩 + 摘要用当前选中的模型
 │   ├── model_switch.py    # 运行期切换对话模型（configurable.model）
 │   ├── mcp.py             # MCP 工具加载：建图时取一次，交给 create_deep_agent(tools=...)
@@ -74,9 +77,10 @@ stupid_code/
 │   ├── subagent.py        # conf/subagents.toml → SubAgent 规格
 │   ├── mcp.py             # conf/mcp.json → MCP 连接参数
 │   └── prompts.py         # 主 agent 的系统提示词
-├── admin/            # 挂在 /admin 下的管理接口
+├── admin/            # 挂在 /admin 下的管理接口 + /workspaces/pick
 │   ├── app.py             # Starlette 子应用与路由表
-│   └── models.py          # /admin/models 五个端点的处理函数
+│   ├── models.py          # /admin/models 五个端点的处理函数
+│   └── workspaces.py      # POST /workspaces/pick（弹系统目录选择框）
 └── data/             # SQLite 数据库目录（gitignore）
 ```
 
@@ -87,8 +91,9 @@ stupid_code/
 | [launcher.py](launcher.py) | 工作空间（`SCODE_WORKSPACE` 或当前目录，工作空间在仓库根时警告）、生成临时派生配置、就绪探测、生命周期管理（`.langgraph_api` 保留不清理） |
 | **图与持久化**（`graph/`） | |
 | [graph/agent.py](graph/agent.py) | `code_agent` 图：`create_deep_agent()`，导出 `graph` |
-| [graph/backend.py](graph/backend.py) | 真实 backend：`CompositeBackend(default=LocalShellBackend)`（真实磁盘 + 本机 shell，`/tmp/` 走虚拟 FS）；`apply_subagent_policies()` 给声明了 `permissions` 的子 agent 换无 shell 的 backend、不继承 MCP 工具，并合并父级 `interrupt_on` |
-| [graph/memory.py](graph/memory.py) | 长期记忆：读工作空间根的 `.scode-memory.md`（不存在就创建），装成 `MemoryMiddleware` 挂进 `middleware=` |
+| [graph/backend.py](graph/backend.py) | 真实 backend：`WorkspaceCompositeBackend(default=LocalShellBackend)`（真实磁盘 + 本机 shell，`/tmp/` 走虚拟 FS；工作空间自己的绝对路径不会被 `/tmp/` 路由吞掉）；`apply_subagent_policies()` 给声明了 `permissions` 的子 agent 换无 shell 的 backend、不继承 MCP 工具，并合并父级 `interrupt_on` |
+| [graph/workspace.py](graph/workspace.py) | 工作空间：解析 `configurable.workspace`；每轮开跑前校验（线程里）并刷新缓存；`WorkspaceMiddleware` 把绝对路径写进系统提示词 |
+| [graph/memory.py](graph/memory.py) | 长期记忆：读工作空间根的 `.scode-memory.md`（**不自动创建**，没记忆就当空的），装成 `MemoryMiddleware` 挂进 `middleware=` |
 | [graph/compaction.py](graph/compaction.py) | `/compaction` 手动压缩历史 + 摘要用当前选中的模型；`.name` 报成框架自带那份的公开别名，顶掉而不是叠加 |
 | [graph/model_switch.py](graph/model_switch.py) | 运行期切换对话模型：中间件在每次模型调用前把 `request.model` 换成用户选中的那个 |
 | [graph/mcp.py](graph/mcp.py) | MCP 工具加载：按 `conf/mcp.json` 连服务器取工具（并行 + 总预算限时）、加 `mcp__{服务器}__{工具}` 前缀、检测重名；用 adapter 的 `tool_interceptors` 兜传输层失败并在调用期重试一次。协议本身交给 `langchain-mcp-adapters` / 官方 `mcp` SDK |
@@ -102,6 +107,7 @@ stupid_code/
 | **管理接口**（`admin/`） | |
 | [admin/app.py](admin/app.py) | 挂在 langgraph dev 的 Starlette 子应用与路由表（`langgraph.json` 的 `http.app` 指向它） |
 | [admin/models.py](admin/models.py) | `/admin/models` 路由处理函数 |
+| [admin/workspaces.py](admin/workspaces.py) | `POST /workspaces/pick`：弹系统原生目录选择框（osascript / zenity / FolderBrowserDialog），阻塞到用户选完（上限 600 秒） |
 | **配置与产物** | |
 | [langgraph.json](langgraph.json) | LangGraph 配置：图注册、依赖、`http.app` 挂载、checkpointer/store 指向 SQLite；路径均相对本目录（scode 启动时改写为绝对路径） |
 | `data/` | SQLite 数据库目录（gitignore，唯一持久运行产物，可删除后重置历史）；**不在工作空间里**，固定在本包目录下 |
@@ -119,9 +125,10 @@ stupid_code/
 > 该供应商的连接信息。文件不存在 = 不配置子 agent。字段说明见
 > `../docs/backend/PROGRESS.md` 的「004 · 子 agent 配置」一节。
 >
-> 长期记忆在工作空间根的 `.scode-memory.md`（没有就自动创建一份带模板的）：每次新会话开始时
-> 由 `MemoryMiddleware` 读进系统提示词。细节见 `../docs/backend/PROGRESS.md` 的
-> 「006 · agent 长期记忆」一节。
+> 长期记忆在工作空间根的 `.scode-memory.md`：**不会自动创建**（避免往用户项目里塞文件），
+> 每次新会话开始时由 `MemoryMiddleware` 读进系统提示词；**同一工作空间内只读一次，换工作空间
+> 会重新读**。第一次保存记忆时由 agent 自己用 `write_file` 创建（系统提示词里追加了说明）。
+> 细节见 `../docs/backend/PROGRESS.md` 的「006 · agent 长期记忆」一节。
 >
 > agent 的文件操作落在工作空间的**真实磁盘**上，`execute` 直接在本机跑 shell：
 > backend 是 `CompositeBackend(default=LocalShellBackend)`，见
@@ -146,7 +153,7 @@ stupid_code/
 - 子 agent 配置在项目根 `conf/subagents.toml`，同样改完要重启服务（子 agent 在 `graph/agent.py` 导入时构建一次）。`model` 必须是 `config.toml` 里配过的供应商 + 其 `models` 白名单里的模型名。
 - MCP 配置在项目根 `conf/mcp.json`（不入库，从 `conf/mcp.example.json` 复制），**改完要重启服务**（工具在建图时静态注册，跟 `conf/subagents.toml` 一样）。连接参数里的任何字符串都可以写 `${VAR}`，从进程环境展开，别写死密钥。MCP 工具只有异步实现（本地脚本 `graph.invoke()` 调它会抛 `NotImplementedError`）；声明了 `permissions` 的只读子 agent 不继承 MCP 工具。
 - 长期记忆用 `middleware=` 挂 `MemoryMiddleware`，**不要用 `create_deep_agent(memory=...)`**：后者只能用框架默认的 StateBackend，读不到磁盘上的 `.scode-memory.md`。
-- 记忆**只在会话开始时读一次**：改了 `.scode-memory.md` 要开新会话（新建 thread）才生效。
+- **同一工作空间内记忆只在会话开始时读一次**：改了 `.scode-memory.md` 要开新会话（新建 thread）才生效；**换工作空间会重新读**（`WorkspaceMemoryMiddleware` 记着上次的工作空间）。
 - **backend 是真实磁盘 + 本机 shell**（`graph/backend.py`）。agent 能读工作空间里的任何文件
   （包括 `conf/config.toml` 里的 api_key），`execute` 能跑任意命令——所以**执行命令前有人工确认**
   （`graph/permissions.py`，009 期）：按 `configurable.permissions` 的档位决定拦不拦

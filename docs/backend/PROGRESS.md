@@ -40,6 +40,7 @@
 | 011 | 手动压缩对话历史（`/compaction`） | ✅ 已落地 | `stupid_code/graph/compaction.py` + 前端斜杠命令菜单 |
 | 012 | Docker 运行（后端 + 前端） | ✅ 已落地 | `Dockerfile` + `web/Dockerfile` + `docker-compose.yml` |
 | 013 | MCP 支持（`conf/mcp.json`，http + stdio） | ✅ 已落地 | `stupid_code/config/mcp.py` + `stupid_code/graph/mcp.py` |
+| 014 | 工作空间按任务生效（`configurable.workspace`）+ 系统目录选择框 | ✅ 已落地 | `stupid_code/graph/workspace.py` + `stupid_code/admin/workspaces.py` |
 
 ### 1.3 前端完成度
 
@@ -47,7 +48,8 @@
 
 - 会话列表 / 建会话 / 删会话 / 标题（存平台的 `metadata.title`）
 - 流式对话、工具调用可视化、Diff 渲染、Todo 同步
-- 工作空间选择器（文件夹浏览器）　⚠️ 后端 `/directories` 未实现，真后端下报错属预期
+- **工作空间选择器**（点按钮弹系统原生目录选择框；下拉里还有「最近用过的项目」
+  和手动输入路径——014 期）
 - 权限档位选择器（`manual` / `normal` / `auto`）
 - 人工确认卡片（显示命令 + 为什么被拦，批准 / 拒绝）
 - 模型管理界面（直连 `/admin/models`）
@@ -289,23 +291,27 @@ subagent 配置里重复写。
 ### 006 · agent 长期记忆（`.scode-memory.md`）
 
 **做了什么**：每次新会话开始时，把工作空间根的 `.scode-memory.md` 读进系统提示词；
-文件不存在就自动创建一份带模板的。
+文件不存在就当没记忆（**不会自动创建**，014 期改的）。
 
 **关键取舍**
 
 - **用 `middleware=` 挂 `MemoryMiddleware`，别用 `create_deep_agent(memory=...)`**。
   两者是同一个中间件，但 `memory=` 只能用框架默认的 backend——默认是 StateBackend
   （虚拟文件系统），**读不到磁盘上的文件**。自己挂才能给 `FilesystemBackend`。
-- **记忆只在会话开始时读一次**。`MemoryMiddleware.before_agent` 见到 state 里已有
-  `memory_contents` 就不重复读——这是框架的设计（记忆块要参与 prompt 缓存）。
-  代价是**改完 `.scode-memory.md` 要开新会话才生效**。
-- **没有 `.scode-memory.md` 就创建**，而不是静默跳过。框架遇到读不到的文件会 `continue`
-  跳过（不报错），那样用户根本不知道记忆为什么是空的。
+- **同一工作空间内记忆只在会话开始时读一次**。`MemoryMiddleware.before_agent` 见到
+  state 里已有 `memory_contents` 就不重复读——这是框架的设计（记忆块要参与 prompt
+  缓存）。代价是**改完 `.scode-memory.md` 要开新会话才生效**。014 期起
+  `WorkspaceMemoryMiddleware` 在 state 里记了"上次读的是哪个工作空间"，**换工作空间
+  会把 `memory_contents` 摘掉逼框架重读**，否则会拿 A 项目的记忆指导 B 项目的活。
+- **不会自动创建 `.scode-memory.md`**（014 期改的）：启动和开跑时都不往工作空间写文件，
+  避免用户选中一个项目就凭空多出这个文件。框架遇到读不到的文件会 `continue` 跳过
+  （当没记忆），所以 `WorkspaceMemoryMiddleware.modify_request` 会追加一段说明，
+  告诉模型文件不存在时先用 `write_file` 创建。
 - **记忆文件叫 `.scode-memory.md`，不用框架默认的 `AGENTS.md`**。后者是
   "写给编码 agent 看的项目约定"（本项目根目录那份就是），和"agent 自己攒的长期记忆"
   是两回事。工作空间正好是项目根时，沿用默认名会把开发者的项目说明当记忆注入。
-- **工作空间 = `Path.cwd()`**：launcher 把 langgraph 子进程的 cwd 设成用户工作空间，
-  graph 也在那个进程里导入。
+- **工作空间 = 运行期选中 / 默认目录**：006 期时是 `Path.cwd()`（launcher 把子进程的
+  cwd 设成用户工作空间）；014 期起按 `configurable.workspace` 动态解析，见 014。
 
 ### 007 · 真实 backend（CompositeBackend + LocalShellBackend）
 
@@ -1047,6 +1053,251 @@ JSON
 
 ---
 
+### 014 · 工作空间按任务生效 + 系统目录选择框
+
+**目标**
+
+让「选了哪个工作空间，agent 就在哪个目录里干活」这件事真正成立。
+
+改之前前端已经把工作空间发过来了（`configurable.workspace`），但后端**只透传、
+不读**——backend 的根目录在建图时就定死了（`SCODE_WORKSPACE` 或启动时的 cwd），
+所以同一个会话里选哪工作空间都一样，agent 永远在启动时的那个目录里改代码。
+
+本期做两件事：
+
+1. **后端按运行解析工作空间**：文件工具（`read_file` / `write_file` / `edit_file` /
+   `delete` / `ls` / `glob` / `grep`）和 `execute`（shell 的工作目录）都落在
+   `configurable.workspace` 指的目录里。
+2. **前端用系统原生目录选择框选目录**：点工作空间按钮 → 弹系统文件浏览窗口 →
+   选一个文件夹。跟「cd 到项目目录里再跑 claude」是同一个心智模型。
+
+**成功标准**
+
+- 选了工作空间 A，跑一轮让 agent 建文件 → 文件落在 A 里，不在默认目录
+- `execute` 跑 `pwd` → 输出是 A
+- 没选工作空间 → 用后端默认工作空间（原生跑法不受影响）
+- 选了个不存在的目录 → 这一轮**直接失败**并说清原因，不静默换个目录
+- 如果 agent 写了长期记忆，`.scode-memory.md` 落在选中的工作空间里；没写就不会创建
+- 点按钮能弹出系统的目录选择框
+
+**本期不做**
+
+- 不做「多工作空间同时开」（一个会话一个工作空间，切换只影响下一条消息）
+- 不做目录列表接口（`GET /directories` 那种「后端返回目录列表」的设计被否掉了，
+  理由见「关键取舍一」）
+- 不做工作空间历史的服务端存储（历史来自对话历史的 metadata，前端自己读）
+- 不做工作空间沙箱（agent 本来就有 shell，能碰整个文件系统，见 §5）
+
+**关键取舍**
+
+**一、选目录靠系统弹窗，不靠后端列目录**
+
+浏览器的目录选择 API（File System Access API 的 `showDirectoryPicker()`、
+`<input webkitdirectory>`）**故意不暴露绝对路径**——只给目录名 / 相对路径，
+这是浏览器的安全设计，绕不过去。而工作空间要的恰恰是绝对路径。
+
+于是有两条路：
+
+- 后端列目录（`GET /directories?path=...`）：前端点着走，后端返回绝对路径。
+  **代价是后端把文件系统目录树开放成一个 HTTP 接口**，得配白名单、403 语义、
+  一堆安全说明。
+- **后端弹系统原生窗口**（本期选的）：`POST /workspaces/pick` → 后端起
+  `osascript -e 'choose folder'` / `zenity --file-selection --directory` /
+  PowerShell 的 `FolderBrowserDialog` → 用户在系统窗口里选 → 拿到绝对路径。
+
+后端跑在用户自己机器上，弹窗就弹在用户眼前，绝对路径也是真的。后端不需要
+「知道有哪些目录」，用户也不需要手打路径。
+
+同一时刻只允许一个弹窗：弹窗占着默认 executor 线程最多 600 秒，和文件工具 /
+记忆读写共用一个池，并发请求会弹多个窗口并耗尽线程池。重复请求返回 409。
+
+**二、根目录做成运行期属性，不是建图时常量**
+
+框架把 backend 的根目录存在 `self.cwd` 里，所有路径解析都从它出发
+（`FilesystemBackend._resolve_path`、glob/grep 的搜索根、
+`LocalShellBackend.execute` 的 cwd）。所以只要改这一个属性，全对。
+
+做法是把它做成 property（`graph/backend.py` 的 `_WorkspaceRoot`）：取值时读当前
+运行的 `configurable.workspace`。为什么不是「运行期换 backend 实例」：
+
+- backend 实例在建图时就注册进框架的工具里了，运行期换不了
+- 同一时刻可能有多个对话在跑（不同 thread、不同工作空间）。property 背后是
+  contextvar，天然按运行隔离；改共享实例的属性则会串目录
+
+**三、工作空间不合法就失败，不静默退回默认目录**
+
+前端选了 `/a/b`，这个目录后来被删了——这时候 agent 的写操作落哪儿？
+
+- 退回默认工作空间：等于把代码写到用户**没选过**的目录里，比报错危险得多
+- 报 WorkspaceError：这一轮直接失败，错误信息「工作空间不存在：/a/b」
+
+本期选后者。中间件在**每轮开跑前**（`WorkspaceMiddleware.before_agent`）都重新
+校验一次（`_resolved_cache` 只是给热路径读的，不能拿它当"校验过就不用再校验"），
+不用等 agent 写文件时才炸。运行中途目录被删不会每次工具调用都重新 stat。
+
+**四、没选工作空间 = 用后端默认工作空间**
+
+不是「拒绝一切文件操作」。原生跑法（`cd /path/to/project && uv run scode`）
+里用户根本没有前端可选，后端自己的工作空间就是那个项目目录，拒绝等于什么都
+干不了。前端按钮上的提示也是这么写的（「未选择工作空间，Agent 将使用后端
+默认目录」）。
+
+**五、文件工具同时认「虚拟路径」和「绝对路径」**
+
+框架的 `virtual_mode` 语义：`/foo` → `<工作空间>/foo`，**绝对路径也按虚拟路径
+处理**。但系统提示词里写了工作空间的绝对路径之后，模型有时会直接拿那个绝对
+路径去调 `write_file`——框架会把它当虚拟路径，于是文件落到
+`<工作空间>/Users/me/proj/src/x.py` 这种地方，**还不报错**（实测踩到：模型
+调 `write_file("/private/var/.../hello.txt")`，文件跑到了工作空间里的
+`private/var/.../` 嵌套目录）。
+
+所以 `_WorkspaceRoot._resolve_path()` 先把「以工作空间绝对路径开头」的写法剥掉
+前缀，两种写法指向同一个文件。剥不掉的（工作空间之外的绝对路径）交回框架按
+虚拟路径处理——它出不去工作空间，只是落到工作空间内的同名子目录里。
+
+**六、文件系统操作必须走线程（blockbuster）**
+
+`langgraph dev` 装了 **blockbuster**：事件循环里直接调同步 FS（`os.readlink` /
+`os.stat`）会抛 `BlockingError`，整个 run 挂掉。踩过一次，报错点还比较隐蔽：
+
+```
+Blocking call to os.readlink
+During task with name 'WorkspaceMiddleware.before_agent'
+```
+
+所以：
+
+- 解析路径（`resolve()` 展开软链、`exists()` / `is_dir()` 校验）→ 中间件的
+  `abefore_agent` 里 `await asyncio.to_thread(...)`
+- **热路径**（backend 取根目录）不能读文件系统 → 解析结果缓存在
+  `graph/workspace.py` 的 `_resolved_cache` 里；**每轮开跑前重新校验一次并
+  刷新缓存**，运行中的模型调用 / 工具调用只读缓存。HITL 恢复不经过
+  `before_agent`，`awrap_model_call` 在缓存未命中时会补一次线程解析
+
+框架自己的 backend 也没这个问题：`BackendProtocol` 的异步方法全是
+`asyncio.to_thread(self.<同步方法>, ...)`，FS 调用都发生在工作线程里。
+
+**七、任务参数跟 thread 走（前端）**
+
+`taskStore` 只在内存里，刷新页面就丢。前端发消息时把 `workspace` / `permissions`
+一并写进 thread 的 `metadata`（`PATCH /threads/{id}` 是合并语义），
+`loadThreads` / `selectThread` 时回填；审批卡片挂着时两个选择器禁用——恢复请求
+会原样带回这两个值，否则会出现「批准的是 A 目录的命令，却在 B 目录执行」。
+
+**八、`/tmp` 路由不能吃掉工作空间自己的绝对路径**
+
+`CompositeBackend` 的 `/tmp/` → `StateBackend` 路由先于 default backend
+「剥掉工作空间前缀」生效。工作空间本身在 `/tmp/...` 时（Linux 的 `mktemp -d`
+默认就在那儿），模型传宿主绝对路径 `/tmp/ws/x` 会被写进虚拟 FS——不落盘、还报
+成功。`graph/backend.py` 的 `WorkspaceCompositeBackend` 在路由前判断 key 是否
+以当前工作空间开头，是就交给 default backend；虚拟 `/tmp/...`（不在工作空间下）
+仍然走 `StateBackend`，临时产物的语义不变。
+
+**九、记忆文件不自动创建**
+
+之前启动/开跑时都会补一份 `/.scode-memory.md`，用户选中一个项目就会凭空多出
+一个文件（还会进 git status）。现在改成**可选文件**：不存在就当没记忆，
+`WorkspaceMemoryMiddleware.modify_request` 在系统提示词里追加一段说明，告诉模型
+不存在时先用 `write_file` 创建、之后再 `edit_file`。第一次写记忆是 agent 的主动
+行为，不是框架的副作用。
+
+**验证步骤（带 curl）**
+
+```bash
+# 1. 起服务
+cd /path/to/repo && uv run scode
+#    预期：Agent Server 已就绪；图 code_agent 已注册并可加载（9 个节点）
+
+# 2. 弹系统目录选择框（会阻塞到你在窗口里选完）
+curl -s -X POST http://127.0.0.1:2024/workspaces/pick -H 'Content-Type: application/json' -d '{}'
+#    选中了：{"path":"/Users/you/projects/demo"}
+#    取消了：{"path":null,"cancelled":true}
+#    弹不出来（无图形界面）：503 {"error":"..."}
+
+# 3. 起一轮对话，把工作空间指到临时目录，看 agent 的写操作落在哪
+WS=$(mktemp -d)
+TID=$(curl -s -X POST http://127.0.0.1:2024/threads \
+  -H 'Content-Type: application/json' -d '{}' \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['thread_id'])")
+
+curl -sN -X POST "http://127.0.0.1:2024/threads/$TID/runs/stream" \
+  -H 'Content-Type: application/json' -H 'Accept: text/event-stream' \
+  -d "{\"assistant_id\":\"code_agent\",
+       \"input\":{\"messages\":[{\"role\":\"user\",\"content\":\"在工作空间里创建 hello.txt，内容写 hello world。\"}]},
+       \"stream_mode\":[\"updates\"],\"on_disconnect\":\"continue\",
+       \"config\":{\"configurable\":{\"workspace\":\"$WS\",\"permissions\":\"auto\"}}}"
+
+#    预期：SSE 里有 write_file 调用；然后
+ls -la "$WS"
+#    预期：hello.txt 在这个目录里；.scode-memory.md **不会**凭空出现
+#    （只有 agent 真的写了记忆才会创建）
+
+# 4. 工作空间不存在 → 这一轮直接失败
+#    （把上面的 workspace 换成 /definitely/not/here）
+#    预期：SSE 里是 error 事件，message 是「工作空间不存在：/definitely/not/here」
+#    （WorkspaceError 必须继承 ValueError，平台才透传 str(exc)，见下方补充）
+```
+
+**常见问题**
+
+- **点按钮没反应 / 一直转**：系统在弹窗等你选，但弹窗被浏览器窗口挡住了
+  （macOS 上它是独立窗口，不在浏览器里）。看看别的窗口 / 任务栏。
+- **503「弹不出目录选择框」**：后端跑在无图形界面的环境里（Docker 容器、纯
+  SSH 的服务器）。用下拉里的「手动输入绝对路径」。
+- **GET /workspaces/pick 返回 404**：方法不对，这是 POST 端点。（顺带一个坑：
+  用 GET 打过去会拿到 404 而不是 405——langgraph 的兜底 Mount 会把「路径匹配
+  但方法不匹配」吃掉。）
+- **改了工作空间，agent 还是写在老目录**：工作空间是**按消息**生效的，跑完
+  那一轮之后改选择器不影响已经跑完的运行；下一条消息才用新的。
+- **`.scode-memory.md` 跑到别的项目去了**：记忆文件跟着工作空间走，每个项目各有一份
+  （这是有意的：不同项目的约定不该混在一起）。它**不会自动创建**——只有在某个项目里
+  真的让 agent 保存过记忆，那个目录下才会出现。
+
+**已验证的事实**（2026-10-25 对真实服务实测）
+
+- `configurable.workspace` → `write_file("/hello.txt")` → 文件真的落在该目录，
+  `execute` 的 `pwd` 也是该目录 ✔
+- 如果让 agent 写了记忆，`.scode-memory.md` 会落在该目录；普通跑一轮**不会**凭空创建 ✔
+  （014 期起改的，见「补充」）
+- 没传 workspace → 落在后端默认工作空间（`Path.cwd()`）✔
+- 传了个不存在的目录 → `execute` 返回
+  `Error executing command (WorkspaceError): 工作空间不存在：...`，
+  **没有**静默换到默认目录 ✔（框架的 `LocalShellBackend.execute` 有个宽泛的
+  `except Exception`，把异常转成了命令错误输出）
+- 中间件在开跑前就拦住坏工作空间（不等到 agent 写文件）✔
+- 系统提示词里带上了工作空间的绝对路径 ✔
+- `POST /workspaces/pick` 三条分支都对：选中了 / 取消了 / 弹不出来 ✔
+- macOS 上 `osascript` 确实弹出了系统目录选择框并阻塞到被中断 ✔
+- `blockbuster` 会在事件循环里拦同步 FS 调用，报 `BlockingError:
+  Blocking call to os.readlink`（`Path.resolve()` 里的软链解析）——
+  **所有路径解析都必须走线程** ✔
+
+**补充（2026-10-26，review 修复后）**
+
+- 每轮开跑前重新校验：解析成功 → 删除目录 → 下一轮 `before_agent` 抛
+  `WorkspaceError`（缓存被刷新），不再沿用旧缓存路径 ✔
+- 同一 thread 换工作空间：`WorkspaceMemoryMiddleware` 会重读新目录的
+  `.scode-memory.md`；同一工作空间内仍只读一次 ✔
+- HITL 恢复不经过 `before_agent`：`awrap_model_call` 在缓存未命中时补一次
+  线程解析，避免 `Path.resolve()` 在事件循环里撞 blockbuster ✔
+- 工作空间在 `/tmp` 下时，宿主绝对路径不再被 `/tmp/` 路由吞掉：`WorkspaceCompositeBackend`
+  把「以工作空间开头」的 key 交给 default backend，文件真的落盘；不在工作空间下的
+  虚拟 `/tmp/...` 仍然走 `StateBackend` ✔
+- 普通跑一轮不会创建 `.scode-memory.md`；模型自己调 `write_file` 写记忆时才创建 ✔
+- 2026-10-26 对真实服务（MiniMax 真模型）实测：`/tmp/scode-real-a` → 记忆读入
+  A；同一 thread 切到 `/tmp/scode-real-b` → `memory_contents` 换成 B；
+  空目录 C 跑完不出现 `.scode-memory.md`；删掉 A 后新开一轮 → SSE `error`
+  事件带「工作空间不存在：/private/tmp/scode-real-a」✔
+- **平台只透传内置异常的 message**：`langgraph_api/serde.py` 的 `_orjson_default`
+  只对 `ValueError` / `TypeError` / `RuntimeError` 等内置类型返回 `str(exc)`，
+  其余一律 `"An internal error occurred"`。`WorkspaceError` 最早继承裸
+  `Exception`，真实服务上只看到一句内部错误；改成继承 `ValueError` 后才带出
+  具体路径（`graph/backend.py` 里那个 `except ValueError` 也因此收窄，避免
+  把 WorkspaceError 当成「路径不在工作空间下」吞掉）✔
+- 记忆缺失时，系统提示词里会出现「记忆文件不会自动创建」的说明；已有记忆时不重复加 ✔
+
+---
+
 ## 4. 关键机制速查
 
 ### 4.1 图的构建（`graph/agent.py`）
@@ -1100,7 +1351,7 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 
 | key | 前端常量 | 语义 | 后端读取情况 |
 |---|---|---|---|
-| `workspace` | `WORKSPACE_KEY` | 工作空间绝对路径 | ⚠️ **后端还没在工具入口读它**，目前只是透传 |
+| `workspace` | `WORKSPACE_KEY` | 工作空间绝对路径 | ✅ 已实现（014 期，`graph/workspace.py`）：文件工具和 `execute` 的 cwd 都跟着它走 |
 | `permissions` | `PERMISSIONS_KEY` | 确认档位 manual/normal/auto | ✅ 已实现（`graph/permissions.py`） |
 | `model` | `MODEL_KEY`（`web/src/lib/model.ts`） | 对话模型 id `供应商名:模型名` | ✅ 已实现（`graph/model_switch.py`） |
 
@@ -1117,9 +1368,7 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 `/assistants/{id}/graph`、`/threads`、`/threads/search`、`/threads/{id}`（GET/PATCH/DELETE）、
 `/threads/{id}/state`、`/threads/{id}/runs/stream`、`/threads/{id}/runs/{runId}/cancel`。
 
-自定义：`/admin/models` 五个端点。
-
-**未实现**：`GET /directories`——工作空间选择器在真后端下报 404 属预期。
+自定义：`/admin/models` 五个端点 + `POST /workspaces/pick`（弹系统目录选择框，014 期）。
 
 完整清单与请求/响应示例见 [`stupid_code/API.md`](../../stupid_code/API.md)。
 
@@ -1144,13 +1393,13 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 
 | 缺口 | 影响 | 备注 |
 |---|---|---|
-| `GET /directories` 未实现 | 工作空间选择器在真后端下报错 | 前端已按契约写好，等后端实现 |
-| 后端没在工具入口读 `workspace` | 工作空间参数目前只是透传 | 前端已按 `threadId` 存储 |
 | shell 不受路径限制 | `execute` 能访问工作空间外的任何路径 | 设计如此，但和"文件工具锁在工作空间内"不一致 |
+| 工作空间不是沙箱 | agent 有 shell 就能碰整个文件系统，选工作空间只是"默认在哪干活" | deepagents 是 trust the LLM 模型，这是既定前提 |
+| 无图形界面时弹不出目录框 | 后端在 Docker / 纯 SSH 环境下只能手打路径 | 前端下拉里有手动输入兜底 |
 | 危险判定是正则 | `rm --recursive --force` 这类等价写法匹配不上 | `normal` 档的固有局限 |
 | 拒绝是整组的 | 一次挂起含多条命令时，卡片把整组展示，没有逐条挑选 | 框架的 `edit` 决策前端也没做 |
 | 子 agent 也会触发确认 | `fixer` 这类没声明 `permissions` 的子 agent 执行命令同样挂起 | 要不要默认放行是个待定的产品决策 |
-| 记忆只在会话开始时读一次 | 改完 `.scode-memory.md` 要开新会话才生效 | 框架设计 |
+| 同一工作空间内记忆只在会话开始时读一次 | 改完 `.scode-memory.md` 要开新会话才生效；换工作空间会重读 | 框架设计（记忆块参与 prompt 缓存） |
 | 切模型不换 harness profile | 系统提示词附加内容、工具描述改写、排除的工具都按启动时的模型定死 | 建图时决定的，跑起来改不了 |
 | 切模型不换摘要阈值 | 压缩历史的触发阈值按启动时模型的上下文窗口算 | 切到窗口更小的模型可能触发偏晚 |
 | 切模型不换「超预算」兜底的预算 | 压缩中间件在最终栈里位于切换中间件**外层**，它内部读 `request.model.profile` 时看到的还是启动时的模型 | 本项目模型无 profile，这条兜底恒不触发；真超限时靠 `ContextOverflowError` 的兜底路径兜住 |
@@ -1441,7 +1690,9 @@ pgrep -f "langgraph_cli dev"        # 应该没有输出
   grep / execute`
 - `execute` 真能跑本机命令：cwd = 工作空间，`$HOME` 等环境变量继承得到
 - agent 的 `write_file` 写进 `/.scode-memory.md` 后，磁盘上那个文件的内容真的变了
-- 空工作空间里 `ensure_memory_file()` 会创建带模板的 `.scode-memory.md`（709 字节）
+- 记忆文件**不会自动创建**（014 期起）：空工作空间里不会再凭空出现
+  `.scode-memory.md`；agent 第一次用 `write_file` 写记忆时才建（系统提示词里
+  追加了一段说明）
 - 用假模型抓 `request.system_message`：记忆内容确实在系统提示词的 `<agent_memory>` 块里
 - 真实服务里模型能原样念出记忆文件里的内容
 - 服务端的图节点列表出现 `MemoryMiddleware.before_agent`；
@@ -1696,6 +1947,39 @@ pgrep -f "langgraph_cli dev"        # 应该没有输出
 
 ---
 
+### 8.9 工作空间（2026-10-25 对真实服务实测）
+
+- **`configurable.workspace` 真的决定文件落点**：`write_file("/hello.txt")`
+  落在该目录；`execute` 的 `pwd` 也是该目录 ✔
+- **`.scode-memory.md` 跟着工作空间走，但不会自动创建**：agent 真的保存记忆时
+  才在对应目录里出现 ✔（每个项目一份记忆——不同项目的约定不该混在一起）
+- **不传 workspace → 落在 `Path.cwd()`**（后端默认工作空间）✔
+- **传了不存在的目录**：不会静默换到默认目录。`execute` 返回
+  `Error executing command (WorkspaceError): 工作空间不存在：/definitely/not/here`
+  ——注意这个措辞来自框架：`LocalShellBackend.execute` 有个宽泛的
+  `except Exception`，把异常转成了命令错误输出（退出码 1）而不是抛出去 ✔
+- **中间件在开跑前就拦住坏工作空间**：不用等 agent 真的写文件才炸 ✔
+- **系统提示词里带上了工作空间绝对路径**（`WorkspaceMiddleware` 追加一段）✔
+- **`POST /workspaces/pick` 三条分支都对**：选中了 / 取消了 / 弹不出来（503）✔
+- **macOS 上 `osascript` 真的弹出了系统目录选择框**（阻塞到被信号杀掉，
+  后端日志里能看到 `POST /workspaces/pick 503 60032ms`）✔
+- **blockbuster 会拦事件循环里的同步 FS 调用**：报
+  `BlockingError: Blocking call to os.readlink`（`Path.resolve()` 展开软链时），
+  报错行是 `During task with name 'WorkspaceMiddleware.before_agent'`。
+  **凡是路径解析、stat、建文件，都得 `asyncio.to_thread`** ✔
+- **GET 打 POST-only 的自定义路由会拿到 404 而不是 405**：langgraph 的兜底
+  Mount（`Mount("")`）会把"路径匹配但方法不匹配"吃掉。排查自定义端点时别被
+  404 误导，先确认方法对不对 ✔
+- **`POSIX path of` 转出来的目录路径带结尾斜杠**（"/private/tmp/"），
+  后端统一去掉了（根目录除外）✔
+- **模型把绝对路径传给文件工具时，文件会落到 `<工作空间>/<绝对路径>` 的嵌套
+  目录里**（框架 `virtual_mode` 的语义，绝对路径也按虚拟路径处理），而且
+  **不报错**。实测模型调 `write_file("/private/var/.../hello.txt")`，文件跑到了
+  工作空间里的 `private/var/.../`。现在 `_resolve_path()` 会先剥掉工作空间
+  前缀，两种写法指向同一个文件 ✔
+
+---
+
 ## 9. 常见问题
 
 **改了后端代码没生效**
@@ -1721,8 +2005,28 @@ pkill -f "langgraph_cli dev"
 **会话列表空了**
 跟对话历史是两回事：thread 索引在工作空间的 `.langgraph_api/` 里。**别删那个目录。**
 
-**工作空间选择器报错**
-正常，`/directories` 后端未实现。
+**工作空间选择器点不动 / 报 503**
+后端在无图形界面的环境里（Docker、纯 SSH）弹不出系统目录选择框。用下拉里的
+「手动输入绝对路径」。若连按钮都没反应，看别的窗口——macOS 上那个目录选择框是
+**独立窗口**，不在浏览器里，容易被挡住。
+
+**agent 的写操作落在别的目录**
+工作空间是**按消息**生效的：改选择器不影响已经跑完的那一轮，下一条消息才用
+新的。另外确认前端确实把 `configurable.workspace` 发过去了（工作空间为空 =
+用后端默认工作空间）。后端日志里可以看这一轮解析到的工作空间。
+
+刷新页面后前端会从 thread 的 `metadata.workspace` 回填；审批卡片挂着时两个
+选择器禁用（避免恢复时带着改过的目录/档位）。如果回填后还是空的，检查发消息
+时那次 `PATCH /threads/{id}` 是否失败（失败会被静默吞掉，不影响对话）。
+
+**文件跑到了工作空间里的奇怪嵌套目录里**
+比如 `<工作空间>/private/var/folders/.../x.txt`。这是模型把**绝对路径**传给了
+文件工具，而框架的 `virtual_mode` 把绝对路径当虚拟路径处理（014 期已修：
+`_resolve_path()` 会剥掉工作空间前缀）。
+
+**这一轮直接报「工作空间不存在：xxx」**
+前端选的目录被删了，或者不是目录。**不会**静默退回默认目录（那等于把代码写
+到用户没选过的目录里）。重新选一个就行。
 
 **agent 看不到 MCP 工具 / 工具没挂上**
 按这个顺序查：

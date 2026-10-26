@@ -61,38 +61,38 @@ VITE_USE_MOCK=true pnpm dev
 `createThread()` 时用 `adoptDraft()` 固化并把 draft 重置回默认值，
 否则两个任务的运行边界会互相串。删除任务时一并清掉。
 
-### 工作空间：文件夹浏览器，不是输入框
+### 工作空间：弹系统目录选择框，不是输入框
 
-手打项目路径是危险动作 —— 打错一个字符就是授权给了错误的目录。
-所以「工作空间」是个点开的文件夹浏览器：
+手打项目路径容易打错，所以主按钮直接让**后端弹系统原生的文件浏览窗口**
+（macOS 的 `choose folder`、Linux 的 zenity、Windows 的 FolderBrowserDialog），
+用户选完拿到绝对路径。
 
 - **默认不选**。不预设任何目录，让用户明确选择，而不是默认就授权了某处
-- 每一行两个按钮：左边整块 = **选中这个目录**，右边箭头 = **进入**
-  （双击进入不可靠，第一次点击就会触发重渲染，第二次点击落在别的元素上）
-- 选中后面板**不关**，底栏实时显示路径，可以接着往下钻、改主意，再点「完成」
-- 选中后按钮右上角有常驻的 ✗ 取消入口，不用去 hover 里找
-- 下次打开从已选工作空间的**父目录**起步
+- 按钮旁边的小箭头展开下拉，里面还有两样：
+  - **最近用过的项目**：来自对话历史（每个 thread 的 `metadata.workspace`），
+    前端从线程列表直接读，不需要后端列目录
+  - **手动输入绝对路径**：后端跑在无图形界面环境（Docker / 纯 SSH）时的兜底
+- 弹窗期间按钮显示「等待选择…」；用户取消不算错误，保留原来的选择
 
-绝对路径必须由后端给出 —— 浏览器的 File System Access API 和 `<input webkitdirectory>`
-都故意不暴露绝对路径。这是前端拿到绝对路径的唯一途径，因此新增了一个端点约定：
+为什么必须由后端弹窗：浏览器的 File System Access API 和 `<input webkitdirectory>`
+都故意不暴露绝对路径（只给 name / 相对路径），这是浏览器的安全设计，绕不过去。
+后端跑在用户自己机器上，它能弹系统窗口，也知道真实路径。端点契约：
 
 ```
-GET /directories?path=<绝对路径>
+POST /workspaces/pick
 
-→ {
-    "path": "/Users/1token/Desktop/project",
-    "parent": "/Users/1token/Desktop",
-    "directories": [
-      { "name": "stupid-code", "path": "/Users/1token/Desktop/project/stupid-code" }
-    ]
-  }
+→ {"path": "/Users/1token/Desktop/project/stupid-code"}   选中了
+→ {"path": null, "cancelled": true}                        取消（不是错误）
+→ 503 {"error": "..."}                                     弹不出来（无 GUI 等）
+→ 409 {"error": "..."}                                     已经有一个弹窗在等
 ```
 
-`path` 省略时等价于根目录。只返回子目录，不返回文件。
-路径不可读时返回 4xx/5xx，前端在面板内就地显示错误，不会白屏。
+**不是「后端返回目录列表」**：那等于把文件系统目录树开放成一个 HTTP 接口，
+得配路径白名单和一堆安全说明，而它解决的问题用系统弹窗更直接。
 
-**后端尚未实现这个端点**，`GET /directories` 目前只是契约；
-mock 模式（`VITE_USE_MOCK=true`）下由 `api/mock` 里的一棵假文件树顶上。
+工作空间和权限都记进 thread 的 `metadata`（发消息那一刻写），刷新页面后
+前端用它们回填 `taskStore`；审批卡片挂着时两个选择器会被禁用——恢复请求
+会原样带回这两个参数，改了就会出现「批准的是 A 目录的命令，却在 B 目录执行」。
 
 ### 权限：三级确认策略，不是能力白名单
 
@@ -137,7 +137,7 @@ src/
 │   ├── events.ts         # 事件归一化：LangGraph 原生事件 → 前端语义事件
 │   ├── thread.ts         # 线程 CRUD + 历史消息还原
 │   ├── run.ts            # 流式运行与取消（带 workspace / permissions）
-│   ├── directory.ts      # 工作空间选择器用的目录浏览
+│   ├── workspace.ts      # 工作空间：POST /workspaces/pick（弹系统目录框）
 │   └── mock/             # 无后端时的假实现
 ├── store/                # Zustand：conversation / ui / todo / settings / task
 ├── lib/
@@ -239,7 +239,6 @@ Shiki 和 `react-diff-viewer-continued` 都用动态 import 拆出主 chunk。
 
 对应设计文档 11 的待决项，以及本期明确不做的：
 
-- **`GET /directories` 的后端实现**（前端契约已定，见上文）
 - **危险操作确认的前端入口**：`permissions` 已经会传给后端，
   但 `manual` 触发时后端要能挂起工具调用、前端要能展示确认卡片 —— 这套协议还没设计
 - 右侧文件预览面板
@@ -250,9 +249,11 @@ Shiki 和 `react-diff-viewer-continued` 都用动态 import 拆出主 chunk。
 
 ## 已知取舍
 
-- **工作空间和权限只存在内存里**，刷新页面就回到默认值。
-  这两个是「这一次运行」的边界，不是用户偏好，写进 localStorage 反而容易让人
-  以为某次执行还带着上次的授权。等后端能回读任务配置了再谈持久化。
+- **工作空间和权限按任务存，但内存不是唯一副本**：发消息时写进 thread 的
+  `metadata`，刷新页面后从它回填 `taskStore`。写 localStorage 不合适——那是
+  全局的，分不清哪个任务用了哪个目录。
+- **Docker / 无图形界面里弹不出系统目录框**：只能手动输入容器内可见的路径
+  （默认 `/workspace`）；宿主路径在容器里不存在。
 - **虚拟滚动还没启用**：`index.css` 里定义了 `.cv-auto`（`content-visibility: auto`），
   但目前没有元素挂这个类，消息列表是全量渲染。
   不走 JS 虚拟化是因为代码块和 diff 高度不定，手写高度测量容易抖动；
