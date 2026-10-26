@@ -32,6 +32,7 @@ conf/mcp.json
 .langgraph_api/
 stupid_code/data/
 .scode-memory.md
+.scode/
 conversation_history/
 
 # 前端由独立镜像构建，后端镜像用不到

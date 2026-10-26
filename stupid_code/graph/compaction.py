@@ -5,8 +5,8 @@
 deepagents 的摘要中间件分两层，两者共用 `_summarization_event` 这个私有 state key：
 
 - **SummarizationMiddleware**（自动层）：对话超阈值时自动把旧消息总结成一段摘要，
-  原始消息写到 backend 的 `conversation_history/<session_id>.md`（agent 之后还能
-  `read_file` 读回来），然后用摘要替换掉旧消息。
+  原始消息写到 backend 的 `.scode/conversation_history/<session_id>.md`（agent 之后
+  还能 `read_file` 读回来），然后用摘要替换掉旧消息。
 - **SummarizationToolMiddleware**（手动层）：注册一个 `compact_conversation` 工具，
   模型可以自己决定什么时候压缩。
 
@@ -48,8 +48,9 @@ deepagents 的摘要中间件分两层，两者共用 `_summarization_event` 这
 ## 三、压缩了什么
 
 框架的默认行为，被压缩的旧消息会**写到 backend 的文件里**
-（`conversation_history/<session_id>.md`），摘要里带着那个路径，agent 之后可以
-`read_file` 读回来。所以压缩不是「丢历史」，是「把历史挪进文件」。
+（`.scode/conversation_history/<session_id>.md`，落点由 backend 的
+`artifacts_root` 决定，见 `graph/backend.py`），摘要里带着那个路径，agent 之后
+可以 `read_file` 读回来。所以压缩不是「丢历史」，是「把历史挪进文件」。
 """
 
 from __future__ import annotations

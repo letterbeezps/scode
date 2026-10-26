@@ -36,8 +36,16 @@ stupid_code/data/
 # agent 长期记忆（工作空间本地状态文件，点开头不进版本库）
 .scode-memory.md
 
+# agent 自己的中间产物（工作空间本地状态，点开头不进版本库）：
+#   .scode/conversation_history/   压缩对话历史时被摘走的旧消息
+#   .scode/large_tool_results/    太大的工具结果（deepagents 的 eviction）
+#   .scode/blobs/                 二进制内容块（默认关着）
+# agent 需要时可以用 read_file 读回来，所以必须留在工作空间里。
+.scode/
+
 # 压缩对话历史时被摘走的旧消息（deepagents 落到 backend 的文件里，
-# agent 需要时可以用 read_file 读回来）——同样是工作空间本地状态
+# agent 需要时可以用 read_file 读回来）——同样是工作空间本地状态。
+# 旧路径：artifacts_root 收拢到 /.scode 之前留下的，给已有工作空间兜底。
 conversation_history/
 
 

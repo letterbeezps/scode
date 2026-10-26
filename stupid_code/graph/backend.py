@@ -15,6 +15,17 @@ agent 的 `write_file` / `edit_file` 写的是内存里的副本，落不了盘�
 存储"这件事写在配置里而不是散落在各处：现在只有 `/tmp/` 一条例外，以后要加
 "某个目录走 langgraph store 跨会话持久化"之类的规则，加一条 route 就行。
 
+## agent 自己的产物落在哪儿
+
+deepagents 会往 backend 里写三样东西（对话历史、超大工具结果、二进制块），
+写哪儿由 `CompositeBackend.artifacts_root` 说了算，默认是 `/`——也就是直接落在
+工作空间根目录，冒出三个顶层目录。本项目把它设成 `/.scode`，收成一个隐藏目录
+（见 `ARTIFACTS_ROOT`）。
+
+注意产物路径**必须在工作空间里**：工具消息里就是这么告诉 agent 的
+"结果太大，存到这个路径，你可以 read_file 读回来"，路径出了工作空间的
+`virtual_mode` 边界就读不回来了，eviction 会退化成"存了但读不到"。
+
 ## 为什么要区分主 agent 和子 agent 的 backend
 
 框架有一条硬限制（deepagents 0.7.28，`middleware/filesystem.py`）：
@@ -70,6 +81,26 @@ from stupid_code.graph.workspace import (
     current_workspace_root,
     default_workspace,
 )
+
+ARTIFACTS_ROOT = "/.scode"
+"""agent 自己的中间产物在工作空间里的落点（虚拟路径）。
+
+deepagents 会把三类东西写进 backend：
+
+| 内容 | 路径（`artifacts_root` 为 `/` 时的默认值） |
+|---|---|
+| 被压缩掉的对话历史 | `/conversation_history/<session_id>.md` |
+| 超大的工具结果（eviction） | `/large_tool_results/<tool_call_id>` |
+| 二进制内容块（默认关着） | `/blobs/<sha256>` |
+
+**默认是工作空间根目录**——也就是直接落在用户的项目里，冒出三个顶层目录。本项目
+把它们收拢到 `/.scode/` 下：一个隐藏目录、一条 gitignore 规则，而且跟项目已有的
+`.scode-memory.md` 命名一致。
+
+**必须留在工作空间里**：agent 要能 `read_file` 把落盘的内容读回来（工具消息里就是
+这么告诉它的）。挪到工作空间外面的话路径出了 `virtual_mode` 的边界，eviction 就
+变成「存了但读不到」。
+"""
 
 
 def _workspace_relative(key: str) -> str | None:
@@ -238,6 +269,8 @@ def build_backend() -> CompositeBackend:
     - `/tmp/` 路由到 StateBackend：临时产物走虚拟 FS，不在用户磁盘上留垃圾。
       工作空间自己的绝对路径（比如 `/tmp/ws/x`）不会被这条路由吃掉，见
       `WorkspaceCompositeBackend`。
+    - `artifacts_root`：deepagents 自己往 backend 里写产物时用的根路径，
+      见 `ARTIFACTS_ROOT`。
     """
     return WorkspaceCompositeBackend(
         default=WorkspaceShellBackend(
@@ -248,18 +281,34 @@ def build_backend() -> CompositeBackend:
         routes={
             "/tmp/": StateBackend(),
         },
+        artifacts_root=ARTIFACTS_ROOT,
     )
 
 
-def build_restricted_backend() -> FilesystemBackend:
+def build_restricted_backend() -> CompositeBackend:
     """给声明了 `permissions` 的子 agent 用的 backend：真实磁盘，但没有 shell。
 
     没有 shell，`permissions` 才拦得住（见模块 docstring 里框架那条限制）。
     文件操作仍然落在真实磁盘上——子 agent 要读的就是用户工作空间里的真文件。
+
+    **为什么不是裸的 `FilesystemBackend`**：框架读 `artifacts_root` 的条件是
+    `isinstance(backend, CompositeBackend)`，裸的 `FilesystemBackend` 拿不到这个
+    属性，产物就会退回 `/` 根目录（`<工作空间>/large_tool_results/` 之类），
+    和主 agent 的落点分叉。套一层没有路由的 CompositeBackend 就能统一到
+    `ARTIFACTS_ROOT`，行为上跟裸 FilesystemBackend 完全一致（没有路由 → 一律走
+    default）。
+
+    框架自己也是这么处理权限路径的：`deepagents/middleware/filesystem.py` 里
+    `_resolve_real_path()` 显式认 `CompositeBackend`（先路由再解析软链），
+    所以 `interrupt_on` 谓词的软链解析不受影响。
     """
-    return WorkspaceFilesBackend(
-        root_dir=default_workspace(),
-        virtual_mode=True,
+    return WorkspaceCompositeBackend(
+        default=WorkspaceFilesBackend(
+            root_dir=default_workspace(),
+            virtual_mode=True,
+        ),
+        routes={},
+        artifacts_root=ARTIFACTS_ROOT,
     )
 
 
