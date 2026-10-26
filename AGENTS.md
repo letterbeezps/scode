@@ -68,8 +68,7 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
 
 3. **三个文件路径写死在 `langgraph.json` 里**：`./graph/agent.py:graph`、`./graph/persistence.py:checkpointer`、
    `./admin/app.py:app`——挪了要同步改，否则启动找不到模块。另有几个模块用 `__file__` 定位目录，**层数跟包结构绑死**
-   （`config/*` → `parents[2]/"conf"`；`graph/persistence.py` → `parents[1]/"data"`；`launcher.py` → 本包目录，不能挪）。
-   **作者视角的路径仍相对 `stupid_code/` 写**。*→ §2.2*
+   （具体哪几个、各是第几层见 §2.2）。**作者视角的路径仍相对 `stupid_code/` 写**。*→ §2.2*
 
 4. **`.langgraph_api/` 要留着，别删**：里面的 `.langgraph_ops.pckl` 是 **thread 索引**（会话列表的来源）。checkpoint 归
    SQLite 管，但删掉 ops 索引后平台重启就认不出已有 thread，历史数据躺在 `langgraph.db` 里取不出来——**持久状态分两处，
@@ -91,47 +90,39 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
    系统提示词**——别以为框架会垫底，行为准则要自己写全（`stupid_code/config/prompts.py`）。*→ §4.3*
 
 10. **长期记忆用 `middleware=` 挂 `MemoryMiddleware`，别用 `create_deep_agent(memory=...)`**（后者只能用框架默认的
-    StateBackend 虚拟文件系统，读不到磁盘上的文件）。另有四条：**文件不自动创建**（别凭空塞进用户选的项目）；**用本项目的
-    中文模板**（框架那份教模型用 `edit_file`，而文件可能根本不存在）；**8000 字上限**（框架不截断）；**文件名
-    `.scode-memory.md`**（框架默认的 `AGENTS.md` 是写给编码 agent 的项目约定，混用会把它当记忆注入）。*→ 006 / §8.11*
+    StateBackend 虚拟文件系统，读不到磁盘上的文件）。另有四条：**文件不自动创建**；**用本项目的中文模板**；**8000 字上限**；
+    **文件名 `.scode-memory.md`**。*→ 006 / §8.11*
 
 11. **端口锁死 2024，被占用就启动失败**——`langgraph dev` 自己会换端口，就绪检查只轮询 2024，会打到旧服务上**误报"已就绪"**
     （前端连旧代码，像"改了没生效"）。**绝不自动换端口**，前端默认就连 2024。*→ 008 / §9*
 
 12. **backend 是真实磁盘 + 本机 shell**（`LocalShellBackend`）。框架硬限制：backend 支持命令执行时，`FilesystemMiddleware`
     **不接受 `permissions`**（shell 能绕过任何文件权限）。所以声明了 `permissions` 的子 agent 要换成无 shell 的 backend，且
-    **不继承 MCP 工具**（MCP 不走文件权限层，继承等于另开一条写路径）；改子 agent 配置时别把 `permissions` 塞回规格里。
-    *→ 007 / 012*
+    **不继承 MCP 工具**；改子 agent 配置时别把 `permissions` 塞回规格里。*→ 007 / 012*
 
 13. **切换对话模型靠中间件，不靠重建图**。① `ModelRequest.runtime` **没有 `.config` 属性**，取 `configurable` 用
     `langgraph.config.get_config()`；② `middleware=` 里**越靠前越外层**，切换中间件要排在 prompt-caching / memory 之前；
-    ③ 切换**只作用于主 agent**，子 agent 用各自配置里的模型——**别让子 agent 跟着切**，那会打乱配置好的成本结构。
-    *→ 010 / §8.5*
+    ③ 切换**只作用于主 agent**，子 agent 用各自配置里的模型——**别让子 agent 跟着切**。*→ 010 / §8.5*
 
 14. **压缩历史用 `graph/compaction.py` 的 `CompactionMiddleware`**。① `.name` 报成**框架自带那一份的公开别名**（从框架问出来，
-    不写死字面量），否则多挂一份、两份摘要中间件同时跑会重复压缩；② 用 `summarizer=` 这个公开扩展点接管摘要调用，让摘要用
-    **当前选中的模型**；③ **别用 `RunnableLambda` 包同步函数**（`ainvoke` 丢进线程池后 `get_config()` 跨线程拿不到
-    `configurable`，会静默退回默认模型）。*→ 011 / §8.6*
+    不写死字面量）；② 用 `summarizer=` 这个公开扩展点接管摘要调用，让摘要用**当前选中的模型**；③ **别用 `RunnableLambda` 包
+    同步函数**。*→ 011 / §8.6*
 
 15. **容器里跑有三个坑**：① **`/app`（后端代码）和 `/workspace`（agent 工作空间）必须分开**，合并会让容器直接
-    `ModuleNotFoundError`——这类"默认能跑、换个参数就崩"的坑**必须显式测一次外部 workspace**；② **必须 editable 安装**（那几个
-    模块靠源码树位置定位文件）；③ `web/nginx.conf` 里 **`set` 必须写在 `rewrite` 前面**，SSE 那段必须 `proxy_buffering off` +
-    `proxy_read_timeout 3600s`；`conf/config.toml` **别打进镜像**（明文 api_key 会固化进镜像层）。*→ 012*
+    `ModuleNotFoundError`；② **必须 editable 安装**；③ `web/nginx.conf` 里 **`set` 必须写在 `rewrite` 前面**，SSE 那段必须
+    `proxy_buffering off` + `proxy_read_timeout 3600s`；`conf/config.toml` **别打进镜像**。*→ 012*
 
 16. **MCP 工具是建图时静态注册的**——改 `conf/mcp.json` 要重启后端。① **协议一行都别手写**，全交给
-    `langchain-mcp-adapters` / 官方 `mcp` SDK；② **工具名必须是 `mcp__{服务器}__{工具}`**（Claude Code 约定，agent 读的那份说明
-    里就写着这个格式），**别用 adapter 的 `tool_name_prefix`**；③ **MCP 工具只有异步实现**，同步路径抛 NotImplementedError；
-    ④ **只读子 agent 不能继承 MCP 工具**；⑤ **建图时连服务器是同步阻塞的**，必须限时。*→ 013 / §8.8*
+    `langchain-mcp-adapters` / 官方 `mcp` SDK；② **工具名必须是 `mcp__{服务器}__{工具}`**，**别用 adapter 的
+    `tool_name_prefix`**；③ **MCP 工具只有异步实现**；④ **只读子 agent 不能继承 MCP 工具**；⑤ **建图时连服务器是同步阻塞的**，
+    必须限时。*→ 013 / §8.8*
 
-17. **工作空间是运行期参数，根目录是 property**（同一张图服务不同项目目录）。① **FS 操作必须走线程**（`langgraph dev` 装了
-    blockbuster，事件循环里的同步 FS 会抛 BlockingError 整轮挂掉）；② **不合法就失败，不静默退回默认目录**（退回等于把写操作
-    落到用户没选过的目录），且 **`WorkspaceError` 继承 `ValueError`**（平台只透传内置异常的 message）；③ 没选工作空间 = 用后端
-    默认工作空间，**不是拒绝一切**；④ 绝对路径要对着 `resolved` / `given` **两种形态**剥前缀（只比一种会失配 → 文件落进嵌套目录
-    还不报错）。*→ 014 / §8.9*
+17. **工作空间是运行期参数，根目录是 property**（同一张图服务不同项目目录）。① **FS 操作必须走线程**；② **不合法就失败，
+    不静默退回默认目录**，且 **`WorkspaceError` 继承 `ValueError`**；③ 没选工作空间 = 用后端默认工作空间，**不是拒绝一切**；
+    ④ 绝对路径要对着 `resolved` / `given` **两种形态**剥前缀。*→ 014 / §8.9*
 
 18. **agent 自己的中间产物收在 `<工作空间>/.scode/`**。① **`artifacts_root` 只有 `CompositeBackend` 认**——受限子 agent 的
-    backend 要包一层无路由的 CompositeBackend，**别改回裸 `FilesystemBackend`**，否则产物掉回工作空间根目录；② **产物路径必须
-    留在工作空间里**，出了 `virtual_mode` 边界就读不回来。*→ §8.10*
+    backend 要包一层无路由的 CompositeBackend，**别改回裸 `FilesystemBackend`**；② **产物路径必须留在工作空间里**。*→ §8.10*
 
 19. **长期记忆分两个作用域**（项目级 `<工作空间>/.scode-memory.md`、用户级 `~/.scode/memory.md`）。**写记忆要走人工确认**
     （`normal` 和 `manual` 档）——**写记忆是唯一一条"影响未来所有会话"的写路径**，代码写错当场能改，记忆写错会一直影响后面每个
@@ -140,9 +131,8 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
 
 20. **skill 分两个作用域**（全局 `~/.scode/.agents/skills/`、项目级 `<工作空间>/.agents/skills/`——目录名是 `.agents` 不是
     `.skills`）。① **全局静态、项目级不是**（工作空间是运行期参数，项目级源**不能**是常量）；② **别传
-    `create_deep_agent(skills=...)`**（会多挂一份 skill 中间件，skill 块跑到记忆块**后面**）；③ **`.name` 报成框架那份的公开别名**
-    （否则提示词里两块 skill 列表）；④ **pin 只在"选择变了"时做**（每轮都 pin 撑爆上下文）；⑤ **取消勾选不移除已钉内容**
-    （框架 pin 是追加语义）。*→ §8.12*
+    `create_deep_agent(skills=...)`**；③ **`.name` 报成框架那份的公开别名**；④ **pin 只在"选择变了"时做**；⑤ **取消勾选不移除已钉
+    内容**。*→ §8.12*
 
 ---
 
@@ -174,18 +164,15 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
 ## Security
 
 - **API key 只走 `conf/config.toml`**（gitignore），**不进 `.env`、不入库**
-- 后端**只监听 `127.0.0.1`**。绝不绑 `0.0.0.0`——这 agent 天生带 shell 执行和文件写权限，暴露出去等于把整台机器交出去
-- deepagents 是 "trust the LLM" 模型：agent **不会自我约束**，边界必须在工具层/沙箱层强制执行，别指望模型自觉
+- 后端**只监听 `127.0.0.1`**。**绝不绑 `0.0.0.0`**
+- deepagents 是 "trust the LLM" 模型：agent **不会自我约束**，边界必须在工具层/沙箱层强制执行
 - 危险操作走人工确认（`HumanInTheLoopMiddleware` + checkpointer），**边界条件必须落盘持久化，不能重算**
-- **HITL 的判定判据记在图状态里，不读客户端回传的值**——框架的 `when` 谓词在恢复时会再跑一次，只从运行配置读档位的话，被用户
-  拒绝的命令会照样执行。**恢复挂起的运行有两个硬约束**：请求体带同一个 `configurable.permissions`；`command.resume.decisions`
-  个数必须和挂起时的 `action_requests` 一样多。**框架的 reject 理由字段叫 `message`，不叫 `feedback`**
-- **工作空间不要包含后端仓库**——agent 能改 `conf/mcp.json`（里面可以写 stdio `command`）和后端源码，下次启动时执行，等于绕开
-  `execute` 的人工确认。推荐 `SCODE_WORKSPACE=/path/to/project` 指向单独目录
-- **MCP 是一个新的执行/注入面**——stdio 服务器会在建图时和首次调用时拉起命令，服务器给的工具有副作用、工具描述会进模型上下文。
-  **只配信任的服务器**；`conf/mcp.json` 不入库，仓库只提供 `conf/mcp.example.json`
-- **文件工具有两条工作空间之外的路径**：`/user-memory/`（`~/.scode/`，**可写**——用户级记忆）和 `/user-skills/`
-  （`~/.scode/.agents/skills/`，**只读**——全局 skill）。agent 仍能读工作空间里任何文件（包括 `conf/config.toml` 里的
-  api_key），**这块没被 HITL 覆盖**
-- **目录选择靠系统原生弹窗**（`POST /workspaces/pick`），后端不提供「列目录」接口——那等于把目录树开放成 HTTP 接口。该端点会
-  阻塞到用户选完，后端仍只监听 `127.0.0.1`
+- **HITL 的判定判据记在图状态里，不读客户端回传的值**。**恢复挂起的运行有两个硬约束**：请求体带同一个
+  `configurable.permissions`；`command.resume.decisions` 个数必须和挂起时的 `action_requests` 一样多。**框架的 reject 理由字段叫
+  `message`，不叫 `feedback`**
+- **工作空间不要包含后端仓库**。推荐 `SCODE_WORKSPACE=/path/to/project` 指向单独目录
+- **MCP 是一个新的执行/注入面**。**只配信任的服务器**；`conf/mcp.json` 不入库，仓库只提供 `conf/mcp.example.json`
+- **文件工具有两条工作空间之外的路径**：`/user-memory/`（`~/.scode/`，**可写**）和 `/user-skills/`（`~/.scode/.agents/skills/`，
+  **只读**）。agent 仍能读工作空间里任何文件（包括 `conf/config.toml` 里的 api_key），**这块没被 HITL 覆盖**
+- **目录选择靠系统原生弹窗**（`POST /workspaces/pick`），后端不提供「列目录」接口。该端点会阻塞到用户选完，后端仍只监听
+  `127.0.0.1`
