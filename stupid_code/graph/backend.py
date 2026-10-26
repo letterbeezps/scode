@@ -64,6 +64,7 @@ from deepagents.middleware.filesystem import (
     FsToolName,
 )
 
+from stupid_code.graph.permissions import PermissionLevelMiddleware
 from stupid_code.graph.workspace import (
     current_workspace,
     current_workspace_root,
@@ -318,8 +319,14 @@ def apply_subagent_policies(
             **new_spec.get("interrupt_on", {}),
         }
 
+    # 子 agent 的 HITL 谓词读的是**子 agent 自己的** state，父图记的档位它看不到。
+    # 所以每个子 agent 都要自己挂一份记录中间件，档位才稳（见 permissions.py）。
+    middleware = list(new_spec.get("middleware", []))
+    middleware.append(PermissionLevelMiddleware())
+
     permissions = new_spec.get("permissions")
     if not permissions:
+        new_spec["middleware"] = middleware
         return cast("SubAgent", new_spec)
 
     new_spec.pop("permissions", None)
@@ -330,7 +337,6 @@ def apply_subagent_policies(
     # 否则链接指向的路径不在规则的匹配范围内，interrupt 就拦不住
     restricted = build_restricted_backend()
 
-    middleware = list(new_spec.get("middleware", []))
     middleware.append(
         FilesystemMiddleware(
             backend=restricted,

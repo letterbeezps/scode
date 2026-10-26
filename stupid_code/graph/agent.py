@@ -11,7 +11,7 @@ from stupid_code.graph.compaction import (
 from stupid_code.graph.mcp import load_mcp_tools
 from stupid_code.graph.memory import build_memory_middleware
 from stupid_code.graph.model_switch import ChatModelSwitchMiddleware
-from stupid_code.graph.permissions import build_interrupt_on
+from stupid_code.graph.permissions import PermissionLevelMiddleware, build_interrupt_on
 from stupid_code.graph.workspace import WorkspaceMiddleware
 
 # 真实 backend：文件操作落工作空间的真实磁盘，execute 直接在本机跑 shell。
@@ -59,6 +59,9 @@ graph = create_deep_agent(
     middleware=[
         ChatModelSwitchMiddleware(default_model),
         WorkspaceMiddleware(),
+        # 权限档位记进 state：HITL 的 when 谓词在恢复时会再跑一次，必须给出
+        # 同样的答案，只读客户端回传的值会被档位变化带偏（详见 permissions.py）
+        PermissionLevelMiddleware(),
         compaction,
         # compact_conversation 工具：模型自己也能压缩上下文窗口
         build_compaction_tool_middleware(compaction),
