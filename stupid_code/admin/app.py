@@ -13,6 +13,8 @@ app 必须是 Starlette 实例（FastAPI 也接受，本期不依赖 FastAPI）�
 toml 内部按 provider 分组只是为了避免重复写 key / base_url，接口层不暴露该结构。
 """
 
+from contextlib import asynccontextmanager
+
 from starlette.applications import Starlette
 from starlette.routing import Mount, Route
 
@@ -24,6 +26,21 @@ from stupid_code.admin.models import (
     update,
 )
 from stupid_code.admin.workspaces import pick_workspace
+from stupid_code.graph.mcp import close_mcp_sessions
+
+
+@asynccontextmanager
+async def lifespan(app: Starlette):
+    """应用关停时把 MCP 长会话收掉。
+
+    会话的 `async with` 在各自的 worker 任务里，必须由那个任务自己退出
+    （anyio 的 cancel scope 不能跨任务关闭）。`close_mcp_sessions()` 会取消
+    worker 任务并等它们收尾。不挂这个钩子也不会留下僵尸进程——服务关停会
+    取消所有任务——但显式关闭的日志更干净，子进程也更早退出。
+    """
+    yield
+    await close_mcp_sessions()
+
 
 # 用 Mount 把 admin/ 前缀的所有路由打包成一个子 app，
 # 与 langgraph 内置路由并行；不冲突。
@@ -35,9 +52,12 @@ admin_routes = Starlette(routes=[
     Route("/models/{id}", delete, methods=["DELETE"]),
 ])
 
-app = Starlette(routes=[
-    Mount("/admin", app=admin_routes),
-    # 弹系统文件浏览窗口选工作空间：前端工作空间选择器的数据源。
-    # 挂在根路径是因为前端契约如此。
-    Route("/workspaces/pick", pick_workspace, methods=["POST"]),
-])
+app = Starlette(
+    routes=[
+        Mount("/admin", app=admin_routes),
+        # 弹系统文件浏览窗口选工作空间：前端工作空间选择器的数据源。
+        # 挂在根路径是因为前端契约如此。
+        Route("/workspaces/pick", pick_workspace, methods=["POST"]),
+    ],
+    lifespan=lifespan,
+)

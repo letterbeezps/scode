@@ -26,9 +26,14 @@ default_model = load_model()
 # 加两件事——用户发 /compaction 时强制压缩一次；写摘要用当前选中的模型。
 compaction = build_compaction_middleware(default_model, backend)
 
+# MCP 服务器的工具：建图时按 conf/mcp.json 取一次，交给框架当普通工具。
+# 服务器连不上只少它那几个工具，不会让后端起不来。见 graph/mcp.py
+mcp_tools = load_mcp_tools()
+
 # 执行命令前的人工确认：按运行期传来的权限档位决定拦不拦，
 # 拦下时图挂起等前端批准/拒绝——见 graph/permissions.py
-interrupt_on = build_interrupt_on()
+# 非只读的 MCP 工具也在这里登记：manual 档下同样要确认
+interrupt_on = build_interrupt_on(mcp_tools=mcp_tools)
 
 graph = create_deep_agent(
     model=default_model,
@@ -43,7 +48,7 @@ graph = create_deep_agent(
     ],
     # MCP 服务器的工具：建图时按 conf/mcp.json 取一次，交给框架当普通工具。
     # 服务器连不上只少它那几个工具，不会让后端起不来。见 graph/mcp.py
-    tools=load_mcp_tools(),
+    tools=mcp_tools,
     backend=backend,
     # 长期记忆：读工作空间根的 .scode-memory.md（可选文件，不会自动创建）。
     # 走 middleware 参数而不是 create_deep_agent 的 memory 参数，

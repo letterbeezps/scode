@@ -38,7 +38,7 @@
 | `langgraph.json` | §3.2 已给出 | ✅ 在 `stupid_code/` 目录（不是根目录），图注册 + http.app + checkpointer/store 都已配 |
 | 模型配置 | §4 多供应商 | ✅ `conf/config.toml` + `/admin/models` 管理接口（002 / 003 期） |
 | 子 agent | §3 委派机制 | ✅ `conf/subagents.toml` 声明，`task` 工具可调（004 期） |
-| MCP 工具 | —（013 期新增） | ✅ `conf/mcp.json` 声明，http / stdio 都支持；建图时静态注册（改配置需重启） |
+| MCP 工具 | —（013 期新增） | ✅ `conf/mcp.json` 声明，http / stdio 都支持；建图时静态注册（改配置需重启），每个服务器一条长会话；`manual` 档下非只读工具走人工确认 |
 | 目录浏览端点 | §4.1 已定义 | ❌ 后端未实现（前端已按此契约调用） |
 
 **这意味着：写后端时不需要"对齐已有实现"，而是要"实现前端已经假定的契约"。** 契约清单见 §4。
@@ -586,7 +586,7 @@ stupid-code/
 │   │   ├── compaction.py    # /compaction 手动压缩历史 + 摘要用当前选中的模型
 │   │   ├── memory.py        # 长期记忆：工作空间根的 .scode-memory.md（不自动创建，跟工作空间走）
 │   │   ├── model_switch.py  # 运行期切换对话模型的中间件
-│   │   ├── mcp.py           # MCP 工具加载：建图时取工具 + 调用期重试 / 错误兜底
+│   │   ├── mcp.py           # MCP 工具加载：建图时列工具 + 每服务器一条长会话（专用线程）+ 调用期重试 / 错误兜底
 │   │   ├── permissions.py   # shell 人工确认：档位与危险判定
 │   │   └── persistence.py   # SQLite 工厂：checkpoint/store → ../data/langgraph.db
 │   ├── config/              # 读项目根 conf/ 的那层（代码在这，数据在 ../../conf/）

@@ -134,18 +134,28 @@ cp conf/mcp.example.json conf/mcp.json
 }
 ```
 
-> **配 MCP = 把第三方代码接进你的 agent**：stdio 服务器在**每次启动后端时
-> 直接执行命令**，服务器提供的工具有副作用（写文件、发请求……），工具描述
-> 也会进入模型上下文。只配你信任的服务器。
+> **配 MCP = 把第三方代码接进你的 agent**：stdio 服务器会在**建图时**（列工具
+> 清单的临时会话）和**第一次调用工具时**拉起命令，之后保持一条长会话；服务器
+> 提供的工具有副作用（写文件、发请求……），工具描述也会进入模型上下文。只配你
+> 信任的服务器。
 
 - `type` 可以不写：有 `command` 当作 stdio，有 `url` 当作 http
 - `description` 那种给界面看的字段可以留着，认了但会忽略
+- stdio 还支持 `encoding` / `encoding_error_handler`；`auth` / 自定义 httpx
+  客户端这类字段是 Python 对象，JSON 配不了（得改代码）
 - 密钥别写死在文件里——连接参数里的任何字符串（`url` / `command` / `args` /
   `cwd` / `env` 的值 / `headers` 的值）都可以写 `${VAR}`，从进程环境展开
 - **改完要重启后端**（工具是建图时静态注册的，跟 `conf/subagents.toml` 一样）
-- 某个服务器连不上只少它那几个工具，其余照常；它要等下次重启才会自动回来
+- **每个服务器一条长会话**：第一次调用时建立，之后复用。有状态服务器
+  （memory / 浏览器 / REPL）的状态不会因为下一次调用而重置；同一服务器的
+  调用串行执行。会话断了（网络抖动 / 服务器重启）下一次调用会自动重连
+- 某个服务器在**建图时**连不上只少它那几个工具，其余照常；它要等下次重启才会
+  重新出现在工具列表里（已经在跑的会话断了会自动重连，不用重启）
 - 某个服务器**配置写错**也只跳它自己，其余照常（日志里会说明为什么）
 - agent 看到的工具名是 `mcp__<服务器>__<工具>`，比如 `mcp__docs-langchain__search_docs_by_lang_chain`
+- **`manual` 档也会拦非只读的 MCP 工具**：每次调用先弹确认卡片（显示服务器名 +
+  参数），只给批准 / 拒绝。服务器声明了 `readOnlyHint: true` 的工具（如文档搜索、
+  memory 读取）不拦；`normal` / `auto` 档不拦 MCP 工具
 - 子 agent 默认也能用这些工具；但声明了 `permissions` 的只读子 agent
   （`reviewer`）**不会**继承（MCP 不经过文件权限层，继承等于另开一条写路径）
 - MCP 工具只有异步实现：Agent Server 里正常用，本地脚本 `graph.invoke()` 调它会抛 `NotImplementedError`
@@ -167,6 +177,7 @@ cp conf/mcp.example.json conf/mcp.json
 
 文件不存在 = 不接任何 MCP 服务器。完整字段表见
 [`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md) 的「013 · MCP 支持」一节。
+（`echo` 用来确认链路通不通；`count` 用来确认长会话——连续调用应该递增。）
 
 ### 4. 跑起来
 
@@ -310,7 +321,7 @@ docker compose up --build
 - **框架 0.7.x 不再提供内置系统提示词** —— `create_deep_agent(system_prompt=...)` 传进去的就是模型唯一看到的系统提示词，行为准则写在 `stupid_code/config/prompts.py`。
 - **API key 走 `conf/config.toml`**，已 gitignore，别硬编码进代码。
 - **工作空间按任务生效，也可以不选** —— 点按钮会弹系统原生的目录选择框（`POST /workspaces/pick`）；不选 = 用后端启动时的目录。刷新页面后工作空间/权限会从 thread metadata 回填。
-- **MCP 服务器配在 `conf/mcp.json`**（不入库，按需从 `conf/mcp.example.json` 复制）—— http 和 stdio 都支持，**改完要重启后端**（跟 `conf/subagents.toml` 一样）；某个服务器连不上只少它那几个工具，不会弄死整轮对话。stdio 服务器会在启动时执行命令，只配信任的服务器。
+- **MCP 服务器配在 `conf/mcp.json`**（不入库，按需从 `conf/mcp.example.json` 复制）—— http 和 stdio 都支持，**改完要重启后端**（跟 `conf/subagents.toml` 一样）；每个服务器一条长会话（有状态服务器不会被重置），调用失败会自动重连；某个服务器连不上只少它那几个工具，不会弄死整轮对话。stdio 服务器会执行命令，只配信任的服务器。`manual` 档下非只读的 MCP 工具也要人工确认。
 
 完整的踩坑清单（含代码位置、原因、验证方式）见 [`AGENTS.md`](AGENTS.md)；已知缺口见 [`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md) 的「已知缺口」一节。
 

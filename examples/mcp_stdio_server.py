@@ -34,7 +34,8 @@
 ## 为什么放这个文件
 
 http 传输用公网端点就能试，但 stdio 传输不配一个本地服务器就没法验证。
-这个文件就是那个「本地服务器」——三个工具，全是纯计算，随便改。
+这个文件就是那个「本地服务器」——四个工具，全是纯计算，随便改。
+（`count` 用来验证长会话：连续调用应该递增；每次新建会话的实现会一直返回 1。）
 
 （agent 看到的工具名是 `mcp__demo__echo` 这种形式：加服务器前缀是为了
 跟内置工具、跟别的服务器的工具不撞名。）
@@ -48,11 +49,24 @@ from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("demo")
 
+_counter = 0
+
 
 @app.tool()
 def echo(text: str) -> str:
     """把输入原样返回——用来确认这条链路通不通。"""
     return f"echo: {text}"
+
+
+@app.tool()
+def count() -> int:
+    """计数器加一并返回。用来验证「长会话」：连续调用应该递增。
+
+    每次调用都新建会话的实现在这里会一直返回 1（每次都是新进程）。
+    """
+    global _counter
+    _counter += 1
+    return _counter
 
 
 @app.tool()

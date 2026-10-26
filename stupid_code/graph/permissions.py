@@ -45,13 +45,16 @@ approve / edit / reject 的决定用 `command.resume` 送回来，图才继续�
 
 from __future__ import annotations
 
+import json
 import re
+from collections.abc import Callable
 from typing import Annotated, Any, NotRequired
 
 from langchain.agents.middleware import InterruptOnConfig
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, PrivateStateAttr
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import BaseTool
 
 from stupid_code.graph.workspace import WorkspaceError, current_workspace
 
@@ -256,23 +259,80 @@ def _describe_delete(tool_call: dict[str, Any], state: Any, runtime: Any) -> str
     return "\n\n".join(parts)
 
 
-def build_interrupt_on() -> dict[str, InterruptOnConfig]:
+def should_interrupt_mcp(request: ToolCallRequest) -> bool:
+    """MCP 工具的 `interrupt_on` when 谓词：`manual` 档下拦所有写到服务器的调用。
+
+    **只在 `manual` 档拦**：`normal` 是「只拦已知危险模式」的过滤器，MCP 工具
+    的行为由服务器定义，没有可复现的「危险模式」可匹配；`manual` 才是用户明确
+    要求「每一步都先问我」的档位。`auto` 档不拦。
+
+    **只读工具在建图时就被排除在 `interrupt_on` 之外了**（`readOnlyHint is True`），
+    所以这个谓词不用再看工具元数据——`when` 在 batched 模式下拿到的
+    `ToolCallRequest.tool` 是 None（见框架的 `InterruptOnConfig.when` 文档）。
+    """
+    return _level_of(request) == LEVEL_MANUAL
+
+
+def _is_read_only_mcp_tool(tool: BaseTool) -> bool:
+    """MCP 工具是否声明了只读。
+
+    `readOnlyHint` 是**服务器自己声明的**（MCP 工具注解），不是可信边界：
+    声明只读不等于真的只读。这里只用它决定「要不要打扰用户」——不声明就按
+    有副作用处理。
+    """
+    metadata = tool.metadata or {}
+    return metadata.get("readOnlyHint") is True
+
+
+def _mcp_server_of(tool: BaseTool) -> str:
+    """工具属于哪个 MCP 服务器（`graph/mcp.py` 加载时写进 metadata）。"""
+    metadata = tool.metadata or {}
+    server = metadata.get("mcp_server")
+    return server if isinstance(server, str) else "unknown"
+
+
+def _describe_mcp(server: str) -> Callable[[dict[str, Any], Any, Any], str]:
+    """MCP 工具的确认卡片说明：来自哪个服务器 + 完整参数。"""
+
+    def describe(tool_call: dict[str, Any], state: Any, runtime: Any) -> str:
+        args = tool_call.get("args")
+        rendered = (
+            json.dumps(args, ensure_ascii=False, indent=2, default=str) if args else "{}"
+        )
+        if len(rendered) > 1200:
+            rendered = f"{rendered[:1200]}\n…（参数过长，已截断）"
+        return (
+            f"这个工具来自 MCP 服务器 `{server}`，调用会在服务器上真的执行。"
+            f"\n\n参数：\n{rendered}"
+        )
+
+    return describe
+
+
+def build_interrupt_on(
+    mcp_tools: list[BaseTool] | None = None,
+) -> dict[str, InterruptOnConfig]:
     """给 `create_deep_agent` 的 interrupt_on 配置。
 
-    拦两个工具：
+    拦三类工具：
 
     - `execute`：执行 shell 命令。`normal` 档只拦命中危险模式的，`manual` 档
       每条都拦。
     - `delete`：删文件/删目录（目录是递归的）。只在 `manual` 档拦。
+    - **非只读的 MCP 工具**：只在 `manual` 档拦。写文件、发消息、改数据库这类
+      副作用不经过 shell，光拦 `execute` 就等于留了另一扇门。
 
     **不拦文件写入类工具**（`write_file` / `edit_file`）：那是 code agent 的
     日常，动辄就拦等于没法干活；真正不可逆的是删除和 shell 命令。
+
+    **MCP 工具不给 `edit` 决策**：参数结构由服务器定义，改错一个字段可能比
+    拒绝更糟；要改就让模型重发一次，顺便再过一遍 schema 校验。
 
     `execute` 允许 `edit` 决策：用户可以在确认卡片上把命令改完再执行，
     不用「拒绝 → 模型重写 → 再问」地绕一圈。**改完的命令不会再过一遍危险
     模式判定**——那是用户自己敲的，他比你清楚。
     """
-    return {
+    interrupt_on: dict[str, InterruptOnConfig] = {
         "execute": {
             "allowed_decisions": ["approve", "edit", "reject"],
             "when": should_interrupt,
@@ -284,3 +344,14 @@ def build_interrupt_on() -> dict[str, InterruptOnConfig]:
             "description": _describe_delete,
         },
     }
+
+    for tool in mcp_tools or []:
+        if _is_read_only_mcp_tool(tool):
+            continue
+        interrupt_on[tool.name] = {
+            "allowed_decisions": ["approve", "reject"],
+            "when": should_interrupt_mcp,
+            "description": _describe_mcp(_mcp_server_of(tool)),
+        }
+
+    return interrupt_on

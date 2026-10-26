@@ -20,10 +20,17 @@
 
 - **http**（streamable-http）：`url` + 可选 `headers` / `timeout` /
   `sse_read_timeout` / `terminate_on_close`
-- **stdio**：`command` + `args` + 可选 `env` / `cwd`——启动一个子进程，
-  用它的 stdin/stdout 说 MCP 协议
+- **stdio**：`command` + `args` + 可选 `env` / `cwd` / `encoding` /
+  `encoding_error_handler`——启动一个子进程，用它的 stdin/stdout 说 MCP 协议
 
 另外认 `sse` 和 `websocket`（adapter 原生支持，可选字段更少）。
+
+## 只收 JSON 能表达的字段
+
+adapter 的连接参数里还有 `auth`（`httpx.Auth` 对象）、`httpx_client_factory`
+（可调用对象）、`session_kwargs`（里面通常是回调函数）——这些是 Python 对象，
+JSON 表达不了，所以配置层不认。需要 OAuth / 自定义 httpx 客户端时得改代码，
+不是改 `conf/mcp.json`。
 
 ## 字段校验交给 pydantic
 
@@ -33,10 +40,8 @@
   当场被指出来，而不是悄悄退化成「什么都没配」）
 - 类型不对也当场报，不用等到模型调用工具时才炸
 
-每个模型的字段集**照着 adapter 的连接参数字典写**
-（`langchain_mcp_adapters/sessions.py` 里的 `StdioConnection` /
-`StreamableHttpConnection` / `SSEConnection` / `WebsocketConnection`），
-不多不少。唯一的例外是 `description`——那是给界面看的元信息
+每个模型的字段集照着 adapter 的连接参数字典写，但**只收 JSON 能表达的
+那些**（见上一节）；多出来的只有 `description`——那是给界面看的元信息
 （Claude Desktop / VS Code 那种配置里常见），agent 用不上，认了但忽略。
 
 ## 密钥不写死在文件里
@@ -69,7 +74,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -98,11 +103,11 @@ _DEFAULT_HTTP_TIMEOUT = 8.0
 它对应 httpx 客户端的 connect / write / pool 预算（adapter 会拼成
 `httpx.Timeout(timeout, read=sse_read_timeout)`），**不是启动预算**——
 启动的总限时由 `graph/mcp.py` 的 `_LOAD_TIMEOUT` 用 `asyncio.wait_for` 保证。
-注意这个值作用于该服务器的**每一次会话**（adapter 默认每次工具调用新建
-一个会话），所以它也是运行期工具调用的连接预算。
+本项目每个服务器只建一条长会话，所以这个值作用于**建立会话 / 会话断开后重连**
+时的连接预算；读取超时（`sse_read_timeout`）另算。
 
 比 adapter 的默认 30 秒短：8 秒足够完成 TLS 握手，又不至于让一个挂死的
-公网端点在每次调用时卡太久。
+公网端点在每次建会话 / 重连时卡太久。
 """
 
 _ENV_REF = re.compile(r"\$\{([^}]+)\}")
@@ -189,6 +194,8 @@ class _StdioServer(BaseModel):
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] | None = None
     cwd: str | None = Field(default=None, min_length=1)
+    encoding: str | None = Field(default=None, min_length=1)
+    encoding_error_handler: Literal["strict", "ignore", "replace"] | None = None
     description: str | None = None
 
 
@@ -362,6 +369,10 @@ def _stdio_connection(model: BaseModel) -> dict[str, Any]:
         connection["env"] = dict(spec.env)
     if spec.cwd is not None:
         connection["cwd"] = spec.cwd
+    if spec.encoding is not None:
+        connection["encoding"] = spec.encoding
+    if spec.encoding_error_handler is not None:
+        connection["encoding_error_handler"] = spec.encoding_error_handler
     return connection
 
 

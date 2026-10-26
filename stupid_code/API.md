@@ -325,7 +325,9 @@ Accept: text/event-stream
 - 改完再执行的决定是 `{"type": "edit", "edited_action": {"name": "execute",
   "args": {"command": "改过的命令"}}}`（框架 `EditDecision` 的定义）。
   `execute` 允许 `approve` / `edit` / `reject` 三种；`delete` 只允许前两种里的
-  `approve` / `reject`（015 期起 `delete` 也进 `interrupt_on`，只在 `manual` 档拦）
+  `approve` / `reject`（015 期起 `delete` 也进 `interrupt_on`，只在 `manual` 档拦）。
+  **非只读的 MCP 工具也一样**（`mcp__{服务器}__{工具}`）：`manual` 档下只给
+  `approve` / `reject`，不给 `edit`——参数结构由服务器 schema 管（2026-10-26 review 后）
 - `config.configurable.permissions`：**建议原样带回同一个档位**。后端的拦截判定在
   恢复时会再跑一次——不过 015 期起判定读的是**图状态里记的那一档**（开跑时写下的），
   客户端回传的值变了也不会改变判定。仍然建议原样带回，让恢复这一轮跟发起那一轮

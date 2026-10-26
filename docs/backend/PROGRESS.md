@@ -1087,7 +1087,9 @@ mcp.json 的服务器 'x' 配置不合法：url 必须以 http:// 或 https:// �
 - **建图时不能直接 `asyncio.run`**。`langgraph dev` 是在**它自己的事件循环里**
   导入图模块的（后端日志里能看到 `thread_name=uvloop_1`），
   `asyncio.run` 会抛 "cannot be called from a running event loop"。
-  `graph/mcp.py` 的 `_run_sync()` 检测到有循环就**换线程跑**（那个线程自带空 loop）。
+  现在 MCP 的异步工作全部提交到专用 MCP 线程：建图时
+  `_MCPThread.run()` 从主线程 `future.result(timeout)` 等结果；工具调用走
+  `run_coroutine_threadsafe`。**别在 MCP 线程自己里调 `run()`**，会堵死它自己的循环。
 - **MCP 工具只有异步实现**。adapter 造的 `StructuredTool` 只填了 `coroutine`
   （`func` 是 None），同步执行路径（`tool.invoke()`）会抛 `NotImplementedError`
   ——本地脚本用 `graph.invoke()` 就会撞上。本项目没有同步调用场景，不补 `func`。
@@ -1184,11 +1186,101 @@ JSON
 
 - 不做 MCP 的界面化管理（只能手改 `conf/mcp.json`）
 - 不做 MCP 资源（resources）、提示（prompts）、采样（sampling）的接入
-- 不给 MCP 工具加人工确认（`graph/permissions.py` 拦 `execute` 和 `delete`）
-- 不做有状态会话（adapter 默认每次调用新建会话，stdio 传输等于每次调用
-  重新拉起子进程——慢但简单）
+- ~~不给 MCP 工具加人工确认~~（review 后补上了，见下方「补充」）
+- ~~不做有状态会话~~（review 后补上了，见下方「补充」）
 - **不做「改配置不用重启」**（试过运行期注入，为了少一套钩子放弃了，见「关键取舍一」）
 - 不做 MCP 工具的按需加载 / 懒加载（建图时一次性取完）
+
+**补充（2026-10-26，review 后）**
+
+review 时对着 adapter 0.3.2 的源码重新核了一遍，改了三处：
+
+**① 每个服务器一条长会话（原来的每次调用新建会话是错的）**
+
+`MultiServerMCPClient.get_tools()` 造出来的工具，**每次调用都会新建会话**（adapter
+文档原话："A new session will be created for each tool call"）：stdio 每次
+fork 一个子进程，http 每次重新握手。对文档搜索这种无状态服务器只是慢一点；
+对有状态服务器（`server-memory` 的知识图谱、浏览器、REPL）等于每次调用重置。
+
+现在 `graph/mcp.py`：
+
+- 建图时只开一个**临时会话**列工具清单（拿 schema / 描述），列完就关
+- 工具对象绑到 `_SessionProxy`（鸭子类型的 `ClientSession`，adapter 只调用它的
+  `call_tool()`），schema / 结果转换 / 错误处理全都还是 adapter 的
+- 第一次真正调用时才建持久会话，之后一直复用
+- 每个服务器一个 `_ServerWorker` 任务 + 队列，**同一服务器的调用串行**；
+  transport 层失败会话退出，下一次调用（或 retry）自动重连
+- 会话跑在**专用 MCP 线程**（daemon，`_MCPThread`）的循环里：MCP SDK 的 stdio
+  会话内部是 anyio TaskGroup，cancel scope 必须由建立它的任务退出。最早把会话
+  放在主循环上，`asyncio.run()` 收尾会并发取消内部任务，进程**直接卡死**（实测）；
+  独立线程之后主循环怎么关都碰不到它
+- 应用关停由 `admin/app.py` 的 lifespan 调 `close_mcp_sessions()`：取消 worker
+  任务、等 `async with` 退出、停线程。实测停服务后 `server-memory` 子进程
+  和 langgraph 进程都没有残留
+- **建图时的工具清单加载也走这条线程**：`load_mcp_tools()` 把 `_load_servers()`
+  提交到 MCP 线程，主线程用 `future.result(_LOAD_TIMEOUT + 5)` 等结果；
+  原来为「在已运行的事件循环里跑 `asyncio.run`」写的 `_run_sync` 临时线程/loop
+  已经删掉，MCP 的异步工作现在只有一条线程、一个入口
+
+**② MCP 工具也走 HITL（manual 档）**
+
+`build_interrupt_on(mcp_tools=...)` 把**非只读**的 MCP 工具登记进 `interrupt_on`：
+
+- `manual` 档下每次 MCP 调用都挂起等确认；`normal` / `auto` 不拦
+  （`normal` 是「已知危险模式」过滤器，MCP 行为由服务器定义，没有可复现的模式）
+- `readOnlyHint is True` 的工具跳过（docs 的两个搜索、memory 的 `read_graph` /
+  `search_nodes` / `open_nodes` 都带这个标注）；**这是服务器自报的，不是安全边界**，
+  没声明就按有副作用处理
+- 确认卡片显示服务器名 + 完整参数（`_describe_mcp`），只给 approve / reject，
+  **不给 edit**——参数结构由服务器 schema 管，改错一个字段可能比拒绝更糟
+- `graph/mcp.py` 加载时把 `mcp_server` 写进工具 `metadata`，权限层靠它生成卡片
+- 只读子 agent 本来就不继承 MCP 工具，不受影响；其他子 agent 继承同一份
+  `interrupt_on`（`apply_subagent_policies` 已经做了合并）
+
+**③ 配置字段与重试分类**
+
+- `config/mcp.py` 补了 stdio 的 `encoding` / `encoding_error_handler`（adapter
+  支持、JSON 能表达）。`auth` / `httpx_client_factory` / `session_kwargs` 是
+  Python 对象，JSON 表达不了，**故意不认**——需要 OAuth 得改代码
+- `_retryable()` 现在不重试超时，也**不重试 4xx**（鉴权失败 / 路径写错重试没意义），
+  只重试 5xx / 429 / 连接类错误
+- `_load_one` 预算在第一次尝试前就耗尽时抛明确的 `TimeoutError`，不再依赖 `assert`
+
+**验证步骤**
+
+```bash
+# 1. 有状态工具：连续调两次 mcp__demo__count，返回值必须递增
+#    把 examples/mcp_stdio_server.py 配进 conf/mcp.json（见上面 stdio 那节），
+#    重启后端，然后让 agent 连续调两次 count（或直接写脚本调 tool.ainvoke）
+#    预期：1 → 2
+#    （旧实现每次调用新建子进程，两次都会是 1）
+
+# 2. 真实服务：14 个工具 / 3 个服务器（docs、reference、memory）
+#    让 agent 调 mcp__memory__create_entities 建一个实体，再调 read_graph
+#    预期：read_graph 能看到刚建的实体；ps 里 server-memory 的 PID 前后不变
+
+# 3. manual 档：让 agent 调非只读的 MCP 工具
+#    预期：SSE 的 __interrupt__ 里 action_requests[0].name 是
+#    mcp__memory__create_entities，description 带服务器名和参数，
+#    allowed_decisions 只有 approve / reject；command.resume 批准后工具执行
+
+# 4. 停服务后检查残留
+ps -axo pid,command | grep -E "server-memory|langgraph dev"
+#    预期：没有输出
+```
+
+**已验证的事实**（2026-10-26 真实服务 + 本地 stdio 测试）
+
+- 有状态 stdio 服务器：bump 1 → 2，read 2；会话跨调用保留 ✔
+- 真实服务加载 14 个工具 / 3 个服务器（含 `npx` 的 memory）✔
+- `mcp__memory__create_entities` 写入后，`mcp__memory__read_graph` 能看到；
+  前后 `server-memory` 的 PID 不变（一条长会话）✔
+- `manual` 档下 `mcp__memory__create_entities` 触发 HITL，卡片描述带服务器名和
+  参数；approve 后 tool 消息正常返回 ✔
+- `security`：`readOnlyHint=True` 的 docs 搜索 / memory 读取工具不进 `interrupt_on`；
+  reference 的两个工具没有标注，按有副作用登记 ✔
+- 停服务后没有 `server-memory` / `langgraph dev` 残留 ✔
+- 专用 MCP 线程下，`asyncio.run(script)` 不再卡在 `_cancel_all_tasks` ✔
 
 ---
 
@@ -1549,12 +1641,12 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 | 切模型不换摘要阈值 | 压缩历史的触发阈值按启动时模型的上下文窗口算 | 切到窗口更小的模型可能触发偏晚 |
 | 切模型不换「超预算」兜底的预算 | 压缩中间件在最终栈里位于切换中间件**外层**，它内部读 `request.model.profile` 时看到的还是启动时的模型 | 本项目模型无 profile，这条兜底恒不触发；真超限时靠 `ContextOverflowError` 的兜底路径兜住 |
 | 选了不存在的模型会静默退回 | 界面上看不出切换没生效，只有后端日志有 warning | 有意为之：不让整个对话挂掉 |
-| MCP 工具不经过人工确认 | `graph/permissions.py` 拦 `execute` 和 `delete`，MCP 工具是第三方服务器自己实现的 | 013 期有意不做 |
-| MCP 工具只能异步调用 | `tool.invoke()` / `graph.invoke()` 调 MCP 工具会抛 `NotImplementedError` | adapter 只填 `coroutine`；本项目没有同步调用场景，不补 `func` |
+| MCP 工具在 `normal` / `auto` 档不经过人工确认 | `manual` 档已经拦非只读工具；`normal` / `auto` 下 MCP 工具直接执行 | `normal` 是「已知危险模式」过滤器，MCP 行为由服务器定义；要确定性就切 `manual` |
+| `readOnlyHint` 是服务器自报的 | 服务器可以谎报只读，从而跳过 `manual` 档的确认 | 只用它决定「要不要打扰用户」，不当安全边界；不信任服务器就别配它 |
 | 工作空间是仓库根时能改启动配置 | agent 能写 `conf/mcp.json` 和后端源码，下次启动时执行——绕开 `execute` 的人工确认 | 已加启动警告；推荐用 `SCODE_WORKSPACE` 指向单独目录 |
 | 改 `conf/mcp.json` 要重启后端 | 加服务器 / 改地址之后得重启才生效 | 013 期有意为之（静态注册换简单，见「013 · 关键取舍一」） |
 | 服务器启动时挂着，得等重启 | 该服务器的工具整个会话都没有 | 加载时重试过；仍失败就等下次重启 |
-| MCP 每次调用都新建会话 | stdio 传输等于每次工具调用都重新拉起子进程 | adapter 的默认行为；换有状态会话要自己管 session 生命周期 |
+| MCP 长会话是进程级共享的 | 不同对话看到同一个服务器状态（浏览器页面、REPL 变量） | 单用户项目够用；要按 thread 隔离得把 thread_id 送进 MCP 线程 |
 | MCP 连接失败只少几个工具 | 连不上的服务器的工具不会出现在模型面前（界面看不出来） | 有意为之：不让一个外部服务拖垮整轮对话 |
 | MCP 配置写错的服务器只跳它自己 | 那几个工具整个会话都没有，界面上也看不出来 | 日志里会报一句为什么；其余服务器照常 |
 | 流式回复是整段到达 | 不是 token 级增量 | 平台两种模式都支持，`messages-tuple` 事件名是 `messages` |
