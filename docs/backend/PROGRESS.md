@@ -442,7 +442,7 @@ CompositeBackend(
 | 档位 | 行为 |
 |---|---|
 | `auto` | 不确认，直接执行（用户明确选择了不被打断） |
-| `manual` | **每一条**执行命令都确认 |
+| `manual` | **每一条**执行命令、每一次删文件都确认 |
 | `normal` | 只有命中「危险模式」的命令才确认（**默认档**） |
 
 档位随运行请求走 `config.configurable.permissions`，**不存全局**——和 `workspace`
@@ -458,19 +458,70 @@ CompositeBackend(
 
 **关键取舍**
 
-- **只拦 `execute`**。框架有条硬限制：backend 支持命令执行时 `FilesystemMiddleware`
+- **只拦 shell 类的写操作**。框架有条硬限制：backend 支持命令执行时 `FilesystemMiddleware`
   不接受 `permissions`（抛 `NotImplementedError`），所以文件权限和 shell 不能共存。
   本期绕开这个矛盾：只拦 shell，文件工具靠真实磁盘 + 提示词，不做工具层强制。
 - **危险判定用固定正则，不用 AI**。原设想 `normal` 档由 AI 判断这次操作是否危险：
   AI 审核要额外一次模型调用，判断标准也没法复现，出了问题说不清是谁该负责。
   改成固定规则——命中就是命中，不命中就不命中，行为可预期。**代价是宁可漏拦也不误拦**
-  （`rm --recursive --force` 这类等价写法匹配不上）。
-- **档位必须原样带回去**：后端的拦截判定在**恢复时会再跑一次**，档位变了结论就变
-  （批准后变成"还要拦"，就永远批不掉了）。
+  （`rm --recursive --force` 这类等价写法匹配不上）。**`normal` 是过滤器，不是安全边界**：
+  它只看命令字符串，`find -delete`、`python -c "shutil.rmtree(...)"`、先 `write_file`
+  写个脚本再 `execute` 它，都绕得开。要确定性就切 `manual`。
 - **子 agent 默认继承顶层 `interrupt_on`**（deepagents 的合并规则：
   `spec.get("interrupt_on", interrupt_on)`）。所以没声明 `permissions` 的子 agent
   （如 `fixer`）执行命令也会走 HITL；声明了 `permissions` 的子 agent（`reviewer`）
   被换成无 shell 的 backend，压根没有 `execute` 工具，不受影响。
+
+**015 期改动：三个真问题**
+
+*一、`delete` 工具没人管*
+
+`delete` 是文件工具、不走 `execute`，所以一直没被拦。但它的工具说明写得很清楚：
+「Deleting a directory removes it and everything inside it, recursively」——**删目录是
+递归的，跟 `rm -rf` 等价**。于是模型换个工具就把确认绕过去了：用户看到「rm -rf 会
+问我」，但 agent 用 `delete` 删目录时一声不吭。
+
+现在 `delete` 也进 `interrupt_on`，**只在 `manual` 档拦**（删文件是 code agent 的
+日常，`normal` 档拦它太吵）。确认卡片上写明删的是什么、不可撤销。
+
+*二、恢复时档位变了 → 被拒绝的命令照样执行*
+
+框架的 `when` 谓词**在恢复时会再跑一次**，而且明确要求「同一次调用必须给出同样的
+答案」。档位只从运行配置里读的话，恢复时前端回传的值一变，结论就变：
+
+- 变成 `auto` → 谓词返回 False → 用户的「拒绝」被跳过，**被拒绝的命令照样执行**
+  （框架文档原话：the reviewer's answer is skipped and the tool runs, even if they
+  rejected it）
+- 变成 `manual` → 多出/少掉待确认的调用 → decisions 数量对不上 → 框架抛
+  `ValueError`，整轮跑挂
+
+实测复现（2026-10-26）：`normal` 档挂起 → 用户拒绝 → 恢复时回传 `auto` → **文件
+被删了**。
+
+修法：`PermissionLevelMiddleware` 在**开跑前**把档位写进图状态（checkpoint 里的私有
+字段），`when` 谓词优先读它。恢复时 `before_agent` 不会重跑（实测），state 里留的就是
+发起那轮运行时的那一档。**不信任客户端回传的值**。子 agent 的谓词读的是子 agent
+自己的 state，所以每个子 agent 也挂一份这个中间件。
+
+*三、前端竞态：metadata 还没落盘就开跑*
+
+工作空间和档位除了在内存里，还写进 thread metadata（刷新页面靠它回填）。原来那个
+PATCH 是 fire-and-forget，run 紧接着就开跑——**run 已经挂起、metadata 还没写进去**
+的话，刷新页面回填成默认档位，恢复时的判定就跟发起时对不上。现在改成先
+`await` PATCH 再开跑（写失败不阻塞主流程）。
+
+**015 期新增：`edit` 决策（改完命令再执行）**
+
+框架的 HITL 支持 `edit`：用户可以改完命令再批准，不用「拒绝 → 模型重写 → 再问」地
+绕一圈。现在 `execute` 的 `allowed_decisions` 是 `["approve", "edit", "reject"]`，
+`delete` 是 `["approve", "reject"]`（改路径意义不大）。
+
+前端相应地：审批卡片每条动作可以**单独**选批准 / 拒绝 / 改后执行，命令是可编辑的
+文本框；拒绝时可以填理由（作为 `message` 传给模型，模型能知道为什么被拒）；卡片上
+还显示工作目录（相对路径的命令在哪执行，用户得知道）。
+
+**改完的命令不会再过一遍危险模式判定**——那是用户自己敲的，他比你清楚。框架会在
+工具结果前面加一句「a human reviewer replaced this tool call」告诉模型命令被改过。
 
 ### 010 · 运行期切换对话模型
 
@@ -1102,7 +1153,7 @@ JSON
 
 - 不做 MCP 的界面化管理（只能手改 `conf/mcp.json`）
 - 不做 MCP 资源（resources）、提示（prompts）、采样（sampling）的接入
-- 不给 MCP 工具加人工确认（`graph/permissions.py` 只拦 `execute`）
+- 不给 MCP 工具加人工确认（`graph/permissions.py` 拦 `execute` 和 `delete`）
 - 不做有状态会话（adapter 默认每次调用新建会话，stdio 传输等于每次调用
   重新拉起子进程——慢但简单）
 - **不做「改配置不用重启」**（试过运行期注入，为了少一套钩子放弃了，见「关键取舍一」）
@@ -1442,7 +1493,8 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 | 监听地址 | **只监听 `127.0.0.1`**。绝不要绑 `0.0.0.0` |
 | API key | 只走 `conf/config.toml`（gitignore），不进 `.env`、不入库 |
 | shell 执行 | 有人工确认关卡（009），`normal` 档只拦命中危险模式的命令 |
-| 文件写入 | **不拦**（`write_file`/`edit_file`/`delete`）——那是 code agent 的日常 |
+| 删文件 | 有人工确认关卡（015），但只有 `manual` 档拦；`normal` 档不拦 |
+| 文件写入 | **不拦**（`write_file`/`edit_file`）——那是 code agent 的日常 |
 | 文件路径 | 文件工具锁在工作空间内（`virtual_mode=True`），**shell 不受此限** |
 | 读取范围 | agent 能读工作空间里的任何文件，**包括 `conf/config.toml` 里的 api_key**——这块没被 HITL 覆盖 |
 | 子 agent 权限 | 只有声明了 `permissions` 的子 agent 才是硬约束；没声明的拿的是主 agent 那套带 shell 的 backend |
@@ -1457,15 +1509,16 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 | shell 不受路径限制 | `execute` 能访问工作空间外的任何路径 | 设计如此，但和"文件工具锁在工作空间内"不一致 |
 | 工作空间不是沙箱 | agent 有 shell 就能碰整个文件系统，选工作空间只是"默认在哪干活" | deepagents 是 trust the LLM 模型，这是既定前提 |
 | 无图形界面时弹不出目录框 | 后端在 Docker / 纯 SSH 环境下只能手打路径 | 前端下拉里有手动输入兜底 |
-| 危险判定是正则 | `rm --recursive --force` 这类等价写法匹配不上 | `normal` 档的固有局限 |
-| 拒绝是整组的 | 一次挂起含多条命令时，卡片把整组展示，没有逐条挑选 | 框架的 `edit` 决策前端也没做 |
+| 危险判定是正则 | `rm --recursive --force` 这类等价写法匹配不上 | `normal` 档的固有局限；`normal` 是过滤器不是安全边界，要确定性用 `manual` |
+| `delete` 在 `normal` 档不拦 | 删文件/删目录（递归）不弹确认 | 015 期起 `manual` 档会拦；`normal` 档拦它太吵 |
+| 改完的命令不再过危险判定 | 用户在卡片上把 `rm -rf x` 改成 `rm -rf /`，直接执行 | 015 期新增 `edit` 决策的取舍：那是用户自己敲的 |
 | 子 agent 也会触发确认 | `fixer` 这类没声明 `permissions` 的子 agent 执行命令同样挂起 | 要不要默认放行是个待定的产品决策 |
 | 同一工作空间内记忆只在会话开始时读一次 | 改完 `.scode-memory.md` 要开新会话才生效；换工作空间会重读 | 框架设计（记忆块参与 prompt 缓存） |
 | 切模型不换 harness profile | 系统提示词附加内容、工具描述改写、排除的工具都按启动时的模型定死 | 建图时决定的，跑起来改不了 |
 | 切模型不换摘要阈值 | 压缩历史的触发阈值按启动时模型的上下文窗口算 | 切到窗口更小的模型可能触发偏晚 |
 | 切模型不换「超预算」兜底的预算 | 压缩中间件在最终栈里位于切换中间件**外层**，它内部读 `request.model.profile` 时看到的还是启动时的模型 | 本项目模型无 profile，这条兜底恒不触发；真超限时靠 `ContextOverflowError` 的兜底路径兜住 |
 | 选了不存在的模型会静默退回 | 界面上看不出切换没生效，只有后端日志有 warning | 有意为之：不让整个对话挂掉 |
-| MCP 工具不经过人工确认 | `graph/permissions.py` 只拦 `execute`；MCP 工具是第三方服务器自己实现的 | 013 期有意不做 |
+| MCP 工具不经过人工确认 | `graph/permissions.py` 拦 `execute` 和 `delete`，MCP 工具是第三方服务器自己实现的 | 013 期有意不做 |
 | MCP 工具只能异步调用 | `tool.invoke()` / `graph.invoke()` 调 MCP 工具会抛 `NotImplementedError` | adapter 只填 `coroutine`；本项目没有同步调用场景，不补 `func` |
 | 工作空间是仓库根时能改启动配置 | agent 能写 `conf/mcp.json` 和后端源码，下次启动时执行——绕开 `execute` 的人工确认 | 已加启动警告；推荐用 `SCODE_WORKSPACE` 指向单独目录 |
 | 改 `conf/mcp.json` 要重启后端 | 加服务器 / 改地址之后得重启才生效 | 013 期有意为之（静态注册换简单，见「013 · 关键取舍一」） |
@@ -1794,7 +1847,30 @@ pgrep -f "langgraph_cli dev"        # 应该没有输出
   会匹配 `2>/dev/null`，而这种写法满地都是——等于几乎每条命令都被拦，拦截就失去意义。
   现在用负向前瞻排除 `/dev/null`、`/dev/stdout`、`/dev/stderr`、`/dev/fd/*`
 - 平台的后端工具在 `execute` 之外还有 `ls` / `read_file` / `write_file` / `edit_file` /
-  `delete` / `glob` / `grep`；本期只拦 `execute`
+  `delete` / `glob` / `grep`；015 期起也拦 `delete`（只在 `manual` 档）
+
+**015 期对 interrupt_on 的复测（2026-10-26，用假模型 + 真实图）**
+
+- **`delete` 之前完全没人管**：实测 `delete("/victim.txt")` 直接执行（`Deleted
+  /victim.txt`），而等价的 `execute("rm -rf ...")` 会挂起。**015 期起 `delete` 进
+  `interrupt_on`**：`manual` 档挂起 ✔、`normal` 档不挂起 ✔、`auto` 档不挂起 ✔
+- **恢复时档位翻转 → 被拒绝的命令照样执行**（实测复现）：`normal` 档挂起 → 用户
+  拒绝 → 恢复时回传 `auto` → **文件被删了**。框架文档也明说了：the reviewer's
+  answer is skipped and the tool runs, even if they rejected it。
+  **015 期起不会了**：档位记在图状态里，恢复时读的是发起那轮运行时的那一档，
+  实测同样场景下文件还在 ✔
+- **`before_agent` 在恢复时不会重跑**（实测：整个恢复过程只打印了一次
+  `before_agent`）——这是「把档位记进 state」这个修法成立的前提
+- **`edit` 决策可用**：改完的命令真的执行了，模型收到
+  `Note: a human reviewer replaced this tool call before it ran.` ✔
+- **`reject` 的 `message` 会传给模型**：
+  `User rejected the tool call for 'execute' with reason: 那个文件我还要用` ✔
+- **`review_configs` 跟 `action_requests` 一一对应、顺序一致**（前端靠它渲染每条
+  动作允许哪些决定）：`execute` → `["approve","edit","reject"]`、
+  `delete` → `["approve","reject"]` ✔
+- **decisions 数量对不上照旧抛**：
+  `Number of human decisions (0) does not match number of hanging tool calls (1).`
+  —— 前端在 store 里拦了一道，不让它发出去 ✔
 
 ### 8.5 模型切换（2026-10-23 对真实服务实测）
 

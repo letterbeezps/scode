@@ -322,8 +322,14 @@ Accept: text/event-stream
   `Number of human decisions (N) does not match number of hanging tool calls (M)`，整个运行报错
 - 拒绝的决定是 `{"type": "reject", "message": "理由"}`——字段叫 `message`，
   **不是 `feedback`**（框架 `RejectDecision` 的定义）。写错名字理由被静默丢掉
-- `config.configurable.permissions`：**必须原样带回同一个档位**。后端的拦截判定在
-  恢复时会再跑一次，档位变了结论就变（批准后变成"还要拦"，就永远批不掉了）
+- 改完再执行的决定是 `{"type": "edit", "edited_action": {"name": "execute",
+  "args": {"command": "改过的命令"}}}`（框架 `EditDecision` 的定义）。
+  `execute` 允许 `approve` / `edit` / `reject` 三种；`delete` 只允许前两种里的
+  `approve` / `reject`（015 期起 `delete` 也进 `interrupt_on`，只在 `manual` 档拦）
+- `config.configurable.permissions`：**建议原样带回同一个档位**。后端的拦截判定在
+  恢复时会再跑一次——不过 015 期起判定读的是**图状态里记的那一档**（开跑时写下的），
+  客户端回传的值变了也不会改变判定。仍然建议原样带回，让恢复这一轮跟发起那一轮
+  看到的是同一套配置
 - `config.configurable.model`：同理**建议原样带回**。恢复时后端同样按它换模型，
   带空了就退回默认模型，跟批准前用的不是同一个模型
 - 不带 `input`：平台把 `command` 转成 LangGraph 的 `Command(resume=...)` 当作本次运行的输入
@@ -629,6 +635,22 @@ Content-Type: application/json
 - reject 决定的理由字段是 **`message`**，不是 `feedback`
 - `config.configurable` 里的档位能到达后端的 `when` 谓词（`when` 拿到的
   `ToolRuntime.config` 就是 `get_config()` 的结果，含 `configurable`）
+- **`review_configs` 跟 `action_requests` 一一对应、顺序一致**（同一个循环 append
+  的）。前端靠它渲染每条动作允许哪些决定
+
+### 2026-10-26 实测（interrupt_on 复测，015 期）
+
+- **`when` 谓词在恢复时会再跑一次**，框架明确要求「同一次调用必须给出同样的答案」。
+  档位只从运行配置里读的话，恢复时回传的值一变，被用户拒绝的命令会照样执行
+  （框架文档原话：the reviewer's answer is skipped and the tool runs, even if they
+  rejected it）。**015 期起档位记在图状态里**（`PermissionLevelMiddleware` 在开跑前
+  写入），谓词优先读它；恢复时 `before_agent` 不会重跑，state 里留的就是发起那轮
+  运行时的那一档
+- **`edit` 决定**：`{"type": "edit", "edited_action": {"name", "args"}}`。改完的命令
+  直接执行，模型收到 `Note: a human reviewer replaced this tool call before it ran.`
+  ——**改完的命令不会再过一遍危险模式判定**（那是用户自己敲的）
+- **`delete` 工具也进 `interrupt_on` 了**（015 期起）：它删目录是递归的、跟 `rm -rf`
+  等价，模型换个工具就能绕过确认。只在 `manual` 档拦
 
 ### 官方文档
 

@@ -97,7 +97,7 @@ stupid_code/
 | [graph/compaction.py](graph/compaction.py) | `/compaction` 手动压缩历史 + 摘要用当前选中的模型；`.name` 报成框架自带那份的公开别名，顶掉而不是叠加 |
 | [graph/model_switch.py](graph/model_switch.py) | 运行期切换对话模型：中间件在每次模型调用前把 `request.model` 换成用户选中的那个 |
 | [graph/mcp.py](graph/mcp.py) | MCP 工具加载：按 `conf/mcp.json` 连服务器取工具（并行 + 总预算限时）、加 `mcp__{服务器}__{工具}` 前缀、检测重名；用 adapter 的 `tool_interceptors` 兜传输层失败并在调用期重试一次。协议本身交给 `langchain-mcp-adapters` / 官方 `mcp` SDK |
-| [graph/permissions.py](graph/permissions.py) | shell 人工确认：权限档位解析（manual/normal/auto）+ 危险命令识别 + `interrupt_on` 的 `when` 谓词 |
+| [graph/permissions.py](graph/permissions.py) | 危险操作人工确认：权限档位解析（manual/normal/auto）+ 危险命令识别 + `interrupt_on` 的 `when` 谓词；档位记进图状态，恢复时的判定不受客户端回传值影响 |
 | [graph/persistence.py](graph/persistence.py) | SQLite 持久化工厂：`AsyncSqliteSaver`（checkpoint）+ `AsyncSqliteStore`（store），都指向 `../data/langgraph.db` |
 | **配置解析**（`config/`） | |
 | [config/model.py](config/model.py) | 加载与校验 `../../conf/config.toml`，构建模型实例；CRUD helpers |
@@ -158,10 +158,12 @@ stupid_code/
   （包括 `conf/config.toml` 里的 api_key），`execute` 能跑任意命令——所以**执行命令前有人工确认**
   （`graph/permissions.py`，009 期）：按 `configurable.permissions` 的档位决定拦不拦
   （`auto` 全放行 / `manual` 每条都问 / `normal` 只问命中危险模式的），拦下时图挂起等前端决定。
-  **文件类工具（write_file / edit_file / delete）不拦**——那是 code agent 的日常。
-- **恢复挂起的运行必须原样带回档位**：`command.resume` 的请求体要带同一个
-  `configurable.permissions`，否则后端的拦截判定在恢复时结论会变（批准后变成"还要拦"，
-  就永远批不掉了）。`decisions` 的个数必须和挂起时的 `action_requests` 一样多，
+  拦的是 `execute` 和 `delete`（`delete` 删目录是递归的、跟 `rm -rf` 等价，只在
+  `manual` 档拦）；**write_file / edit_file 不拦**——那是 code agent 的日常。
+- **恢复挂起的运行建议原样带回档位**：`command.resume` 的请求体带上同一个
+  `configurable.permissions`（015 期起后端判定读的是**图状态里记的档位**，客户端回传
+  错了也不改结论；但原样带回能保证恢复这一轮跟发起那一轮看到的是同一套配置）。
+  `decisions` 的个数必须和挂起时的 `action_requests` 一样多，
   否则框架直接抛 `Number of human decisions (N) does not match number of hanging tool calls (M)`。
 - **声明了 `permissions` 的子 agent 会被换成无 shell 的 backend**：框架不允许
   「能跑命令」和「文件权限」共存（shell 能绕过任何权限），不换的话建图时直接抛
