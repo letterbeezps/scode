@@ -124,8 +124,15 @@ export interface ConversationState {
   deleteThread: (id: string) => Promise<void>
   sendMessage: (content: string) => Promise<void>
   cancelRun: () => void
-  /** 批准/拒绝一条待确认的动作，并把决定送回后端继续跑 */
-  decideApproval: (decision: 'approve' | 'reject') => void
+  /**
+   * 提交这组动作的决定（每条一个，顺序跟 action_requests 一致）。
+   *
+   * 卡片负责算出每条的决定（批准 / 拒绝 / 改完再执行），这里只负责送出去。
+   * 数量对不上直接不送：框架会抛
+   * 「Number of human decisions (N) does not match number of hanging tool calls (M)」，
+   * 整个运行报错。
+   */
+  decideApproval: (decisions: ApprovalDecision[]) => void
   clearError: () => void
 }
 
@@ -858,7 +865,11 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       permissions: taskSettings.permissions,
     }
     if (title && title !== '新任务') metadata.title = title
-    void threadApi
+    // **先落盘再开跑**：审批挂起时刷新页面，档位和工作空间是从 metadata 回填的
+    // （taskStore 只在内存里）。PATCH 跑在 run 前面，就不会出现「run 已经挂起、
+    // metadata 还没写进去，刷新后回填成默认档位」——那会让恢复时的判定跟发起
+    // 时对不上。写失败不阻塞主流程（catch 掉），标题退回从首条消息推导。
+    await threadApi
       .updateThreadMetadata(threadId!, metadata)
       .then((updated) => {
         set((prev) => ({
@@ -889,9 +900,12 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
     void cancelRecovery(state.pendingThreadId ?? state.activeThreadId)
   },
 
-  decideApproval(decision) {
+  decideApproval(decisions) {
     const pending = get().pendingApproval
     if (!pending) return
+    // 数量必须跟挂起时的 action_requests 一样多，否则框架直接抛
+    // 「Number of human decisions (N) does not match number of hanging tool calls (M)」。
+    if (decisions.length !== pending.requests.length) return
 
     // 先把卡片状态落定，防止连点两次发两次恢复请求；恢复请求本身也是流式运行
     set({ pendingApproval: null, recovering: false, isGenerating: true, pendingThreadId: pending.threadId })
@@ -900,11 +914,17 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       const pendingMessage = emptyAssistant(pending.threadId)
       set({ pendingMessage, pendingThreadId: pending.threadId })
     }
+    const status: 'approved' | 'rejected' | 'edited' =
+      decisions.every((d) => d.type === 'approve')
+        ? 'approved'
+        : decisions.some((d) => d.type === 'reject')
+          ? 'rejected'
+          : 'edited'
     patchPending((msg) => ({
       ...msg,
       parts: msg.parts.map((part) =>
         part.kind === 'approval' && part.id === pending.id
-          ? { ...part, status: decision === 'approve' ? ('approved' as const) : ('rejected' as const) }
+          ? { ...part, status }
           : part,
       ),
     }))
@@ -913,20 +933,14 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
     // 一次）。审批挂起期间两个选择器是禁用的，刷新后则靠 thread metadata 回填，
     // 所以这里读到的就是发起 run 时的值——否则批准的命令会跑到别的目录里。
     // 模型同理：恢复时后端按 configurable 里的 model 换模型，带空了就退回默认模型。
+    //
+    // （后端另外把档位记进了图状态，档位就算回传错了也不会改变判定；这里原样
+    //  带回去是为了让恢复这一轮跟发起那一轮看到的是同一套配置。）
     const taskSettings = useTaskStore.getState().resolve(pending.threadId)
     const runOptions: RunOptions = {
       ...taskSettings,
       model: useSettingsStore.getState().selectedId,
     }
-
-    // decision 的个数必须和挂起时的 action_requests 一样多，否则框架直接抛
-    // 「Number of human decisions (N) does not match number of hanging tool calls (M)」。
-    // 整组一起批准或一起拒绝——卡片上也是把这一组当成一个整体展示的。
-    const decisions: ApprovalDecision[] = pending.requests.map(() =>
-      decision === 'approve'
-        ? { type: 'approve' }
-        : { type: 'reject', message: '用户拒绝执行这条命令' },
-    )
 
     cancelCurrentRun = resumeRun(
       pending.threadId,

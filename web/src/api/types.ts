@@ -80,7 +80,17 @@ export interface ApprovalRequest {
   args: Record<string, unknown>
   /** 后端给的说明，命中危险模式时会写明原因 */
   description?: string
+  /**
+   * 这条动作允许的决定（来自后端 interrupt 的 `review_configs`）。
+   *
+   * 不是每条都一样的：`execute` 允许改完再执行（edit），`delete` 只允许
+   * 批准/拒绝。卡片按这个渲染可选项。
+   */
+  allowedDecisions?: ApprovalDecisionType[]
 }
+
+/** 框架的四种决定类型。 */
+export type ApprovalDecisionType = 'approve' | 'edit' | 'reject' | 'respond'
 
 /**
  * 人工确认的决定。
@@ -88,10 +98,15 @@ export interface ApprovalRequest {
  * 字段名必须和框架的 `RejectDecision` 一致：拒绝理由叫 `message`，
  * 叫 `feedback` 的话框架认不出来，理由会被静默丢掉，模型只看到
  * 「用户拒绝了这次工具调用」。
+ *
+ * `edit` 的结构也照框架的 `EditDecision`：`edited_action` 是「改完要执行什么」，
+ * 必须带 `name` 和 `args`。框架在 `wrap_tool_call` 里用它替换原来的调用，
+ * 并在工具结果前面加一句「human reviewer replaced this tool call」告诉模型。
  */
 export type ApprovalDecision =
   | { type: 'approve' }
   | { type: 'reject'; message?: string }
+  | { type: 'edit'; edited_action: { name: string; args: Record<string, unknown> } }
 
 /**
  * 一条助手消息内部的有序片段。
@@ -112,7 +127,7 @@ export type MessagePart =
    * `Number of human decisions (N) does not match number of hanging tool calls (M)`。
    * 所以卡片存的是一组，不是一条。
    */
-  | { kind: 'approval'; id: string; requests: ApprovalRequest[]; status: 'pending' | 'approved' | 'rejected' }
+  | { kind: 'approval'; id: string; requests: ApprovalRequest[]; status: 'pending' | 'approved' | 'rejected' | 'edited' }
 
 export interface Message {
   id: string

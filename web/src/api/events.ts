@@ -13,7 +13,13 @@
  * 才从 `updates` 里推导文本 token，避免同一段话被追加两遍。
  */
 import type { SseEvent } from './sse'
-import type { ApprovalRequest, Todo, ToolCall, ToolResult } from './types'
+import type {
+  ApprovalDecisionType,
+  ApprovalRequest,
+  Todo,
+  ToolCall,
+  ToolResult,
+} from './types'
 
 export type NormalizedEvent =
   | { type: 'metadata'; runId?: string }
@@ -100,8 +106,12 @@ function roleOf(msg: Record<string, unknown>): 'human' | 'ai' | 'tool' | 'system
  *
  * 平台把挂起的运行放在 chunk 的 `__interrupt__` 键下：
  *   {"__interrupt__": [{"value": {"action_requests": [{"name","args","description"}],
- *                                "review_configs": [...]}}]}
+ *                                "review_configs": [{"action_name","allowed_decisions"}]}}]}
  * action_requests 里没有工具调用 id，只有名字和参数——够前端画卡片了。
+ *
+ * `review_configs` 跟 `action_requests` **一一对应、顺序一致**（框架是按同一个
+ * 循环 append 的）。它带着每条动作允许哪些决定——`execute` 允许 edit（改完
+ * 再执行），`delete` 不允许。卡片按这个渲染可选项。
  */
 export function parseInterrupts(payload: Record<string, unknown>): ApprovalRequest[] | null {
   const raw = payload['__interrupt__']
@@ -111,13 +121,19 @@ export function parseInterrupts(payload: Record<string, unknown>): ApprovalReque
   for (const item of raw) {
     const value = asRecord(asRecord(item).value)
     const actionRequests = Array.isArray(value.action_requests) ? value.action_requests : []
-    for (const rawRequest of actionRequests) {
+    const reviewConfigs = Array.isArray(value.review_configs) ? value.review_configs : []
+    for (const [index, rawRequest] of actionRequests.entries()) {
       const rec = asRecord(rawRequest)
       const name = typeof rec.name === 'string' ? rec.name : 'unknown'
+      const review = asRecord(reviewConfigs[index])
+      const allowed = Array.isArray(review.allowed_decisions)
+        ? review.allowed_decisions.filter((d): d is ApprovalDecisionType => typeof d === 'string')
+        : undefined
       requests.push({
         name,
         args: normalizeArgs(rec.args),
         description: typeof rec.description === 'string' ? rec.description : undefined,
+        allowedDecisions: allowed,
       })
     }
   }
