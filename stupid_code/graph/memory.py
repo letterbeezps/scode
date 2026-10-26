@@ -67,20 +67,18 @@ from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.runnables import RunnableConfig
 
 from stupid_code.graph.backend import WorkspaceFilesBackend
-from stupid_code.graph.memory_home import USER_MEMORY_ROUTE, user_memory_dir
+from stupid_code.graph.memory_home import (
+    PROJECT_MEMORY_SOURCE,
+    USER_MEMORY_ROUTE,
+    USER_MEMORY_SOURCE,
+    user_memory_dir,
+)
 from stupid_code.graph.workspace import default_workspace, workspace_of
 
-MEMORY_FILENAME = ".scode-memory.md"
-"""项目级记忆文件名。点开头 = 本地状态文件，不属于项目代码，通常进 .gitignore。"""
-
-
-# 虚拟路径：以 backend 的 root_dir（工作空间）为根解析成真实文件。
-# virtual_mode=True（默认）会把越界路径挡在 root 之外，这里只读一个文件，不给 agent 暴露。
-_MEMORY_SOURCE = f"/{MEMORY_FILENAME}"
-
-# 用户级记忆的虚拟路径。走主 backend 那条同名路由（见 graph/memory_home.py），
-# 真实文件是 ~/.scode/memory.md。
-_USER_MEMORY_SOURCE = f"{USER_MEMORY_ROUTE}memory.md"
+# 两条来源的虚拟路径。定义在 memory_home.py（记忆落点的单一事实来源），
+# 那边也被 graph/permissions.py 用着——写记忆文件要人工确认。
+_MEMORY_SOURCE = PROJECT_MEMORY_SOURCE
+_USER_MEMORY_SOURCE = USER_MEMORY_SOURCE
 
 
 MEMORY_MAX_CHARS = 8000

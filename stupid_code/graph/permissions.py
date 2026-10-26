@@ -46,6 +46,7 @@ approve / edit / reject 的决定用 `command.resume` 送回来，图才继续�
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Callable
 from typing import Annotated, Any, NotRequired
@@ -56,6 +57,12 @@ from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 
+from stupid_code.graph.memory_home import (
+    MEMORY_FILENAME,
+    PROJECT_MEMORY_SOURCE,
+    USER_MEMORY_SOURCE,
+    user_memory_path,
+)
 from stupid_code.graph.workspace import WorkspaceError, current_workspace
 
 PERMISSIONS_KEY = "permissions"
@@ -218,6 +225,120 @@ def should_interrupt_delete(request: ToolCallRequest) -> bool:
     return _level_of(request) == LEVEL_MANUAL
 
 
+def _file_path_of(request: ToolCallRequest) -> str:
+    """这次文件工具调用写的是哪个路径（`write_file` / `edit_file` 的 `file_path`）。"""
+    args = request.tool_call.get("args")
+    if not isinstance(args, dict):
+        return ""
+    path = args.get("file_path")
+    return path if isinstance(path, str) else ""
+
+
+def memory_scope_of(path: str) -> str | None:
+    """这个路径属于哪个记忆作用域；不是记忆文件就返回 `None`。
+
+    `user` = 用户级（`~/.scode/memory.md`，跨所有工作空间共用）
+    `project` = 项目级（`<工作空间>/.scode-memory.md`，只对这个项目有效）
+
+    **纯字符串判断，不碰文件系统**——见 `is_memory_path` 的说明。
+    """
+    if not path:
+        return None
+    if path == USER_MEMORY_SOURCE:
+        return "user"
+    # 项目级：文件名匹配——任何工作空间下的 .scode-memory.md 都算。
+    # 用户级文件名是 memory.md，两者不会撞。
+    if os.path.basename(path) == MEMORY_FILENAME:
+        return "project"
+    # 用户级：精确等于 $SCODE_HOME/memory.md。放最后，因为 expanduser
+    # 理论上可能抛异常——那也不该把前面已经判出来的项目级一起丢掉。
+    try:
+        if os.path.expanduser(path) == str(user_memory_path()):
+            return "user"
+    except Exception:  # noqa: BLE001 —— 判据不能把整轮 run 带崩
+        return None
+    return None
+
+
+def is_memory_path(path: str) -> bool:
+    """这个路径是不是 agent 的长期记忆文件。
+
+    **纯字符串判断，不碰文件系统**。`when` 谓词跑在工具调用链上，而
+    `langgraph dev` 装了 blockbuster——事件循环里的同步 FS 调用（`os.stat` /
+    `os.readlink`）会被拦下来，整个 run 挂掉。判据必须只靠字符串。
+
+    认这几种写法：
+
+    - 虚拟路径 `/.scode-memory.md`（项目级）、`/user-memory/memory.md`（用户级）
+    - 宿主绝对路径：文件名是 `.scode-memory.md`——软链形态、真实形态都认
+      （哪个工作空间都一样）
+    - 用户级绝对路径：精确等于 `$SCODE_HOME/memory.md`（`~` 展开后）
+
+    最后一条**不按文件名匹配**：`memory.md` 太通用，项目里随便一个
+    `memory.md` 都不该被当成用户级记忆。
+    """
+    return memory_scope_of(path) is not None
+
+
+def should_interrupt_memory(request: ToolCallRequest) -> bool:
+    """写记忆文件时要不要先问人。
+
+    **为什么记忆写入也要拦**：它是唯一一条「影响未来所有会话」的写路径。
+    代码写错了改掉就行；记忆写错了会一直影响后面每一个会话——用户级的那条
+    还会跟着你到每一个项目——而且没人会知道它是什么时候、为什么写错的。
+    详见 `docs/backend/PROGRESS.md` 的「006 · agent 长期记忆」。
+
+    **档位**：`normal` 和 `manual` 都拦，`auto` 不拦（`auto` 的语义就是
+    「不要打断我」）。记忆写入不像 `execute` 那样频繁，代价可以接受。
+
+    **判据只看路径**，不看内容——内容每次调用都不一样，恢复时会给出不同
+    答案，框架会直接抛 `ValueError`（decisions 数量对不上）。
+    """
+    level = _level_of(request)
+    if level == LEVEL_AUTO:
+        return False
+    return is_memory_path(_file_path_of(request))
+
+
+def _describe_memory(tool_call: dict[str, Any], state: Any, runtime: Any) -> str:
+    """写记忆的确认卡片说明：写哪个文件、什么作用域、影响多大、内容是什么。"""
+    args = tool_call.get("args")
+    if not isinstance(args, dict):
+        args = {}
+    path = args.get("file_path")
+    path = path if isinstance(path, str) else "（路径未知）"
+    scope = memory_scope_of(path)
+
+    if scope == "user":
+        scope_text = "**用户级**（`~/.scode/memory.md`）—— 跨所有工作空间共用"
+        impact = "它会跟着你到**每一个**项目。"
+    else:
+        scope_text = "**项目级**（工作空间根的 `.scode-memory.md`）—— 只对这个项目有效"
+        impact = "它只影响**当前这个项目**。"
+
+    parts = [
+        "这条命令会写入 agent 的**长期记忆**——之后每个会话开始时，"
+        "这段内容都会作为系统提示词的一部分发给大模型。",
+        "",
+        f"文件：`{path}`",
+        f"作用域：{scope_text}",
+        "",
+        impact,
+        "写错了不会立刻生效（当前会话读的是会话开始时的快照），但"
+        "**下个会话就会生效**，而且没人会提醒你。",
+    ]
+
+    # 预览要写进去的内容。write_file 是 content，edit_file 是 new_string。
+    content = args.get("content")
+    if not isinstance(content, str):
+        content = args.get("new_string")
+    if isinstance(content, str) and content.strip():
+        preview = content if len(content) <= 600 else content[:600] + "…"
+        parts.extend(["", "内容：", preview])
+
+    return "\n".join(parts)
+
+
 def _workspace_hint() -> str:
     """工作目录（给确认卡片显示）。
 
@@ -314,16 +435,20 @@ def build_interrupt_on(
 ) -> dict[str, InterruptOnConfig]:
     """给 `create_deep_agent` 的 interrupt_on 配置。
 
-    拦三类工具：
+    拦四类工具：
 
     - `execute`：执行 shell 命令。`normal` 档只拦命中危险模式的，`manual` 档
       每条都拦。
     - `delete`：删文件/删目录（目录是递归的）。只在 `manual` 档拦。
     - **非只读的 MCP 工具**：只在 `manual` 档拦。写文件、发消息、改数据库这类
       副作用不经过 shell，光拦 `execute` 就等于留了另一扇门。
+    - **写记忆文件**（`write_file` / `edit_file`）：`normal` 和 `manual` 档都拦，
+      但**只拦目标是记忆文件的那次调用**——写代码不受影响。
 
     **不拦文件写入类工具**（`write_file` / `edit_file`）：那是 code agent 的
     日常，动辄就拦等于没法干活；真正不可逆的是删除和 shell 命令。
+    **例外是写记忆**——那是唯一一条「影响未来所有会话」的写路径（见
+    `should_interrupt_memory`）。
 
     **MCP 工具不给 `edit` 决策**：参数结构由服务器定义，改错一个字段可能比
     拒绝更糟；要改就让模型重发一次，顺便再过一遍 schema 校验。
@@ -331,6 +456,10 @@ def build_interrupt_on(
     `execute` 允许 `edit` 决策：用户可以在确认卡片上把命令改完再执行，
     不用「拒绝 → 模型重写 → 再问」地绕一圈。**改完的命令不会再过一遍危险
     模式判定**——那是用户自己敲的，他比你清楚。
+
+    **写记忆也不给 `edit` 决策**：前端能改的只是 `file_path`（路径），
+    改路径不等于改内容——用户改完路径，写进去的还是原来那段内容，纯误导。
+    要改内容就拒绝，然后在对话里说清楚，让模型重写。
     """
     interrupt_on: dict[str, InterruptOnConfig] = {
         "execute": {
@@ -342,6 +471,18 @@ def build_interrupt_on(
             "allowed_decisions": ["approve", "reject"],
             "when": should_interrupt_delete,
             "description": _describe_delete,
+        },
+        # 写记忆：注册在工具名上，但谓词只看路径——写普通文件返回 False，
+        # 不拦。只有目标是记忆文件的那次调用才挂起。
+        "write_file": {
+            "allowed_decisions": ["approve", "reject"],
+            "when": should_interrupt_memory,
+            "description": _describe_memory,
+        },
+        "edit_file": {
+            "allowed_decisions": ["approve", "reject"],
+            "when": should_interrupt_memory,
+            "description": _describe_memory,
         },
     }
 

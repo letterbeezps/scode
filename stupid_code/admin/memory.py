@@ -36,8 +36,7 @@ from pathlib import Path
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from stupid_code.graph.memory import MEMORY_FILENAME
-from stupid_code.graph.memory_home import user_memory_path
+from stupid_code.graph.memory_home import MEMORY_FILENAME, user_memory_path
 from stupid_code.graph.workspace import (
     WorkspaceError,
     default_workspace,

@@ -1,24 +1,30 @@
-"""用户级记忆的家目录。
+"""记忆文件的落点约定（两个作用域）。
 
-项目级记忆跟着**工作空间**走（`<工作空间>/.scode-memory.md`），用户级记忆跟着
-**用户**走——跨所有工作空间共用一份。后者放在 `~/.scode/memory.md`：
+| 作用域 | 文件 | 跟着谁走 |
+|---|---|---|
+| 项目级 | `<工作空间>/.scode-memory.md` | 项目 |
+| 用户级 | `~/.scode/memory.md` | 用户（跨所有工作空间） |
+
+用户级记忆跟着**用户**走——跨所有工作空间共用一份，放在 `~/.scode/memory.md`：
 跟工作空间无关，所以放在用户主目录，而不是某个项目里。
 
 ## 为什么要单独一个模块
 
-用户级记忆的落点被两个地方用到：
+记忆的落点被三个地方用到：
 
 - `graph/backend.py`：给主 backend 加一条 `/user-memory/` 路由，agent 才能用
   `write_file` 把用户级记忆写回去。
 - `graph/memory.py`：记忆中间件要读它。
+- `graph/permissions.py`：写记忆文件要人工确认，判据得知道「哪些路径是记忆
+  文件」。
 
 而 `memory.py` 已经 import 了 `backend.py`（要用 `WorkspaceFilesBackend`），
-所以常量不能定义在 `memory.py` 里——那会变成循环 import。放这里，两边都
-import 它，谁也不依赖谁。
+`backend.py` 又 import 了 `permissions.py`——**所以常量不能定义在 `memory.py`
+里**，那会变成循环 import。放这里，三边都 import 它，谁也不依赖谁。
 
 ## 目录位置
 
-`$SCODE_HOME`，没设就是 `~/.scode`。
+用户级记忆的目录是 `$SCODE_HOME`，没设就是 `~/.scode`。
 
 环境变量是给容器用的：容器里的 `~` 是容器用户的家目录，容器一重建就空了。
 挂一个宿主目录进来并把 `SCODE_HOME` 指过去，用户级记忆就能跨容器存活
@@ -53,6 +59,19 @@ USER_MEMORY_ROUTE = "/user-memory/"
 工作空间之外的 `~/.scode/` 目录（只有这一个目录）。这是「用户级记忆」这个
 功能本身要求的权限面，见 AGENTS.md 的安全姿态一节。
 """
+
+MEMORY_FILENAME = ".scode-memory.md"
+"""项目级记忆文件名。点开头 = 本地状态文件，不属于项目代码，通常进 .gitignore。"""
+
+PROJECT_MEMORY_SOURCE = f"/{MEMORY_FILENAME}"
+"""项目级记忆的虚拟路径。
+
+以 backend 的根目录（工作空间）为根解析成真实文件。`virtual_mode=True`
+（默认）会把越界路径挡在 root 之外。
+"""
+
+USER_MEMORY_SOURCE = f"{USER_MEMORY_ROUTE}{USER_MEMORY_FILENAME}"
+"""用户级记忆的虚拟路径。走主 backend 那条同名路由，真实文件是 `~/.scode/memory.md`。"""
 
 
 def user_memory_dir() -> Path:
