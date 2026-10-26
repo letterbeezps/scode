@@ -14,6 +14,9 @@ import { permissionMeta } from '../../lib/permissions'
 import { ApiError } from '../client'
 import type {
   AdminModel,
+  MemoryResponse,
+  MemorySaveInput,
+  MemorySaveResult,
   ModelCreateInput,
   ModelCreateResult,
   ModelDeleteResult,
@@ -546,5 +549,69 @@ export const mockAdminModels = {
       remaining = []
     }
     return { id, deleted: true, remaining_peers: remaining, restart_required: true }
+  },
+}
+
+/* ---------------------------------------------------------------- 记忆 */
+
+/**
+ * 两份记忆的内存镜像，按真实后端 admin/memory.py 的语义实现：
+ *
+ * - 用户级一份（跨工作空间共用），项目级每个工作空间一份
+ * - 文件不存在时 exists=false、content 为空串
+ * - 写空内容 = 清空文件（文件留着，只是没内容）
+ * - 写项目级记忆没带 workspace → 400，中文原因
+ */
+const mockUserMemory = { path: '/Users/1token/.scode/memory.md', content: '' }
+const mockProjectMemories = new Map<string, { path: string; content: string }>()
+
+const MOCK_DEFAULT_WS = '/Users/1token/Desktop/project/stupid-code'
+
+export const mockAdminMemory = {
+  async get(workspace: string): Promise<MemoryResponse> {
+    await sleep(120)
+    const ws = workspace.trim()
+    const project = ws ? mockProjectMemories.get(ws) : undefined
+    return {
+      workspace: ws || MOCK_DEFAULT_WS,
+      user: {
+        scope: 'user',
+        path: mockUserMemory.path,
+        exists: mockUserMemory.content.length > 0,
+        content: mockUserMemory.content,
+      },
+      project: {
+        scope: 'project',
+        path: project?.path ?? `${ws || MOCK_DEFAULT_WS}/.scode-memory.md`,
+        exists: (project?.content.length ?? 0) > 0,
+        content: project?.content ?? '',
+      },
+    }
+  },
+
+  async save(input: MemorySaveInput): Promise<MemorySaveResult> {
+    await sleep(120)
+    if (input.scope === 'user') {
+      mockUserMemory.content = input.content
+      return {
+        scope: 'user',
+        path: mockUserMemory.path,
+        bytes: new TextEncoder().encode(input.content).length,
+        exists: true,
+      }
+    }
+    const ws = (input.workspace ?? '').trim()
+    if (!ws) {
+      const message = '写项目级记忆需要带 workspace'
+      throw new ApiError(message, 400, { error: message })
+    }
+    const path = `${ws}/.scode-memory.md`
+    mockProjectMemories.set(ws, { path, content: input.content })
+    return {
+      scope: 'project',
+      path,
+      bytes: new TextEncoder().encode(input.content).length,
+      exists: true,
+    }
   },
 }

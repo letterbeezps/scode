@@ -9,13 +9,15 @@
  * 所以加新命令不需要新的接口。
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { CornerDownLeft, Send, Square } from 'lucide-react'
+import { Brain, CornerDownLeft, Send, Square } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { SLASH_COMMANDS, type SlashCommand } from '../../lib/commands'
 import { SlashCommandMenu } from './SlashCommandMenu'
 import { WorkspacePicker } from './WorkspacePicker'
 import { PermissionPicker } from './PermissionPicker'
+import { MemoryPanel } from '../memory/MemoryPanel'
 import { useConversationStore } from '../../store/conversationStore'
+import { useTaskSettings } from '../../store/taskStore'
 
 const MAX_HEIGHT_PX = 200
 
@@ -58,8 +60,12 @@ export function InputBar({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const [activeIndex, setActiveIndex] = useState(0)
   const [dismissed, setDismissed] = useState(false)
+  /** 记忆面板开没开 */
+  const [memoryOpen, setMemoryOpen] = useState(false)
   /** 审批卡片挂着时任务参数不能改：恢复请求会原样带回 workspace / permissions */
   const approvalPending = useConversationStore((s) => s.pendingApproval !== null)
+  /** 项目级记忆跟着当前任务的工作空间走 */
+  const { workspace } = useTaskSettings(threadId)
 
   // 高度跟随内容，但封顶后交给内部滚动
   useLayoutEffect(() => {
@@ -191,12 +197,25 @@ export function InputBar({
         <div className="mt-2 flex flex-wrap items-center gap-2 px-1">
           <WorkspacePicker threadId={threadId} disabled={isGenerating || approvalPending} />
           <PermissionPicker threadId={threadId} disabled={isGenerating || approvalPending} />
+          <button
+            type="button"
+            onClick={() => setMemoryOpen(true)}
+            title="查看和编辑 agent 的长期记忆（用户级 + 项目级）"
+            className="flex items-center gap-1.5 rounded-md border border-line bg-surface px-2 py-1.5 text-[11px] text-fg-muted transition-colors hover:border-accent/60 hover:text-fg"
+          >
+            <Brain className="size-3.5" />
+            记忆
+          </button>
           <p className="ml-auto flex items-center gap-1 text-[11px] text-fg-muted">
             <CornerDownLeft className="size-3" />
             Enter 发送 · Shift+Enter 换行 · <span className="font-mono">/</span> 命令
           </p>
         </div>
       </div>
+
+      {memoryOpen && (
+        <MemoryPanel workspace={workspace} onClose={() => setMemoryOpen(false)} />
+      )}
     </div>
   )
 }

@@ -183,7 +183,6 @@ export interface ThreadListResponse {
 }
 
 /* ------------------------------------------------------------------ 模型管理 */
-
 /**
  * 一个模型的完整描述（`GET /admin/models` 扁平数组里的一项）。
  *
@@ -269,4 +268,54 @@ export interface ModelDeleteResult {
   /** 剩余同级模型；空数组表示该供应商段已被自动清理 */
   remaining_peers: string[]
   restart_required: boolean
+}
+
+/* ---------------------------------------------------------------------- 记忆 */
+
+/**
+ * 记忆的作用域。
+ *
+ * - `user`：用户级，跨所有工作空间共用（磁盘上 `~/.scode/memory.md`）
+ * - `project`：项目级，只对当前工作空间有效（`<工作空间>/.scode-memory.md`）
+ */
+export type MemoryScope = 'user' | 'project'
+
+/** 一份记忆文件。 */
+export interface MemoryFile {
+  scope: MemoryScope
+  /** 磁盘上的绝对路径 */
+  path: string
+  /** 文件是否已存在。不存在 = 还没有记忆（agent 还没写过） */
+  exists: boolean
+  content: string
+}
+
+/** `GET /admin/memory` 的响应 */
+export interface MemoryResponse {
+  /**
+   * 本次实际用的工作空间。
+   *
+   * 后端回显的，不是原样返回请求里的值——它会把软链展开（macOS 的 `/tmp` →
+   * `/private/tmp`），跟 agent 看到的工作空间是同一个。
+   */
+  workspace: string
+  user: MemoryFile
+  project: MemoryFile
+}
+
+/** PUT /admin/memory 的请求体 */
+export interface MemorySaveInput {
+  scope: MemoryScope
+  content: string
+  /** 写项目级记忆时要带；用户级不需要 */
+  workspace?: string
+}
+
+/** PUT /admin/memory 的 200 响应 */
+export interface MemorySaveResult {
+  scope: MemoryScope
+  path: string
+  /** 写入的字节数 */
+  bytes: number
+  exists: boolean
 }
