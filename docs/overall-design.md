@@ -33,7 +33,7 @@
 | 部分 | 文档描述 | 代码现状 |
 |---|---|---|
 | 前端 `web/` | 完整实现 | ✅ 已完成 5920 行 TS/TSX，mock 与真后端两套都能跑 |
-| 后端 Agent | §3 完整设计 | ⚠️ 001–014 期均已落地（真实磁盘 + shell、长期记忆、shell 人工确认、子 agent 配置、运行期切模型、手动压缩历史、MCP、按任务生效的工作空间）。运行护栏等自研中间件仍未做 |
+| 后端 Agent | §3 完整设计 | ⚠️ 001–017 期均已落地（真实磁盘 + shell、长期记忆、shell 人工确认、子 agent 配置、运行期切模型、手动压缩历史、MCP、按任务生效的工作空间、用户级记忆 + 记忆面板）。运行护栏等自研中间件仍未做 |
 | 后端依赖 | Deep Agents + LangGraph | ✅ 已装齐并锁进 `uv.lock` |
 | `langgraph.json` | §3.2 已给出 | ✅ 在 `stupid_code/` 目录（不是根目录），图注册 + http.app + checkpointer/store 都已配 |
 | 模型配置 | §4 多供应商 | ✅ `conf/config.toml` + `/admin/models` 管理接口（002 / 003 期） |
@@ -584,7 +584,8 @@ stupid-code/
 │   │   ├── agent.py         # create_deep_agent 构建入口，导出 graph
 │   │   ├── backend.py       # 真实 backend：CompositeBackend(default=LocalShellBackend)
 │   │   ├── compaction.py    # /compaction 手动压缩历史 + 摘要用当前选中的模型
-│   │   ├── memory.py        # 长期记忆：工作空间根的 .scode-memory.md（不自动创建，跟工作空间走）
+│   │   ├── memory.py        # 长期记忆：项目级 .scode-memory.md + 用户级 ~/.scode/memory.md（都不自动创建）
+│   │   ├── memory_home.py   # 用户级记忆的家目录（$SCODE_HOME / ~/.scode）+ /user-memory/ 路由常量
 │   │   ├── model_switch.py  # 运行期切换对话模型的中间件
 │   │   ├── mcp.py           # MCP 工具加载：建图时列工具 + 每服务器一条长会话（专用线程）+ 调用期重试 / 错误兜底
 │   │   ├── permissions.py   # shell 人工确认：档位与危险判定
@@ -596,7 +597,9 @@ stupid-code/
 │   │   └── prompts.py       # 主 agent 的系统提示词（框架已无内置提示词，见 §3.1）
 │   ├── admin/               # 挂在 /admin 下的管理接口 + /workspaces/pick（弹系统目录框）
 │   │   ├── app.py           # Starlette 子应用与路由表
-│   │   └── models.py        # /admin/models 端点处理
+│   │   ├── memory.py        # /admin/memory 端点（记忆读写）
+│   │   ├── models.py        # /admin/models 端点处理
+│   │   └── workspaces.py    # POST /workspaces/pick（弹系统目录框）
 │   ├── data/                # SQLite 数据库目录（gitignore，checkpoint/store 落这儿）
 │   ├── middlewares/         # 自研中间件（护栏、埋点）—— 待建（工作空间中间件已落在 graph/workspace.py）
 │   ├── tools/               # 自定义工具 —— 待建

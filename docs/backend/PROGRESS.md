@@ -1,10 +1,10 @@
-# 后端进度快照（001–013 合并版）
+# 后端进度快照（001–017 合并版）
 
-> **这份文档是什么**：项目后端从第 001 期到第 013 期的**进度快照**。
+> **这份文档是什么**：项目后端从第 001 期到第 017 期的**进度快照**。
 > 它把原先散在 `001_*.md` ~ `009_*.md` 九份阶段文档里的内容合并成一份，
 > 回答三个问题：**现在做到了哪一步 / 为什么这么做 / 接下来还欠什么**。
 >
-> - 快照时间：2026-10-25，代码基线 `c184207` + 013 期改动
+> - 快照时间：2026-10-26，代码基线 `c184207` + 013 期改动 + 015/016/017 期
 > - 后端：`stupid_code/`（Python 3152 行）　前端：`web/`（TS/TSX 5920 行）
 > - 依赖版本：`deepagents 0.7.28` / `langchain 1.4.6` / `langgraph 1.2.16` /
 >   `langgraph-cli 0.4.36` / `langchain-anthropic 1.7.6` / `langchain-openai 1.7.2` /
@@ -32,7 +32,7 @@
 | 003 | 模型配置管理接口 | ✅ 已落地 | `stupid_code/admin/app.py` + `admin/models.py` |
 | 004 | 子 agent 配置（`conf/subagents.toml`） | ✅ 已落地 | `stupid_code/config/subagent.py` |
 | 005 | 后端包结构整理 | ✅ 已落地 | `stupid_code/{graph,config,admin}/` |
-| 006 | agent 长期记忆（`.scode-memory.md`） | ✅ 已落地 | `stupid_code/graph/memory.py` |
+| 006 | agent 长期记忆（项目级 `.scode-memory.md` + 用户级 `~/.scode/memory.md`） | ✅ 已落地 | `stupid_code/graph/memory.py` |
 | 007 | 真实 backend（磁盘 + shell） | ✅ 已落地 | `stupid_code/graph/backend.py` |
 | 008 | launcher 端口锁定与关停 | ✅ 已落地 | `stupid_code/launcher.py` |
 | 009 | shell 人工确认（HITL） | ✅ 已落地 | `stupid_code/graph/permissions.py` + 前端 `ApprovalCard.tsx` |
@@ -41,6 +41,9 @@
 | 012 | Docker 运行（后端 + 前端） | ✅ 已落地 | `Dockerfile` + `web/Dockerfile` + `docker-compose.yml` |
 | 013 | MCP 支持（`conf/mcp.json`，http + stdio） | ✅ 已落地 | `stupid_code/config/mcp.py` + `stupid_code/graph/mcp.py` |
 | 014 | 工作空间按任务生效（`configurable.workspace`）+ 系统目录选择框 | ✅ 已落地 | `stupid_code/graph/workspace.py` + `stupid_code/admin/workspaces.py` |
+| 015 | 记忆块模板 + 长度上限；HITL 档位钉进图状态 + `delete` 进关卡 | ✅ 已落地 | `stupid_code/graph/memory.py` + `stupid_code/graph/permissions.py` |
+| 016 | agent 自己的中间产物收拢到 `.scode/` | ✅ 已落地 | `stupid_code/graph/backend.py` |
+| 017 | 长期记忆分两个作用域（用户级 + 项目级）+ 前端记忆面板 | ✅ 已落地 | `stupid_code/graph/memory_home.py` + `stupid_code/admin/memory.py` + 前端 `components/memory/` |
 
 ### 1.3 前端完成度
 
@@ -55,6 +58,7 @@
 - 模型管理界面（直连 `/admin/models`）
 - **对话模型切换**（侧边栏下拉框，选中即生效，不用重启后端——010 期）
 - **斜杠命令菜单**（输入 `/` 弹列表，`/compaction` 手动压缩对话历史——011 期）
+- **记忆面板**（输入区「记忆」按钮，查看/编辑用户级 + 项目级两份记忆——017 期）
 - mock 模式（`VITE_USE_MOCK=true`，签名与真实后端完全一致）
 
 ### 1.4 验证方式
@@ -86,7 +90,8 @@ stupid-code/
 │   │   ├── agent.py            # create_deep_agent()，导出 graph
 │   │   ├── backend.py          # 真实磁盘 + shell 的 backend
 │   │   ├── compaction.py       # /compaction 手动压缩 + 摘要用当前模型
-│   │   ├── memory.py           # 长期记忆中间件
+│   │   ├── memory.py           # 长期记忆中间件（用户级 + 项目级两个来源）
+│   │   ├── memory_home.py      # 用户级记忆的家目录（$SCODE_HOME / ~/.scode）
 │   │   ├── model_switch.py     # 运行期切换对话模型的中间件
 │   │   ├── permissions.py      # 人工确认的档位与危险判定
 │   │   └── persistence.py      # SQLite 工厂：checkpoint/store → ../data/langgraph.db
@@ -96,7 +101,9 @@ stupid-code/
 │   │   └── prompts.py          # 主 agent 的系统提示词
 │   ├── admin/
 │   │   ├── app.py              # Starlette 子应用与路由表
-│   │   └── models.py           # /admin/models 五个端点
+│   │   ├── memory.py           # /admin/memory 两个端点（记忆读写）
+│   │   ├── models.py           # /admin/models 五个端点
+│   │   └── workspaces.py       # POST /workspaces/pick（系统目录选择框）
 │   └── data/                   # SQLite 数据库目录（gitignore）
 ├── web/                       # 前端（独立 pnpm 项目，不参与 uv 依赖管理）
 ├── pyproject.toml             # 依赖与 scode 入口
@@ -288,9 +295,15 @@ subagent 配置里重复写。
 - **`data/` 留在包根**（`stupid_code/data/`），它是"整个后端的持久产物"，
   不是"图的私有数据"。
 
-### 006 · agent 长期记忆（`.scode-memory.md`）
+### 006 · agent 长期记忆（`.scode-memory.md` + `~/.scode/memory.md`）
 
-**做了什么**：每次新会话开始时，把工作空间根的 `.scode-memory.md` 读进系统提示词；
+**做了什么**：每次新会话开始时，把**两份**长期记忆读进系统提示词——
+
+| 作用域 | 文件 | 跟着谁走 |
+|---|---|---|
+| 项目级 | `<工作空间>/.scode-memory.md` | 项目 |
+| 用户级 | `~/.scode/memory.md`（目录由 `$SCODE_HOME` 决定） | 用户，跨所有工作空间 |
+
 文件不存在就当没记忆（**不会自动创建**，014 期改的）。
 
 **关键取舍**
@@ -369,6 +382,61 @@ subagent 配置里重复写。
 | `/tmp/scode-sym-xxx/.scode-memory.md`（软链形态） | `<工作空间>/.scode-memory.md` ✔ |
 | `/private/tmp/scode-sym-xxx/.scode-memory.md`（真实形态） | `<工作空间>/.scode-memory.md` ✔ |
 | `/.scode-memory.md`（虚拟路径） | `<工作空间>/.scode-memory.md` ✔ |
+
+**017 期改动：长期记忆分两个作用域 + 前端记忆面板**
+
+017 期之前只有项目级记忆。现在两份都有：项目级 `<工作空间>/.scode-memory.md`
+（跟着项目走）、用户级 `~/.scode/memory.md`（跟着用户走，跨所有工作空间共用）。
+
+**框架本来就支持多来源**——`MemoryMiddleware(sources=[...])` 的 `sources` 是 list，
+框架自己的示例就是 `["~/.deepagents/AGENTS.md", "./.deepagents/AGENTS.md"]`：
+一条用户级、一条项目级。本项目实现的就是这两条，**不是自己另造一套机制**。
+
+具体怎么接的：
+
+- **中间件的 backend 是一层 `CompositeBackend`**（`graph/memory.py`）：
+  - 默认 → `WorkspaceFilesBackend`，根目录跟着**运行期**工作空间走（`cwd` 是
+    property），所以这一轮选了哪个项目目录，项目级记忆就从哪个目录读；
+  - 路由 `/user-memory/` → `FilesystemBackend`，根固定在 `~/.scode/`。
+  - `CompositeBackend.download_files()` 会按路径分批路由，两条来源各自落到自己的
+    backend 上——这正是框架多来源机制的设计用途。
+- **主 backend 上也有同一条 `/user-memory/` 路由**（`graph/backend.py`），所以 agent
+  能用 `write_file("/user-memory/memory.md", ...)` 写用户级记忆，**跟写项目级记忆
+  用同一个工具**，不用额外教一套。
+- **顺序：用户级在前、项目级在后**。框架按 `sources` 顺序拼接，后面的在提示词里
+  更靠后、冲突时优先被读到——项目级更具体，理应压过用户级。
+- **记忆模板**（`_MEMORY_TEMPLATE`）改成讲两个作用域的分工：用户级记"跟具体项目
+  无关的东西"（角色、偏好、沟通方式、工具链），项目级记"这个项目的约定"。
+  还加了一句"分不清放哪就放项目级"——用户级写错了会跟着你到每一个项目。
+- **两份都不自动创建**，agent 第一次写时自己用 `write_file` 建（`~/.scode/` 目录
+  也是那时才出现，跟项目级记忆同一个态度：不往用户主目录里凭空塞东西）。
+- **用户级记忆落在用户主目录**——容器里 `~` 是容器用户的家目录，容器一重建就
+  空了。要跨容器存活得挂一个宿主目录进去、把 `SCODE_HOME` 指过去
+  （见 `docker-compose.yml` 的 `SCODE_HOME` 卷）。
+
+**为什么不用 LangGraph store**（store 早就在 `langgraph.json` 里配好了，实测也
+能用——`stupid_code/data/langgraph.db` 的 `store` 表第一次写时才建）：
+
+- 会变成"项目级是文件、用户级是数据库"两套介质两套排查方式；
+- store 的 value 格式由 `StoreBackend` 自己产生（手写 `{"content": ...}` 读不出来），
+  而且**人没法直接看**——记忆是给人看、给人手改的东西。
+
+**新增两个端点 + 前端记忆面板**
+
+`GET /admin/memory` / `PUT /admin/memory`（`stupid_code/admin/memory.py`）把磁盘上
+那两份记忆直接暴露出来，前端 `components/memory/MemoryPanel.tsx` 拿来显示和编辑。
+
+- **为什么要有**：记忆是磁盘上的 markdown，但网页版用户看不见它——想看一眼或改
+  一个字都得开终端翻工作空间。
+- **面板放在输入区那一行**（工作空间/权限选择器旁）。项目级记忆是**任务级**的，
+  跟着当前 taskStore 的工作空间走；没选工作空间时后端退回它自己的默认工作空间
+  （跟 agent 的行为一致）。
+- 两个 textarea，各自一个保存按钮；**写空内容 = 清空文件**（文件留在原地，只是
+  没内容了），不是删文件。
+- **改完不立刻生效**：记忆是会话开始时读一次的（框架机制），要开新会话。这句话
+  直接写在面板底部，免得用户以为没保存成功。
+- **两边同时改会互相覆盖**（后写的赢）：agent 用 `write_file` 写、面板也直接写
+  文件，两边都是普通写者。这句话也写在面板底部。
 
 ### 007 · 真实 backend（CompositeBackend + LocalShellBackend）
 
@@ -1603,7 +1671,8 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 `/assistants/{id}/graph`、`/threads`、`/threads/search`、`/threads/{id}`（GET/PATCH/DELETE）、
 `/threads/{id}/state`、`/threads/{id}/runs/stream`、`/threads/{id}/runs/{runId}/cancel`。
 
-自定义：`/admin/models` 五个端点 + `POST /workspaces/pick`（弹系统目录选择框，014 期）。
+自定义：`/admin/models` 五个端点 + `POST /workspaces/pick`（弹系统目录选择框，014 期）
++ `/admin/memory` 两个端点（GET 读两份记忆 / PUT 写一份，017 期）。
 
 完整清单与请求/响应示例见 [`stupid_code/API.md`](../../stupid_code/API.md)。
 
@@ -1619,6 +1688,7 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 | 删文件 | 有人工确认关卡（015），但只有 `manual` 档拦；`normal` 档不拦 |
 | 文件写入 | **不拦**（`write_file`/`edit_file`）——那是 code agent 的日常 |
 | 文件路径 | 文件工具锁在工作空间内（`virtual_mode=True`），**shell 不受此限** |
+| 工作空间之外的写路径 | **有一条**（017 期）：`/user-memory/` 路由指向 `~/.scode/`，agent 能用 `write_file` 在那个目录里建/改文件。范围限于这一个目录——**跟"文件工具锁在工作空间内"不矛盾**，工作空间内的路径依然出不去 |
 | 读取范围 | agent 能读工作空间里的任何文件，**包括 `conf/config.toml` 里的 api_key**——这块没被 HITL 覆盖 |
 | 子 agent 权限 | 只有声明了 `permissions` 的子 agent 才是硬约束；没声明的拿的是主 agent 那套带 shell 的 backend |
 | 危险判定 | 正则匹配，不是语义分析。**宁可漏拦也不误拦** |
@@ -1637,6 +1707,11 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 | 改完的命令不再过危险判定 | 用户在卡片上把 `rm -rf x` 改成 `rm -rf /`，直接执行 | 015 期新增 `edit` 决策的取舍：那是用户自己敲的 |
 | 子 agent 也会触发确认 | `fixer` 这类没声明 `permissions` 的子 agent 执行命令同样挂起 | 要不要默认放行是个待定的产品决策 |
 | 同一工作空间内记忆只在会话开始时读一次 | 改完 `.scode-memory.md` 要开新会话才生效；换工作空间会重读 | 框架设计（记忆块参与 prompt 缓存） |
+| 记忆面板改完也不立刻生效 | 面板里改完记忆，当前会话里的 agent 读到的还是旧内容 | 同一个框架机制；面板底部写了这句话 |
+| 用户级记忆是全局的，不按项目隔离 | 写错的用户级记忆会跟着你到**每一个**项目 | 有意为之：用户级就是跨项目的；模板里提示"分不清放哪就放项目级" |
+| agent 能读写 `~/.scode/` 整个目录 | `/user-memory/` 那条路由覆盖整个目录，不只是 `memory.md` | 只覆盖这一个目录；这是"用户级记忆"这个功能要求的权限面 |
+| 记忆面板和 agent 同时改会互相覆盖 | 后写的赢，可能吃掉对方刚写的内容 | 两边都是普通文件写者；面板底部写了这句话 |
+| langgraph store 配了但没用上 | `langgraph.json` 里的 `store` 至今零调用，`data/langgraph.db` 的 `store` 表是空的 | 有意为之：记忆走文件（人能看、人能手改）；留着的 store 以后给别的用途 |
 | 切模型不换 harness profile | 系统提示词附加内容、工具描述改写、排除的工具都按启动时的模型定死 | 建图时决定的，跑起来改不了 |
 | 切模型不换摘要阈值 | 压缩历史的触发阈值按启动时模型的上下文窗口算 | 切到窗口更小的模型可能触发偏晚 |
 | 切模型不换「超预算」兜底的预算 | 压缩中间件在最终栈里位于切换中间件**外层**，它内部读 `request.model.profile` 时看到的还是启动时的模型 | 本项目模型无 profile，这条兜底恒不触发；真超限时靠 `ContextOverflowError` 的兜底路径兜住 |
@@ -2280,6 +2355,56 @@ pgrep -f "langgraph_cli dev"        # 应该没有输出
 - 产物路径是**虚拟路径**（以 `/` 开头，相对工作空间根），不是宿主绝对路径。
   宿主绝对路径会走 `graph/backend.py` 的 `_workspace_relative()` 剥前缀。
 
+### 8.11 用户级记忆与记忆面板（017 期）
+
+**两个作用域**
+
+- **两份记忆都进了系统提示词**，顺序是**用户级在前、项目级在后** ✔
+- **agent 能用同一个 `write_file` 工具写两份**：
+  `write_file("/user-memory/memory.md", ...)` 写到 `~/.scode/memory.md`，
+  `write_file("/.scode-memory.md", ...)` 写到 `<工作空间>/.scode-memory.md` ✔
+- **写用户级记忆不会在工作空间里多出 `user-memory/` 目录** ✔（路由生效了，
+  文件真的落在 `~/.scode/` 下）
+- **换工作空间，项目级记忆跟着换**（用户级不变）✔
+- **`ls("/")` 会多出一个挂载点**：框架的「Shell paths vs. virtual paths」段里
+  会出现 `- /user-memory/ -> /Users/1token/.scode/`——**把真实宿主路径暴露给
+  模型**了。这是框架自己的路由说明格式（route 有宿主目录就会列出来），不是 bug，
+  但要知道模型看得见这个路径 ✔
+- **两份都不自动创建**：`~/.scode/` 目录也是 agent 第一次写的时候才出现 ✔
+
+**记忆块的位置**
+
+- 记忆块在系统提示词的**最后一块** ✔
+- prompt-caching 的断点 `cache_control={'type': 'ephemeral', 'ttl': '5m'}` 落在
+  **最后一块**（也就是记忆块）✔ —— 记忆内容变了也不会把整个前缀缓存打穿
+- ⚠️ **这个断点只对 `ChatAnthropic` 生效**。`conf/config.toml` 现在是
+  `protocol = "anthropic"`，所以有效；**切成 openai 协议会静默失效**（框架的
+  `add_cache_control` 只在 anthropic 协议下挂得上）
+
+**接口**
+
+- `GET /admin/memory?workspace=<绝对路径>` → 两份记忆的内容、路径、是否存在 ✔
+  - `workspace` 可以不给 → 用后端默认工作空间
+  - 返回的 `workspace` 是**软链展开后**的（macOS 上 `/tmp/x` → `/private/tmp/x`），
+    跟 agent 看到的工作空间是同一个
+  - 文件不存在不是错误：`exists: false` + 空内容
+- `PUT /admin/memory` body `{scope, content, workspace}` → 写一份 ✔
+  - `scope` 只能是 `user` / `project`，别的值 400
+  - `content` 必须是字符串，别的类型 400
+  - **写空字符串 = 清空文件**（文件留在原地）
+  - 父目录不存在会建（`~/.scode/` 平时是空的）
+- **工作空间不合法 → 400**，消息是 `工作空间不存在：/definitely/not/here` ✔
+- **所有文件系统操作都走了 `asyncio.to_thread`**（blockbuster 会拦事件循环里的
+  同步 FS）✔
+
+**前端（真实浏览器实测）**
+
+- 输入区「记忆」按钮 → 面板正常渲染：用户级 / 项目级两段、各自的路径、
+  两个 textarea、各自的保存按钮、底部的「会话开始时读一次」提示 ✔
+- 填入项目级内容点保存 → 磁盘上 `<workspace>/.scode-memory.md` 内容正确 ✔，
+  `~/.scode/memory.md` 也正确 ✔，「已保存」提示出现 ✔
+- **真实图（真模型 + 真 backend）里记忆块同时含两份内容** ✔
+
 ---
 
 ## 9. 常见问题
@@ -2329,6 +2454,13 @@ pkill -f "langgraph_cli dev"
 **这一轮直接报「工作空间不存在：xxx」**
 前端选的目录被删了，或者不是目录。**不会**静默退回默认目录（那等于把代码写
 到用户没选过的目录里）。重新选一个就行。
+
+**改了记忆文件，agent 还是读旧的**
+记忆是**会话开始时读一次**的（框架机制：记忆块要参与 prompt 缓存）。改了
+`.scode-memory.md` 或 `~/.scode/memory.md` 之后，当前会话里的 agent 读到的还是
+旧内容——**开一个新会话**才会重读。前端记忆面板里改完也一样（面板底部写了
+这句话）。换工作空间会重读（`WorkspaceMemoryMiddleware` 把 `memory_contents`
+摘掉逼框架重读），但同一个工作空间内不会。
 
 **agent 看不到 MCP 工具 / 工具没挂上**
 按这个顺序查：

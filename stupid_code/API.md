@@ -26,6 +26,8 @@
 | 管理端 | POST | [`/admin/models`](#post-adminmodels) | 新增模型 | ✅（003 起） |
 | 管理端 | PUT | [`/admin/models/{id}`](#put-adminmodelsid) | 改模型属性 | ✅（003 起） |
 | 管理端 | DELETE | [`/admin/models/{id}`](#delete-adminmodelsid) | 删除模型 | ✅（003 起） |
+| 前端 | GET | [`/admin/memory`](#get-adminmemory) | 读两份长期记忆 | ✅（017 起） |
+| 前端 | PUT | [`/admin/memory`](#put-adminmemory) | 写一份长期记忆 | ✅（017 起） |
 
 ---
 
@@ -573,6 +575,105 @@ Content-Type: application/json
 **响应 `404`** — `{"error": "模型 'minimax:foo' 不存在"}`
 
 > 删除后 `[models].default` / `[models].recent` 不会自动调整——如果删的模型恰好是 `default`，下次启动会报 ConfigError；需要手动改 `default` 指向仍存在的模型 id。
+
+---
+
+## 记忆管理
+
+agent 的长期记忆有**两个作用域**：
+
+| 作用域 | 磁盘位置 | 跟着谁走 |
+|---|---|---|
+| `user` | `~/.scode/memory.md`（`$SCODE_HOME` 可改） | 用户，跨所有工作空间共用 |
+| `project` | `<工作空间>/.scode-memory.md` | 项目 |
+
+这两个文件就是 agent 读进系统提示词的长期记忆（见 `stupid_code/graph/memory.py`）。
+下面的端点让前端**看和改**它们——记忆本来只在磁盘上，网页版用户想看一眼得开终端。
+
+> **改完不会立刻生效**：记忆是会话开始时读一次的（框架机制）。改完要开新会话
+> agent 才读得到。agent 自己也会用 `write_file` 往这两个文件里写，两边同时改会
+> 互相覆盖（后写的赢）。
+
+### `GET /admin/memory`
+
+读两份记忆。
+
+**Query 参数**
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `workspace` | 否 | 项目级记忆对应的工作空间绝对路径。不给就用后端默认工作空间（`SCODE_WORKSPACE` 或启动时的 cwd） |
+
+**响应 `200`**
+
+```json
+{
+  "workspace": "/Users/me/projects/demo",
+  "user": {
+    "scope": "user",
+    "path": "/Users/me/.scode/memory.md",
+    "exists": true,
+    "content": "# 用户级记忆\n\n- 注释用中文\n"
+  },
+  "project": {
+    "scope": "project",
+    "path": "/Users/me/projects/demo/.scode-memory.md",
+    "exists": false,
+    "content": ""
+  }
+}
+```
+
+- `exists` 为 `false` 表示文件还不存在（还没有记忆）——记忆文件**不会自动创建**。
+- `workspace` 是后端**回显**的：它把软链展开了（macOS 的 `/tmp` → `/private/tmp`），
+  跟 agent 看到的工作空间是同一个。
+- 路径也是展开软链后的真实路径。
+
+**响应 `400`** — 工作空间不合法：`{"error": "工作空间不存在：/Users/me/nope"}`
+
+**响应 `500`** — 读文件失败：`{"error": "读记忆文件失败：..."}`
+
+### `PUT /admin/memory`
+
+写一份记忆。
+
+**请求体**
+
+```json
+{
+  "scope": "project",
+  "content": "# 项目级记忆\n\n- 这个项目用 uv，不用 pip\n",
+  "workspace": "/Users/me/projects/demo"
+}
+```
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `scope` | ✅ | `"user"` 或 `"project"` |
+| `content` | ✅ | 文件内容。**空字符串 = 清空这个文件**（文件留在原地，只是没内容） |
+| `workspace` | 写 `project` 时要 | 工作空间绝对路径。`user` 作用域用不上这个字段 |
+
+**响应 `200`**
+
+```json
+{
+  "scope": "project",
+  "path": "/Users/me/projects/demo/.scode-memory.md",
+  "bytes": 42,
+  "exists": true
+}
+```
+
+**响应 `400`**
+
+- `{"error": "scope 只能是 user / project，收到 'xxx'"}`
+- `{"error": "content 必须是字符串"}`
+- `{"error": "workspace 必须是字符串"}`
+- `{"error": "工作空间不存在：/Users/me/nope"}`
+- `{"error": "请求体不是合法 JSON：..."}`
+- `{"error": "请求体必须是 JSON 对象"}`
+
+**响应 `500`** — 读 / 写文件失败：`{"error": "写记忆文件失败：..."}`
 
 ---
 
