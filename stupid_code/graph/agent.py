@@ -12,6 +12,7 @@ from stupid_code.graph.mcp import load_mcp_tools
 from stupid_code.graph.memory import build_memory_middleware
 from stupid_code.graph.model_switch import ChatModelSwitchMiddleware
 from stupid_code.graph.permissions import PermissionLevelMiddleware, build_interrupt_on
+from stupid_code.graph.skills import build_skills_middleware
 from stupid_code.graph.workspace import WorkspaceMiddleware
 
 # 真实 backend：文件操作落工作空间的真实磁盘，execute 直接在本机跑 shell。
@@ -50,7 +51,17 @@ graph = create_deep_agent(
     # 服务器连不上只少它那几个工具，不会让后端起不来。见 graph/mcp.py
     tools=mcp_tools,
     backend=backend,
-    # 长期记忆：读工作空间根的 .scode-memory.md（可选文件，不会自动创建）。
+    # skill 源：**全局**的那份是静态的（`GLOBAL_SKILL_SOURCES`）——它不依赖
+    # 工作空间，可以写死。项目级的那份不行（工作空间是运行期参数），由
+    # 下面的 build_skills_middleware() 每轮现算。
+    #
+    # **不要给 create_deep_agent 传 skills=**：传了之后 deepagents 会在 core
+    # 栈里挂一份自己的 SkillsMiddleware，我们的中间件只能「顶替」它——顶替
+    # 保留的是 core 栈里的位置（tail，比记忆中间件更内层），skill 块就会
+    # 跑到记忆块后面，记忆块就不再是系统提示词的最后一块了。
+    # 不传的话我们的中间件落进自定义区（排在记忆前面），块序才对。
+    #
+    # 长期记忆：读用户级 + 项目级两份记忆文件（可选，不会自动创建）。
     # 走 middleware 参数而不是 create_deep_agent 的 memory 参数，
     # 这样能自己指定读文件的 backend——见 graph/memory.py 的说明
     #
@@ -61,6 +72,10 @@ graph = create_deep_agent(
     # 工作空间中间件紧随其后：它每轮开跑前校验工作空间（不存在就直接报错），
     # 把解析结果刷进缓存，并把绝对路径写进系统提示词。它必须排在记忆中间件
     # 前面——记忆中间件要用同一份缓存决定从哪个目录读记忆。
+    #
+    # skill 中间件排在记忆中间件**前面**：记忆块要留在系统提示词的最后一块
+    # （prompt-caching 的断点落在那一块上）。skill 块在记忆块之前，同样在
+    # 缓存范围内。
     middleware=[
         ChatModelSwitchMiddleware(default_model),
         WorkspaceMiddleware(),
@@ -70,6 +85,8 @@ graph = create_deep_agent(
         compaction,
         # compact_conversation 工具：模型自己也能压缩上下文窗口
         build_compaction_tool_middleware(compaction),
+        # skill：发现全局 + 项目级两份目录，并把用户勾选的钉进上下文
+        build_skills_middleware(backend),
         build_memory_middleware(),
     ],
     interrupt_on=interrupt_on,

@@ -74,22 +74,33 @@ USER_MEMORY_SOURCE = f"{USER_MEMORY_ROUTE}{USER_MEMORY_FILENAME}"
 """用户级记忆的虚拟路径。走主 backend 那条同名路由，真实文件是 `~/.scode/memory.md`。"""
 
 
-def user_memory_dir() -> Path:
-    """用户级记忆目录：`$SCODE_HOME`，没设就是 `~/.scode`。
+def scode_home_dir() -> Path:
+    """用户级家目录：`$SCODE_HOME`，没设就是 `~/.scode`。
+
+    跟工作空间无关的那部分东西都住这儿——目前是**用户级记忆**
+    （`~/.scode/memory.md`）和**全局 skill**（`~/.scode/.agents/skills/`）。
 
     **不读文件系统**：`expanduser()` 和 `Path.home()` 都是纯字符串/环境变量
     操作，不 stat 磁盘——所以在事件循环里调用也安全（blockbuster 只拦真正的
     同步 FS 调用）。
+    """
+    raw = os.environ.get(SCODE_HOME_ENV, "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / USER_MEMORY_DIRNAME
+
+
+def user_memory_dir() -> Path:
+    """用户级记忆目录：`$SCODE_HOME`，没设就是 `~/.scode`。
+
+    就是 `scode_home_dir()`——记忆和全局 skill 共用这一个家目录。
 
     目录**不存在也没关系**：框架的 `FilesystemBackend.write` 会自己建父目录
     （`resolved_path.parent.mkdir(parents=True, exist_ok=True)`），所以第一次
     写记忆的时候目录才出现——跟项目级记忆「不自动创建文件」是同一个态度，
     不往用户主目录里凭空塞东西。
     """
-    raw = os.environ.get(SCODE_HOME_ENV, "").strip()
-    if raw:
-        return Path(raw).expanduser()
-    return Path.home() / USER_MEMORY_DIRNAME
+    return scode_home_dir()
 
 
 def user_memory_path() -> Path:

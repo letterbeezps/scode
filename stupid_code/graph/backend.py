@@ -80,6 +80,7 @@ from deepagents.middleware.filesystem import (
 
 from stupid_code.graph.memory_home import USER_MEMORY_ROUTE, user_memory_dir
 from stupid_code.graph.permissions import PermissionLevelMiddleware
+from stupid_code.graph.skills import GLOBAL_SKILLS_ROUTE, global_skills_dir
 from stupid_code.graph.workspace import (
     current_workspace,
     current_workspace_root,
@@ -276,6 +277,9 @@ def build_backend() -> CompositeBackend:
     - `/user-memory/` 路由到用户级记忆目录（`~/.scode/`）：agent 用
       `write_file("/user-memory/memory.md", ...)` 就能写用户级记忆，跟写项目级
       记忆用同一个工具。**这是工作空间之外的一条写路径**，只覆盖这一个目录。
+    - `/user-skills/` 路由到全局 skill 目录（`~/.scode/.agents/skills/`）：agent
+      用 `read_file("/user-skills/<skill>/SKILL.md", ...)` 就能读全局 skill 的
+      全文。**这是工作空间之外的另一条路径**，同样只覆盖这一个目录。
     - `artifacts_root`：deepagents 自己往 backend 里写产物时用的根路径，
       见 `ARTIFACTS_ROOT`。
     """
@@ -289,6 +293,10 @@ def build_backend() -> CompositeBackend:
             "/tmp/": StateBackend(),
             USER_MEMORY_ROUTE: FilesystemBackend(
                 root_dir=user_memory_dir(),
+                virtual_mode=True,
+            ),
+            GLOBAL_SKILLS_ROUTE: FilesystemBackend(
+                root_dir=global_skills_dir(),
                 virtual_mode=True,
             ),
         },

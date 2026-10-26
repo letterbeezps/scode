@@ -26,6 +26,7 @@ from stupid_code.admin.models import (
     list_all,
     update,
 )
+from stupid_code.admin.skills import read_skills
 from stupid_code.admin.workspaces import pick_workspace
 from stupid_code.graph.mcp import close_mcp_sessions
 
@@ -54,6 +55,8 @@ admin_routes = Starlette(routes=[
     # 记忆的读写（用户级 + 项目级）——给前端的记忆面板用
     Route("/memory", read_memory, methods=["GET"]),
     Route("/memory", write_memory, methods=["PUT"]),
+    # skill 清单：全局 + 项目级两个来源——给前端的斜杠菜单用
+    Route("/skills", read_skills, methods=["GET"]),
 ])
 
 app = Starlette(
