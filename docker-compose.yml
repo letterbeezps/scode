@@ -11,15 +11,20 @@
 # 0.0.0.0。容器里后端进程绑的是 0.0.0.0（不然容器之间连不上），
 # 但宿主侧的端口映射只绑 127.0.0.1 —— 对外依然只有本机能访问。
 #
-# ## 三个挂载，各司其职
+# ## 四个挂载，各司其职
 #
-#   ./conf             → /app/conf              供应商配置（含明文 api_key）
-#   ./stupid_code/data → /app/stupid_code/data  SQLite checkpoint / store
-#   $SCODE_WORKSPACE   → /workspace             agent 的工作空间
+#   ./conf                    → /app/conf              供应商配置（含明文 api_key）
+#   ./stupid_code/data        → /app/stupid_code/data  SQLite checkpoint / store
+#   $SCODE_WORKSPACE          → /workspace             agent 的工作空间
+#   $SCODE_USER_MEMORY_DIR    → /root/.scode           用户级记忆（agent 跨项目记住的东西）
 #
 # conf/ 和 data/ 来自宿主：前者有密钥（不进镜像），后者要跨重启保留历史。
 # 后端**代码**来自镜像（/app），不随 workspace 变动——框架按 `__file__`
 # 定位这些目录，源码和配置的位置必须稳定。
+#
+# 用户级记忆本来在 ~/.scode/memory.md，容器里 `~` 是 /root——容器一重建就空了。
+# 所以挂一个宿主目录进去（默认 ./stupid_code/data/user-memory，已 gitignore），
+# 容器里用 SCODE_HOME 指过去。
 #
 # ## 工作空间
 #
@@ -42,11 +47,15 @@ services:
     environment:
       # 容器内绑全网卡，宿主侧由 ports 映射收回 127.0.0.1
       SCODE_BIND_HOST: "0.0.0.0"
+      # 用户级记忆的家目录（容器内）。挂载点见下面的 volumes。
+      SCODE_HOME: "/root/.scode"
     volumes:
       # 供应商配置：api_key 在这，.dockerignore 排除了它，不进镜像
       - "./conf:/app/conf"
       # SQLite checkpoint / store：跨重启保留历史
       - "./stupid_code/data:/app/stupid_code/data"
+      # 用户级记忆：agent 跨项目记住的东西。容器重建不丢的关键。
+      - "${SCODE_USER_MEMORY_DIR:-./stupid_code/data/user-memory}:/root/.scode"
       # agent 的工作空间：agent 的文件 / shell 工具以此为根
       - "${SCODE_WORKSPACE:-.}:/workspace"
     ports:

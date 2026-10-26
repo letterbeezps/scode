@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 from starlette.applications import Starlette
 from starlette.routing import Mount, Route
 
+from stupid_code.admin.memory import read_memory, write_memory
 from stupid_code.admin.models import (
     create,
     delete,
@@ -50,6 +51,9 @@ admin_routes = Starlette(routes=[
     Route("/models/{id}", get_one, methods=["GET"]),
     Route("/models/{id}", update, methods=["PUT"]),
     Route("/models/{id}", delete, methods=["DELETE"]),
+    # 记忆的读写（用户级 + 项目级）——给前端的记忆面板用
+    Route("/memory", read_memory, methods=["GET"]),
+    Route("/memory", write_memory, methods=["PUT"]),
 ])
 
 app = Starlette(

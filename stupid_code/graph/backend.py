@@ -9,11 +9,14 @@ agent 的 `write_file` / `edit_file` 写的是内存里的副本，落不了盘�
     backend = CompositeBackend(
         default=LocalShellBackend(...),   # 真实磁盘 + 本机 shell
         routes={"/tmp/": StateBackend()}, # 例外：临时区走虚拟 FS，不落盘
-    )
+    }
 
 用 CompositeBackend 而不是直接用 LocalShellBackend，是为了让"哪部分路径走哪种
-存储"这件事写在配置里而不是散落在各处：现在只有 `/tmp/` 一条例外，以后要加
-"某个目录走 langgraph store 跨会话持久化"之类的规则，加一条 route 就行。
+存储"这件事写在配置里而不是散落在各处。现在有两条 route：
+
+- `/tmp/` → StateBackend：临时区走虚拟 FS，不在用户磁盘上留垃圾。
+- `/user-memory/` → `~/.scode/`：用户级记忆。**这是工作空间之外的一条写路径**，
+  但只覆盖这一个目录——agent 写用户级记忆就得走它。
 
 ## agent 自己的产物落在哪儿
 
@@ -75,6 +78,7 @@ from deepagents.middleware.filesystem import (
     FsToolName,
 )
 
+from stupid_code.graph.memory_home import USER_MEMORY_ROUTE, user_memory_dir
 from stupid_code.graph.permissions import PermissionLevelMiddleware
 from stupid_code.graph.workspace import (
     current_workspace,
@@ -269,6 +273,9 @@ def build_backend() -> CompositeBackend:
     - `/tmp/` 路由到 StateBackend：临时产物走虚拟 FS，不在用户磁盘上留垃圾。
       工作空间自己的绝对路径（比如 `/tmp/ws/x`）不会被这条路由吃掉，见
       `WorkspaceCompositeBackend`。
+    - `/user-memory/` 路由到用户级记忆目录（`~/.scode/`）：agent 用
+      `write_file("/user-memory/memory.md", ...)` 就能写用户级记忆，跟写项目级
+      记忆用同一个工具。**这是工作空间之外的一条写路径**，只覆盖这一个目录。
     - `artifacts_root`：deepagents 自己往 backend 里写产物时用的根路径，
       见 `ARTIFACTS_ROOT`。
     """
@@ -280,6 +287,10 @@ def build_backend() -> CompositeBackend:
         ),
         routes={
             "/tmp/": StateBackend(),
+            USER_MEMORY_ROUTE: FilesystemBackend(
+                root_dir=user_memory_dir(),
+                virtual_mode=True,
+            ),
         },
         artifacts_root=ARTIFACTS_ROOT,
     )

@@ -1,15 +1,30 @@
-"""agent 的长期记忆：工作空间根目录的 `.scode-memory.md`。
+"""agent 的长期记忆：项目级（工作空间）+ 用户级（跨工作空间）。
 
 用 deepagents 的 `MemoryMiddleware`，通过 `create_deep_agent` 的 **middleware 参数**
 挂上去，不用它自带的 `memory` 参数——两者最终是同一个中间件，但显式挂载能自己
 决定 backend 与 sources（`memory=` 只能用框架默认的 backend）。
 
-工作空间 = **这一轮运行选的那个目录**（前端通过 `configurable["workspace"]` 传，
+## 两个作用域
+
+| 作用域 | 文件 | 跟着谁走 |
+|---|---|---|
+| 项目级 | `<工作空间>/.scode-memory.md` | 项目 |
+| 用户级 | `~/.scode/memory.md` | 用户（跨所有工作空间） |
+
+框架本来就支持多来源（`MemoryMiddleware(sources=[...])`，框架自己的示例就是
+`["~/.deepagents/AGENTS.md", "./.deepagents/AGENTS.md"]`——一条用户级、一条项目级）。
+本项目实现的就是这两条：**用户级在前、项目级在后**，冲突时项目级更靠近提示词
+末尾、优先被读到。
+
+项目级 = **这一轮运行选的那个目录**（前端通过 `configurable["workspace"]` 传，
 后端没收到就用启动时的默认工作空间）。agent 的文件工具和这里的记忆中间件
 用的是同一个 backend，所以两边解析出来的真实路径始终一致。
 
-记忆文件是**可选**的：**不会自动创建**（避免往用户选的项目里凭空塞文件），
-第一次保存记忆时由 agent 用 `write_file` 建出来。
+用户级 = 用户主目录下的 `~/.scode/memory.md`（位置见 `graph/memory_home.py`），
+跟工作空间无关。
+
+两个记忆文件都是**可选**的：**不会自动创建**（避免往用户选的项目、或者用户
+主目录里凭空塞文件），第一次保存记忆时由 agent 用 `write_file` 建出来。
 
 **为什么不用 `AGENTS.md`**：deepagents 的默认约定是读 `AGENTS.md`，但那通常是
 "写给编码 agent 看的项目约定"（本项目根目录那份就是），跟"agent 自己攒的长期
@@ -20,20 +35,22 @@
 
 1. **同一工作空间内只在会话开始时读一次**。MemoryMiddleware 的 before_agent
    钩子见到 state 里已经有 `memory_contents` 就不重复读——改了文件要开新会话
-   才生效。**换工作空间会重新读**：`WorkspaceMemoryMiddleware` 在 state 里记了
-   "上次读的是哪个工作空间"，变了就把 `memory_contents` 摘掉逼框架重读，否则
-   会拿 A 项目的记忆去指导 B 项目的活。
+   才生效（**用户级记忆同样如此**）。**换工作空间会重新读**：
+   `WorkspaceMemoryMiddleware` 在 state 里记了"上次读的是哪个工作空间"，
+   变了就把 `memory_contents` 摘掉逼框架重读，否则会拿 A 项目的记忆去指导
+   B 项目的活。
 2. **和 agent 的文件工具指向同一个真实文件**。中间件自己持有一个以工作空间
-   为根的 FilesystemBackend，agent 的 `write_file` / `edit_file` 走
-   `graph/backend.py` 那个 CompositeBackend（真实磁盘）——两边解析出来的真实
-   路径都是 `<工作空间>/.scode-memory.md`。
-3. **文件操作锁在工作空间内**。backend 用 `virtual_mode=True`，路径越不出
-   工作空间根。
+   为根的 FilesystemBackend（外面再套一层 CompositeBackend 挂用户级路由），
+   agent 的 `write_file` / `edit_file` 走 `graph/backend.py` 那个
+   CompositeBackend（真实磁盘）——两边解析出来的真实路径都是
+   `<工作空间>/.scode-memory.md` 和 `~/.scode/memory.md`。
+3. **文件操作锁在工作空间内**（用户级那一条除外，它就该锁在 `~/.scode/`）。
+   backend 用 `virtual_mode=True`，路径越不出各自的根。
 4. **提示词是本项目自己写的，不是框架那份英文模板**。框架默认那段
    `MEMORY_SYSTEM_PROMPT` 写着"用 `edit_file` 保存新知识"——但本项目的记忆
    文件可能根本不存在（可选、不自动创建），`edit_file` 打在不存在的文件上会
    直接报错，模型要白白浪费一轮失败的工具调用才知道该用 `write_file`。
-   框架那段还不包含本项目的真实语义（可选 / 每个工作空间一份 / 一会话读一次），
+   框架那段还不包含本项目的真实语义（可选 / 两个作用域 / 一会话读一次），
    而且整段是英文，跟项目的中文系统提示词不一致。见 `_MEMORY_TEMPLATE`。
 """
 
@@ -43,20 +60,27 @@ import re
 from pathlib import Path
 from typing import Annotated, Any, NotRequired
 
+from deepagents.backends.composite import CompositeBackend
+from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.memory import MemoryMiddleware, MemoryState
 from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.runnables import RunnableConfig
 
 from stupid_code.graph.backend import WorkspaceFilesBackend
+from stupid_code.graph.memory_home import USER_MEMORY_ROUTE, user_memory_dir
 from stupid_code.graph.workspace import default_workspace, workspace_of
 
 MEMORY_FILENAME = ".scode-memory.md"
-"""记忆文件名。点开头 = 本地状态文件，不属于项目代码，通常进 .gitignore。"""
+"""项目级记忆文件名。点开头 = 本地状态文件，不属于项目代码，通常进 .gitignore。"""
 
 
 # 虚拟路径：以 backend 的 root_dir（工作空间）为根解析成真实文件。
 # virtual_mode=True（默认）会把越界路径挡在 root 之外，这里只读一个文件，不给 agent 暴露。
 _MEMORY_SOURCE = f"/{MEMORY_FILENAME}"
+
+# 用户级记忆的虚拟路径。走主 backend 那条同名路由（见 graph/memory_home.py），
+# 真实文件是 ~/.scode/memory.md。
+_USER_MEMORY_SOURCE = f"{USER_MEMORY_ROUTE}memory.md"
 
 
 MEMORY_MAX_CHARS = 8000
@@ -87,15 +111,21 @@ _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
 _MEMORY_TEMPLATE = """## 长期记忆
 
-本工作空间的长期记忆文件是 `/.scode-memory.md`（工作空间根目录）。
+你有两个记忆文件：
 
-- 这个文件**是可选的，不会自动创建**。没有值得长期记住的内容就别创建它。
-- 第一次写：用 `write_file` 建这个文件。`edit_file` 要求文件已经存在，
-  对不存在的文件会直接报错。
-- 之后追加：用 `edit_file`。
-- **每个工作空间一份**：不同项目的约定不要混在一起。
+- **用户级** `/user-memory/memory.md` —— 跨所有工作空间共用。记跟具体项目
+  无关的东西：用户的角色、偏好、沟通方式、常用工具链。
+- **项目级** `/.scode-memory.md`（工作空间根目录）—— 只对当前项目有效。记这个
+  项目的命令、目录约定、踩过的坑。
+
+规则：
+
+- 两个文件都**是可选的，不会自动创建**。没有值得长期记住的内容就别创建它们。
+- 第一次写：用 `write_file` 建文件。`edit_file` 要求文件已经存在，
+  对不存在的文件会直接报错。之后追加才用 `edit_file`。
 - **一次会话只读一次**：你在本次会话里写进去的记忆，本次会话读不到
   （也不会重新读盘），下次会话才读得到。
+- **分不清放哪就放项目级**：用户级的写错了会跟着你到每一个项目。
 
 下面是记忆文件当前的内容（为空表示还没有记忆）：
 
@@ -118,7 +148,7 @@ _MEMORY_TEMPLATE = """## 长期记忆
 
 框架那份是英文通用模板，且假设记忆文件一定存在（直接教模型用 `edit_file`）。
 本项目的记忆文件是可选的，所以要自己写：第一次用 `write_file`、之后才
-`edit_file`，并把「每个工作空间一份」「一次会话读一次」这些真实语义说清楚。
+`edit_file`，并把「两个作用域」「可选」「一次会话读一次」这些真实语义说清楚。
 
 **模板里除了 `{agent_memory}` 不能再有花括号**——框架用 `str.format()` 填这个
 占位符，多一个 `{}` 就是 KeyError。
@@ -136,7 +166,7 @@ class WorkspaceMemoryState(MemoryState):
 
 
 class WorkspaceMemoryMiddleware(MemoryMiddleware):
-    """读当前工作空间的长期记忆，并在换工作空间时重读。
+    """读用户级 + 项目级两份长期记忆，并在换工作空间时重读。
 
     框架的 MemoryMiddleware 读到「文件不存在」就当没记忆（跳过）。记忆文件
     **不会自动创建**（见模块 docstring），所以这里不再负责建文件。
@@ -145,11 +175,14 @@ class WorkspaceMemoryMiddleware(MemoryMiddleware):
 
     1. **换工作空间就重读**：把上次读的工作空间记进 state，变了就把
        `memory_contents` 摘掉逼框架重读；同一工作空间内不重复读（改了文件要开
-       新会话才生效）。
+       新会话才生效）。用户级记忆跟工作空间无关，但重读时一起重读——反正
+       读的是同一个文件。
     2. **用本项目自己的记忆模板**（`_MEMORY_TEMPLATE`）替换框架的英文通用
-       模板——顺带修掉"框架教模型用 `edit_file`、但文件还不存在"这个坑。
+       模板——顺带修掉"框架教模型用 `edit_file`、但文件还不存在"这个坑，
+       并把两个作用域的分工讲清楚。
     3. **给记忆内容加长度上限**（`MEMORY_MAX_CHARS`）——框架不截断，
-       记忆文件涨起来会把上下文窗口顶爆。
+       记忆文件涨起来会把上下文窗口顶爆。上限是**每个来源各自算**的，
+       所以两份加起来最多 2 倍。
     """
 
     state_schema = WorkspaceMemoryState
@@ -281,32 +314,51 @@ class WorkspaceMemoryMiddleware(MemoryMiddleware):
 
 
 def build_memory_middleware() -> WorkspaceMemoryMiddleware:
-    """构造 MemoryMiddleware：读工作空间根的记忆文件。
+    """构造 MemoryMiddleware：读用户级 + 项目级两份记忆。
 
     中间件是通过 `backend.download_files()` 读源文件的，默认 StateBackend 里
-    没有真实文件，读出来是空的，所以这里给它一个 FilesystemBackend。
+    没有真实文件，读出来是空的，所以这里给它一个真盘子的 backend。
 
-    不用主 agent 那个 CompositeBackend：记忆只需要"工作空间里那一个文件"，
-    自己拿一个以工作空间为根的 FilesystemBackend 更直白。两者解析出来的
-    真实路径是同一个（`<工作空间>/.scode-memory.md`），所以 agent 用
-    `write_file` / `edit_file` 写进这个文件的内容，下次开新会话就会被读进来。
+    **backend 是一层 CompositeBackend**，两条来源落在两个不同的根上：
 
-    backend 的根目录是**运行期**跟着工作空间走的（`WorkspaceFilesBackend`），
-    所以这一轮选了哪个项目目录，记忆就从哪个目录读。
+    - 默认（工作空间）→ `WorkspaceFilesBackend`，根目录跟着当前运行的工作空间
+      走（`cwd` 是 property），所以这一轮选了哪个项目目录，项目级记忆就从
+      哪个目录读。
+    - 路由 `/user-memory/` → `FilesystemBackend`，根固定在 `~/.scode/`
+      （见 `graph/memory_home.py`），跟工作空间无关。
+
+    `CompositeBackend.download_files()` 会按路径分批路由，两条来源各自落到
+    自己的 backend 上——这正是框架多来源机制的设计用途。
+
+    不用主 agent 那个 CompositeBackend：记忆只需要这两个文件，自己拿一份
+    更直白。两边解析出来的真实路径是同一个（`<工作空间>/.scode-memory.md`
+    和 `~/.scode/memory.md`），所以 agent 用 `write_file` / `edit_file` 写进
+    这些文件的内容，下次开新会话就会被读进来。
 
     这里**不创建**记忆文件：文件是可选的，agent 真的写记忆时才由它自己建
     （见模块 docstring）。
     """
-    backend = WorkspaceFilesBackend(
-        root_dir=default_workspace(),
-        virtual_mode=True,
+    backend = CompositeBackend(
+        default=WorkspaceFilesBackend(
+            root_dir=default_workspace(),
+            virtual_mode=True,
+        ),
+        routes={
+            USER_MEMORY_ROUTE: FilesystemBackend(
+                root_dir=user_memory_dir(),
+                virtual_mode=True,
+            ),
+        },
     )
     return WorkspaceMemoryMiddleware(
         backend=backend,
-        sources=[_MEMORY_SOURCE],
+        # 顺序：用户级在前、项目级在后。框架按 sources 顺序拼接，后面的在
+        # 提示词里更靠后、冲突时优先被读到——项目级更具体，理应压过用户级。
+        sources=[_USER_MEMORY_SOURCE, _MEMORY_SOURCE],
         # 用本项目自己的模板替换框架那份英文通用模板
         system_prompt=_MEMORY_TEMPLATE,
         # 与框架自己挂 MemoryMiddleware 时的行为一致：给记忆块加缓存断点，
         # 记忆内容变了也不会把整个前缀缓存打穿
+        #（断点只对 ChatAnthropic 生效；换 openai 协议会静默失效）
         add_cache_control=True,
     )
