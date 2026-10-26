@@ -328,7 +328,7 @@ docker compose up --build
 - **MCP 服务器配在 `conf/mcp.json`**（不入库，按需从 `conf/mcp.example.json` 复制）—— http 和 stdio 都支持，**改完要重启后端**（跟 `conf/subagents.toml` 一样）；每个服务器一条长会话（有状态服务器不会被重置），调用失败会自动重连；某个服务器连不上只少它那几个工具，不会弄死整轮对话。stdio 服务器会执行命令，只配信任的服务器。`manual` 档下非只读的 MCP 工具也要人工确认。
 - **skill 分两个作用域** —— 全局在 `~/.scode/.agents/skills/`（跟着你走，跨所有项目），项目级在 `<工作空间>/.agents/skills/`（跟着项目走）。输入框敲 `/` 弹出的菜单里混着命令和 skill，**选 skill 是勾选**（不发消息），勾中的显示成输入框上方的 chip。勾选的 `SKILL.md` 全文会被**钉进对话上下文**，不用等 agent 自己去读；没勾的也在系统提示词的列表里，agent 觉得相关会自己 `read_file`。
 
-完整的踩坑清单（含代码位置、原因、验证方式）见 [`AGENTS.md`](AGENTS.md)；已知缺口见 [`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md) 的「已知缺口」一节。
+硬约束清单见 [`AGENTS.md`](AGENTS.md)（每条一句结论 + 一句原因）；完整的踩坑清单（含代码位置、原因、验证方式）和已知缺口见 [`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md)。
 
 ---
 
@@ -343,7 +343,7 @@ docker compose up --build
 | [`stupid_code/README.md`](stupid_code/README.md) | 后端启动说明 |
 | [`stupid_code/API.md`](stupid_code/API.md) | 当前实际可用的端点清单 |
 | [`web/README.md`](web/README.md) | 前端说明与接口契约 |
-| [`AGENTS.md`](AGENTS.md) | 给编码 Agent 的项目约定：命令、路径、踩过的坑 |
+| [`AGENTS.md`](AGENTS.md) | 给编码 Agent 的硬约束清单（结论 + 一句原因 + 指向 PROGRESS 的指针） |
 
 ---
 

@@ -568,7 +568,7 @@ stupid_code/prompts/
 
 ```
 stupid-code/
-├── AGENTS.md                # 给编码 Agent 的项目约定：命令、路径、踩过的坑
+├── AGENTS.md                # 给编码 Agent 的硬约束清单（细节在 docs/backend/PROGRESS.md）
 ├── pyproject.toml           # 依赖与 scode 入口（scode = stupid_code:start）
 ├── uv.lock                  # 依赖锁定
 ├── .python-version          # 3.12

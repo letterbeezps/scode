@@ -1,10 +1,10 @@
-# 后端进度快照（001–017 合并版）
+# 后端进度快照（001–018 合并版）
 
-> **这份文档是什么**：项目后端从第 001 期到第 017 期的**进度快照**。
+> **这份文档是什么**：项目后端从第 001 期到第 018 期的**进度快照**。
 > 它把原先散在 `001_*.md` ~ `009_*.md` 九份阶段文档里的内容合并成一份，
 > 回答三个问题：**现在做到了哪一步 / 为什么这么做 / 接下来还欠什么**。
 >
-> - 快照时间：2026-10-26，代码基线 `c184207` + 013 期改动 + 015/016/017 期
+> - 快照时间：2026-10-26，代码基线 `c184207` + 013 期改动 + 015/016/017/018 期
 > - 后端：`stupid_code/`（Python 3152 行）　前端：`web/`（TS/TSX 5920 行）
 > - 依赖版本：`deepagents 0.7.28` / `langchain 1.4.6` / `langgraph 1.2.16` /
 >   `langgraph-cli 0.4.36` / `langchain-anthropic 1.7.6` / `langchain-openai 1.7.2` /
@@ -14,6 +14,39 @@
 >   前后端 HTTP 契约见 [`stupid_code/API.md`](../../stupid_code/API.md)。
 >
 > 写新一期文档时照 §10 的结构来，别再按期新开文件——直接续写本文的对应章节。
+
+---
+
+## 0. 速查表：AGENTS.md 的硬约束 → 本文对应小节
+
+[`AGENTS.md`](../../AGENTS.md) 是**硬约束清单**（每条一句结论 + 一句原因）。本文是它的**展开**：
+机制细节、框架源码细节、实测数据都在下面这些小节里。改代码前先查对应小节，别凭印象改。
+
+| AGENTS.md | 主题 | 本文小节 |
+|---|---|---|
+| 1 | 参考资料要先装 | [`README.md`](../../README.md) 的「1. 装 skills」 |
+| 2 | 别传 `checkpointer` | §2.2 |
+| 3 | 三条硬编码路径 + `__file__` 层数 | §2.2 |
+| 4 | `.langgraph_api/` 要留着 | §4.2 |
+| 5 | `GET /assistants` 返回 405 | §8.1 |
+| 6 | 前端契约先行 | §4.1 |
+| 7 | SSE 不用 EventSource | §4.2 |
+| 8 | 任务级参数 | §4.4 |
+| 9 | 没有内置系统提示词 | §4.3 |
+| 10 | 长期记忆的挂法与边界 | 006 · §8.11 |
+| 11 | 端口锁死 2024 | 008 · §9 |
+| 12 | 真实 backend 与子 agent 权限 | 007 · 012 |
+| 13 | 运行期切模型 | 010 · §8.5 |
+| 14 | 手动压缩历史 | 011 · §8.6 |
+| 15 | 容器里的三个坑 | 012 |
+| 16 | MCP | 013 · §8.8 |
+| 17 | 工作空间是运行期参数 | 014 · §8.9 |
+| 18 | 中间产物收在 `.scode/` | §8.10 |
+| 19 | 记忆两个作用域 + 写记忆走人工确认 | §8.11 |
+| 20 | skill 两个作用域 | §8.12 |
+| Security | 安全姿态总表 | §5 |
+| Security | 已知缺口（都是「已知的边界」） | §6 |
+| Security | 常见问题与排查 | §9 |
 
 ---
 
@@ -545,8 +578,8 @@ deepagents 会往 backend 里写三样东西，落点由 `CompositeBackend.artif
 - **产物必须在工作空间里**：工具消息里就是这么告诉 agent 的「结果太大，存到这个
   路径，你可以 `read_file` 读回来」。路径出了 `virtual_mode` 的边界就读不回来，
   eviction 会退化成「存了但读不到」。
-- **受限子 agent 也套一层没有路由的 CompositeBackend**（原来是裸
-  `FilesystemBackend`）：框架读 `artifacts_root` 的条件是
+- **受限子 agent 也套一层没有路由的 CompositeBackend**（`graph/backend.py` 的
+  `build_restricted_backend()`，原来是裸 `FilesystemBackend`）：框架读 `artifacts_root` 的条件是
   `isinstance(backend, CompositeBackend)`，裸 backend 拿不到这个属性，产物就会
   退回 `/` 根目录，跟主 agent 分叉。没有路由 = 行为跟裸 FilesystemBackend 完全
   一致，框架的权限判定路径（`_resolve_real_path`）也显式认 CompositeBackend。
@@ -2519,6 +2552,9 @@ pgrep -f "langgraph_cli dev"        # 应该没有输出
 **skill 块的位置**
 
 - 系统提示词里**只有一块** skill 列表（我们的中间件顶掉了框架自带那份，没有两块）✔
+- **顶掉靠 `.name` 报成框架自带那一份的公开别名**（`SkillsMiddleware.__name__`）——
+  **从框架那里问出来，不写死字面量**：框架升级改了公开别名，写死的字符串就对不上 →
+  静默变成两份 skill 中间件同时跑 ✔
 - **skill 块排在记忆块之前**——记忆块仍在最后一块，prompt-caching 的断点落在
   记忆块上，前面的块（含 skill 块）全在缓存前缀里 ✔
   （这靠「不给 `create_deep_agent(skills=...)`」实现，见 `graph/agent.py` 的注释）
