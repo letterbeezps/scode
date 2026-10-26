@@ -330,6 +330,11 @@ Accept: text/event-stream
   `approve` / `reject`（015 期起 `delete` 也进 `interrupt_on`，只在 `manual` 档拦）。
   **非只读的 MCP 工具也一样**（`mcp__{服务器}__{工具}`）：`manual` 档下只给
   `approve` / `reject`，不给 `edit`——参数结构由服务器 schema 管（2026-10-26 review 后）
+- **写记忆文件也会挂起**（017 期起）：`write_file` / `edit_file` 的目标是
+  `.scode-memory.md`（项目级）或 `memory.md`（用户级，`~/.scode/`）时，
+  `normal` 和 `manual` 档都挂起，只给 `approve` / `reject`。
+  **不给 `edit`**——前端能改的只是 `file_path`（路径），改路径不等于改内容。
+  写普通文件不受影响（谓词只看路径，不看工具名）
 - `config.configurable.permissions`：**建议原样带回同一个档位**。后端的拦截判定在
   恢复时会再跑一次——不过 015 期起判定读的是**图状态里记的那一档**（开跑时写下的），
   客户端回传的值变了也不会改变判定。仍然建议原样带回，让恢复这一轮跟发起那一轮
@@ -754,6 +759,11 @@ agent 的长期记忆有**两个作用域**：
   ——**改完的命令不会再过一遍危险模式判定**（那是用户自己敲的）
 - **`delete` 工具也进 `interrupt_on` 了**（015 期起）：它删目录是递归的、跟 `rm -rf`
   等价，模型换个工具就能绕过确认。只在 `manual` 档拦
+- **写记忆文件也进 `interrupt_on` 了**（017 期起）：`write_file` / `edit_file` 的
+  目标是记忆文件时，`normal` 和 `manual` 档都挂起。**判据只看路径**——
+  写普通文件返回 False 不拦。路径判定是**纯字符串**操作（`os.path.basename` /
+  `expanduser`），不碰文件系统：`when` 谓词跑在工具调用链上，而 `langgraph dev`
+  装了 blockbuster，事件循环里的同步 FS 调用会把整轮 run 带崩
 
 ### 官方文档
 

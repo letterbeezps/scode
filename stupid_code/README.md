@@ -96,11 +96,11 @@ stupid_code/
 | [graph/backend.py](graph/backend.py) | 真实 backend：`WorkspaceCompositeBackend(default=LocalShellBackend)`（真实磁盘 + 本机 shell，`/tmp/` 走虚拟 FS；工作空间自己的绝对路径不会被 `/tmp/` 路由吞掉；`artifacts_root="/.scode"` 把 agent 自己的产物收进一个隐藏目录）；`apply_subagent_policies()` 给声明了 `permissions` 的子 agent 换无 shell 的 backend、不继承 MCP 工具，并合并父级 `interrupt_on` |
 | [graph/workspace.py](graph/workspace.py) | 工作空间：解析 `configurable.workspace`；每轮开跑前校验（线程里）并刷新缓存；`WorkspaceMiddleware` 把绝对路径写进系统提示词 |
 | [graph/memory.py](graph/memory.py) | 长期记忆：读**项目级**（工作空间根的 `.scode-memory.md`）和**用户级**（`~/.scode/memory.md`）两份，**不自动创建**（没记忆就当空的），装成 `MemoryMiddleware` 挂进 `middleware=` |
-| [graph/memory_home.py](graph/memory_home.py) | 用户级记忆的家目录：`$SCODE_HOME`（默认 `~/.scode`）+ `/user-memory/` 路由前缀 |
+| [graph/memory_home.py](graph/memory_home.py) | 记忆落点的单一事实来源：用户级记忆的家目录（`$SCODE_HOME`）、两个作用域的文件名与虚拟路径、`/user-memory/` 路由前缀 |
 | [graph/compaction.py](graph/compaction.py) | `/compaction` 手动压缩历史 + 摘要用当前选中的模型；`.name` 报成框架自带那份的公开别名，顶掉而不是叠加 |
 | [graph/model_switch.py](graph/model_switch.py) | 运行期切换对话模型：中间件在每次模型调用前把 `request.model` 换成用户选中的那个 |
 | [graph/mcp.py](graph/mcp.py) | MCP 工具加载：按 `conf/mcp.json` 连服务器取工具（并行 + 总预算限时）、加 `mcp__{服务器}__{工具}` 前缀、检测重名；**每个服务器一条长会话**（专用 MCP 线程 + worker 队列，同服务器调用串行，失败自动重连）；用 adapter 的 `tool_interceptors` 兜传输层失败并在调用期重试一次。协议本身交给 `langchain-mcp-adapters` / 官方 `mcp` SDK |
-| [graph/permissions.py](graph/permissions.py) | 危险操作人工确认：权限档位解析（manual/normal/auto）+ 危险命令识别 + `interrupt_on` 的 `when` 谓词；档位记进图状态，恢复时的判定不受客户端回传值影响 |
+| [graph/permissions.py](graph/permissions.py) | 危险操作人工确认：权限档位解析（manual/normal/auto）+ 危险命令识别 + `interrupt_on` 的 `when` 谓词；档位记进图状态，恢复时的判定不受客户端回传值影响。**写记忆文件也在拦截范围内**（判据只看路径，纯字符串不碰 FS） |
 | [graph/persistence.py](graph/persistence.py) | SQLite 持久化工厂：`AsyncSqliteSaver`（checkpoint）+ `AsyncSqliteStore`（store），都指向 `../data/langgraph.db` |
 | **配置解析**（`config/`） | |
 | [config/model.py](config/model.py) | 加载与校验 `../../conf/config.toml`，构建模型实例；CRUD helpers |
@@ -134,9 +134,10 @@ stupid_code/
 > `$SCODE_HOME` 决定）。**都不会自动创建**（避免往用户选的项目、或者用户主目录里
 > 凭空塞文件），每次新会话开始时由 `MemoryMiddleware` 读进系统提示词；
 > **同一工作空间内只读一次，换工作空间会重新读**。agent 自己用 `write_file` 写
-> （用户级走 `/user-memory/memory.md` 这条虚拟路径）。前端有个记忆面板能看和改它们
-> （`GET/PUT /admin/memory`）。细节见 `../docs/backend/PROGRESS.md` 的
-> 「006 · agent 长期记忆」一节。
+> （用户级走 `/user-memory/memory.md` 这条虚拟路径）——**写记忆要人工确认**
+> （`normal` 和 `manual` 档，判据只看路径，写普通文件不受影响）。前端有个记忆
+> 面板能看和改它们（`GET/PUT /admin/memory`）。细节见
+> `../docs/backend/PROGRESS.md` 的「006 · agent 长期记忆」一节。
 >
 > agent 的文件操作落在工作空间的**真实磁盘**上，`execute` 直接在本机跑 shell：
 > backend 是 `CompositeBackend(default=LocalShellBackend)`，见

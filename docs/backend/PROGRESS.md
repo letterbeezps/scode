@@ -43,7 +43,7 @@
 | 014 | 工作空间按任务生效（`configurable.workspace`）+ 系统目录选择框 | ✅ 已落地 | `stupid_code/graph/workspace.py` + `stupid_code/admin/workspaces.py` |
 | 015 | 记忆块模板 + 长度上限；HITL 档位钉进图状态 + `delete` 进关卡 | ✅ 已落地 | `stupid_code/graph/memory.py` + `stupid_code/graph/permissions.py` |
 | 016 | agent 自己的中间产物收拢到 `.scode/` | ✅ 已落地 | `stupid_code/graph/backend.py` |
-| 017 | 长期记忆分两个作用域（用户级 + 项目级）+ 前端记忆面板 | ✅ 已落地 | `stupid_code/graph/memory_home.py` + `stupid_code/admin/memory.py` + 前端 `components/memory/` |
+| 017 | 长期记忆分两个作用域（用户级 + 项目级）+ 前端记忆面板 + 写记忆走人工确认 | ✅ 已落地 | `stupid_code/graph/memory_home.py` + `stupid_code/admin/memory.py` + `graph/permissions.py` + 前端 `components/memory/` |
 
 ### 1.3 前端完成度
 
@@ -437,6 +437,66 @@ subagent 配置里重复写。
   直接写在面板底部，免得用户以为没保存成功。
 - **两边同时改会互相覆盖**（后写的赢）：agent 用 `write_file` 写、面板也直接写
   文件，两边都是普通写者。这句话也写在面板底部。
+
+**017 期改动：写记忆走人工确认**
+
+写记忆是**唯一一条「影响未来所有会话」的写路径**。对比一下别的写路径：
+
+| 写路径 | 影响 | 有人管吗 |
+|---|---|---|
+| `write_file` 改代码 | 局部，可回滚，git 能看 | ❌ 不拦（是 code agent 的日常） |
+| `execute` 跑命令 | 跑命令 | ✅ `normal` 拦危险模式，`manual` 全拦 |
+| `delete` 删文件 | 递归删 | ✅ `manual` 档拦 |
+| MCP 工具 | 副作用在服务器上 | ✅ `manual` 档拦非只读 |
+| **写记忆** | **持久 + 可能跨项目 + 隐蔽 + 会自我强化** | **017 期起拦** |
+
+记忆写错了的后果跟改错代码完全不是一个量级：代码写错了当场就能看出来，
+记忆写错了会**一直影响后面每一个会话**（用户级那条还会跟着你到每一个项目），
+而且**没人会知道它是什么时候、为什么写错的**——agent 写完记忆，界面上什么
+都不会显示。错误记忆还有个自增强效应：agent 基于错记忆做出错决策，还可能把
+「错上加错」的结论再写一条记忆。
+
+所以 `write_file` / `edit_file` 也进了 `interrupt_on`（`graph/permissions.py`）：
+
+- **判据只看路径**：`is_memory_path()` 认出「目标是记忆文件」的那次调用，其余
+  一律不拦——**写代码完全不受影响**。
+- **档位**：`normal` 和 `manual` 都拦，`auto` 不拦（`auto` 的语义是「不要打断
+  我」）。记忆写入不像 `execute` 那样频繁，代价可以接受。
+- **只给 `approve` / `reject`，不给 `edit`**：前端能改的只是 `file_path`
+  （路径），改路径不等于改内容——用户改完路径，写进去的还是原来那段内容，
+  纯误导。要改内容就拒绝，然后在对话里说清楚，让模型重写。
+- **判据是纯字符串操作，不碰文件系统**：`when` 谓词跑在工具调用链上，而
+  `langgraph dev` 装了 blockbuster——事件循环里的同步 FS 调用（`os.stat` /
+  `os.readlink`）会把整轮 run 带崩。所以只用 `os.path.basename` /
+  `os.path.expanduser` 这类纯字符串操作。
+
+认的路径写法（实测）：
+
+| 模型传的路径 | 作用域 | 拦不拦 |
+|---|---|---|
+| `/.scode-memory.md` | 项目级 | ✔ |
+| `/user-memory/memory.md` | 用户级 | ✔ |
+| `<工作空间>/.scode-memory.md`（绝对路径） | 项目级 | ✔ |
+| `~/.scode/memory.md` | 用户级 | ✔ |
+| `<工作空间>/src/main.py` | 不是记忆 | ✘ |
+| `<工作空间>/memory.md`（项目里普通的 memory.md） | **不是记忆** | ✘ |
+
+最后一条**故意不按文件名匹配**：`memory.md` 太通用，项目里随便一个
+`memory.md` 都不该被当成用户级记忆——用户级只认精确等于 `$SCODE_HOME/memory.md`
+的那个。
+
+**补救流程（记忆写错了怎么办）**
+
+1. **前端「记忆」按钮** → 改对应的那个 textarea → 保存。
+   - 用户级错了改 `~/.scode/memory.md`（影响**所有**项目）
+   - 项目级错了改 `<工作空间>/.scode-memory.md`（只影响这个项目）
+   - **必须开新会话**才生效——当前会话读的是会话开始时的快照
+2. **面板打不开就改磁盘**：`$EDITOR ~/.scode/memory.md`
+3. **不知道哪条错了就整体清空**：`: > ~/.scode/memory.md`
+   （实测：清空和删文件对注入效果**完全等价**，正文都是空；记忆块本身还在，
+   里面是模板和「怎么用这份记忆」的规则）
+4. **当前会话里的临时纠正**：直接告诉 agent「那条记忆是错的」——这进对话历史，
+   本会话有效，但**文件里那条还在**，下个会话又冒出来，所以还得改文件
 
 ### 007 · 真实 backend（CompositeBackend + LocalShellBackend）
 
@@ -1686,7 +1746,7 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 | API key | 只走 `conf/config.toml`（gitignore），不进 `.env`、不入库 |
 | shell 执行 | 有人工确认关卡（009），`normal` 档只拦命中危险模式的命令 |
 | 删文件 | 有人工确认关卡（015），但只有 `manual` 档拦；`normal` 档不拦 |
-| 文件写入 | **不拦**（`write_file`/`edit_file`）——那是 code agent 的日常 |
+| 文件写入 | **不拦**（`write_file`/`edit_file`）——那是 code agent 的日常。**例外：写记忆文件要拦**（017 期），`normal` 和 `manual` 档都拦 |
 | 文件路径 | 文件工具锁在工作空间内（`virtual_mode=True`），**shell 不受此限** |
 | 工作空间之外的写路径 | **有一条**（017 期）：`/user-memory/` 路由指向 `~/.scode/`，agent 能用 `write_file` 在那个目录里建/改文件。范围限于这一个目录——**跟"文件工具锁在工作空间内"不矛盾**，工作空间内的路径依然出不去 |
 | 读取范围 | agent 能读工作空间里的任何文件，**包括 `conf/config.toml` 里的 api_key**——这块没被 HITL 覆盖 |
@@ -1712,6 +1772,8 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 | agent 能读写 `~/.scode/` 整个目录 | `/user-memory/` 那条路由覆盖整个目录，不只是 `memory.md` | 只覆盖这一个目录；这是"用户级记忆"这个功能要求的权限面 |
 | 记忆面板和 agent 同时改会互相覆盖 | 后写的赢，可能吃掉对方刚写的内容 | 两边都是普通文件写者；面板底部写了这句话 |
 | langgraph store 配了但没用上 | `langgraph.json` 里的 `store` 至今零调用，`data/langgraph.db` 的 `store` 表是空的 | 有意为之：记忆走文件（人能看、人能手改）；留着的 store 以后给别的用途 |
+| general-purpose 子 agent 的档位来自 `configurable` | 它是框架自动加的，我们没机会给它挂 `PermissionLevelMiddleware`（它的中间件继承靠 `.name` 匹配，我们那个名字不在它的默认栈里）。所以它 state 里没有档位记录，谓词退回读客户端回传的值 | 真实使用中没问题：前端恢复时原样带回发起那轮的档位（审批挂起期间选择器禁用）。客户端**不**原样带回就会翻转 |
+| 记忆文件只增不减 | `edit_file` 追加，老的、错的条目一直躺在文件里（8000 字上限只管**注入**，不管磁盘上的文件） | 靠前端记忆面板手动清理 |
 | 切模型不换 harness profile | 系统提示词附加内容、工具描述改写、排除的工具都按启动时的模型定死 | 建图时决定的，跑起来改不了 |
 | 切模型不换摘要阈值 | 压缩历史的触发阈值按启动时模型的上下文窗口算 | 切到窗口更小的模型可能触发偏晚 |
 | 切模型不换「超预算」兜底的预算 | 压缩中间件在最终栈里位于切换中间件**外层**，它内部读 `request.model.profile` 时看到的还是启动时的模型 | 本项目模型无 profile，这条兜底恒不触发；真超限时靠 `ContextOverflowError` 的兜底路径兜住 |
@@ -2405,6 +2467,29 @@ pgrep -f "langgraph_cli dev"        # 应该没有输出
   `~/.scode/memory.md` 也正确 ✔，「已保存」提示出现 ✔
 - **真实图（真模型 + 真 backend）里记忆块同时含两份内容** ✔
 
+**写记忆走人工确认（017 期追加）**
+
+- **`normal` 档写记忆 → 挂起**，待确认的是 `write_file` ✔，
+  `allowed_decisions` 是 `approve` / `reject` ✔，卡片说明带了作用域、影响范围
+  和内容预览 ✔
+- **`normal` 档写普通文件 → 不挂起**，文件真的写了 ✔（写代码不受影响）
+- **`auto` 档写记忆 → 不挂起**，文件写了 ✔
+- **`manual` 档写记忆 → 挂起** ✔
+- **恢复时把档位故意翻成 `auto` → 被拒绝的写入仍然没有执行** ✔
+  （谓词读的是 state 里记的那一档，不是客户端回传的值）
+- **`edit_file` 写记忆 → 挂起**，内容没变 ✔
+- **绝对路径写记忆 → 挂起** ✔
+- **用户级记忆（`/user-memory/memory.md`）→ 挂起**，卡片说明标了「用户级」 ✔
+- **批准后真的落盘**，内容对得上 ✔
+- **子 agent 继承**：声明式子 agent（`reviewer` / `summarizer`）继承了父级的
+  记忆规则（带 `when` 谓词，只拦记忆文件）✔；`fixer` 自己声明了
+  `write_file` 的确认规则（无 `when`）→ **每条写文件都拦**，比父级更严格 ✔；
+  `reviewer` 是只读的（backend 层 deny），写不了记忆 ✔
+- **framework 自带的 general-purpose 子 agent 也继承顶层 `interrupt_on`**
+  （deepagents `graph.py` 里 `_merge_fs_interrupt_on(fs, interrupt_on)`）✔
+  ——但它**没有**我们的 `PermissionLevelMiddleware`（继承靠 `.name` 匹配，
+  我们那个名字不在它的默认栈里），所以它的档位来自 `configurable`，见已知缺口
+
 ---
 
 ## 9. 常见问题
@@ -2461,6 +2546,18 @@ pkill -f "langgraph_cli dev"
 旧内容——**开一个新会话**才会重读。前端记忆面板里改完也一样（面板底部写了
 这句话）。换工作空间会重读（`WorkspaceMemoryMiddleware` 把 `memory_contents`
 摘掉逼框架重读），但同一个工作空间内不会。
+
+**agent 写了错误的记忆**
+按严重程度分三种处理：
+
+| 情况 | 怎么办 |
+|---|---|
+| 当前会话里刚写错 | 直接告诉 agent「那条记忆是错的」——对话历史里说，本会话有效。但**文件里那条还在**，下个会话又冒出来，还得改文件 |
+| 知道是哪一条 | 前端「记忆」按钮 → 删掉那一行 → 保存（**要开新会话**） |
+| 不知道哪条错了 | `: > ~/.scode/memory.md`（或项目级那个）整体清空。实测清空和删文件对注入效果完全等价 |
+
+017 期起 **agent 写记忆本身就要人工确认**（`normal` 和 `manual` 档），所以上面
+这些是兜底，不是常态。
 
 **agent 看不到 MCP 工具 / 工具没挂上**
 按这个顺序查：

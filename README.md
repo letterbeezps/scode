@@ -318,6 +318,7 @@ docker compose up --build
 - **换模型不用重启后端** —— 但 harness profile 和摘要阈值是建图时定死的，不跟着换；子 agent 一律用各自配置里的模型。
 - **记忆文件不会自动创建** —— 同一工作空间内只在会话开始时读一次，改完 `.scode-memory.md` 要开新会话才生效；换工作空间会重新读。第一次保存记忆时 agent 自己用 `write_file` 创建，不会往你选的项目里凭空塞文件。
 - **记忆分两级** —— 项目级在工作空间根的 `.scode-memory.md`（跟着项目走），用户级在 `~/.scode/memory.md`（跟着你走，跨所有项目共用，目录由 `SCODE_HOME` 决定）。输入框那行的「记忆」按钮能直接看和改这两份，不用开终端。**改完要开新会话才生效**。
+- **写记忆要人工确认** —— agent 往记忆文件里写东西时，`normal` 和 `manual` 档会弹确认卡片（写普通文件不受影响）。记忆写错了会一直影响后面每个会话，而且没人会知道它什么时候写错的——所以在产生的那一刻就拦一下。
 - **agent 自己的中间产物收在工作空间的 `.scode/` 里** —— 被压缩掉的对话历史、超大的工具结果、二进制块都在这下面（`.scode/conversation_history/`、`.scode/large_tool_results/`、`.scode/blobs/`），已 gitignore，agent 需要时能 `read_file` 读回来。
 - **框架 0.7.x 不再提供内置系统提示词** —— `create_deep_agent(system_prompt=...)` 传进去的就是模型唯一看到的系统提示词，行为准则写在 `stupid_code/config/prompts.py`。
 - **API key 走 `conf/config.toml`**，已 gitignore，别硬编码进代码。
