@@ -67,8 +67,8 @@ function isActiveRun(run: { status: string }): boolean {
  * 用 thread metadata 回填任务参数。
  *
  * taskStore 只在内存里，刷新页面就丢。thread metadata 记着这个任务上次实际
- * 用过的 workspace / permissions（见 sendMessage），加载线程时回填。否则旧
- * 任务会退回默认目录——HITL 恢复时尤其危险：批准的命令会在错误的目录里执行。
+ * 用过的 workspace / permissions / skills（见 sendMessage），加载线程时回填。
+ * 否则旧任务会退回默认目录——HITL 恢复时尤其危险：批准的命令会在错误的目录里执行。
  */
 function hydrateTaskSettings(thread: Thread): void {
   const metadata = thread.metadata
@@ -77,6 +77,9 @@ function hydrateTaskSettings(thread: Thread): void {
   const patch: Partial<TaskSettings> = {}
   if (typeof metadata.workspace === 'string') patch.workspace = metadata.workspace
   if (isPermissionLevel(metadata.permissions)) patch.permissions = metadata.permissions
+  if (Array.isArray(metadata.skills)) {
+    patch.skills = metadata.skills.filter((s): s is string => typeof s === 'string')
+  }
   if (Object.keys(patch).length === 0) return
 
   useTaskStore.getState().hydrate(thread.thread_id, patch)
@@ -863,6 +866,8 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
     const metadata: Record<string, unknown> = {
       workspace: taskSettings.workspace,
       permissions: taskSettings.permissions,
+      // 勾选的 skill 也存进去：刷新页面后能回填，不用重新勾一遍
+      skills: taskSettings.skills,
     }
     if (title && title !== '新任务') metadata.title = title
     // **先落盘再开跑**：审批挂起时刷新页面，档位和工作空间是从 metadata 回填的

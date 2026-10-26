@@ -17,6 +17,8 @@ import type {
   MemoryResponse,
   MemorySaveInput,
   MemorySaveResult,
+  SkillInfo,
+  SkillListResponse,
   ModelCreateInput,
   ModelCreateResult,
   ModelDeleteResult,
@@ -295,6 +297,15 @@ export const mockRuns = {
           handlers.onToken(ch)
           await sleep(delayMs, signal)
         }
+      }
+
+      // 勾选的 skill 会被后端**钉进上下文**（SKILL.md 全文进对话历史）。
+      // mock 里回显一下，让前端开发时能看出勾选确实随请求发出去了。
+      if (options.skills.length > 0) {
+        await emitText(
+          `（mock）已把 ${options.skills.join('、')} 的 SKILL.md 全文钉进上下文。\n\n`,
+          8,
+        )
       }
 
       for (const step of scriptFor(message)) {
@@ -612,6 +623,54 @@ export const mockAdminMemory = {
       path,
       bytes: new TextEncoder().encode(input.content).length,
       exists: true,
+    }
+  },
+}
+
+/* ---------------------------------------------------------------- 技能 */
+
+/**
+ * skill 的假数据，按真实后端 admin/skills.py 的语义实现：
+ *
+ * - 全局一份（跨工作空间共用），项目级每个工作空间一份
+ * - 项目级跟着工作空间走：换一个工作空间，列表就换一批
+ */
+const MOCK_GLOBAL_SKILLS: SkillInfo[] = [
+  {
+    name: 'code-review',
+    description: '提交前自查：读改动、找缺陷和安全问题，只输出问题清单',
+    scope: 'user',
+    source: '/user-skills/',
+    path: '/user-skills/code-review/SKILL.md',
+  },
+  {
+    name: 'writing-plans',
+    description: '写实现计划：把需求拆成带验收标准的步骤',
+    scope: 'user',
+    source: '/user-skills/',
+    path: '/user-skills/writing-plans/SKILL.md',
+  },
+]
+
+const MOCK_PROJECT_SKILLS: SkillInfo[] = [
+  {
+    name: 'run-tests',
+    description: '这个项目的测试怎么跑、怎么挑要跑哪几个',
+    scope: 'project',
+    source: '/.agents/skills/',
+    path: '/.agents/skills/run-tests/SKILL.md',
+  },
+]
+
+export const mockSkills = {
+  async list(workspace: string): Promise<SkillListResponse> {
+    await sleep(120)
+    const ws = workspace.trim() || MOCK_DEFAULT_WS
+    return {
+      workspace: ws,
+      // 项目级 skill 的路径是**虚拟路径**（`/.agents/skills/...`），
+      // 由后端按运行期工作空间解析——前端不用（也不能）把它拼成绝对路径。
+      skills: [...MOCK_GLOBAL_SKILLS, ...MOCK_PROJECT_SKILLS],
     }
   },
 }

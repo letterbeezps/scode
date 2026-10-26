@@ -173,6 +173,43 @@ export interface RunOptions {
    * 空字符串表示不指定，后端就用它启动时带的默认模型。
    */
   model: string
+  /**
+   * 本次对话勾选的 skill 名字。
+   *
+   * 勾选的 skill 会被**钉进上下文**（`SKILL.md` 全文直接进对话历史），
+   * 未勾选的只在系统提示词的 skill 列表里，agent 觉得相关时会自己读。
+   */
+  skills: string[]
+}
+
+/* ---------------------------------------------------------------------- 技能 */
+
+/**
+ * skill 的作用域。
+ *
+ * - `user`：全局，跨所有工作空间共用（磁盘上 `~/.scode/.agents/skills/`）
+ * - `project`：项目级，只对当前工作空间有效（`<工作空间>/.agents/skills/`）
+ */
+export type SkillScope = 'user' | 'project'
+
+/** 一个可用的 skill。 */
+export interface SkillInfo {
+  /** skill 标识（SKILL.md frontmatter 里的 name），勾选时用的就是它 */
+  name: string
+  /** 一句话说明这个 skill 干什么（frontmatter 里的 description） */
+  description: string
+  scope: SkillScope
+  /** 来源目录的虚拟路径 */
+  source: string
+  /** SKILL.md 的虚拟路径。agent 用 `read_file` 读它 */
+  path: string
+}
+
+/** `GET /admin/skills` 的响应 */
+export interface SkillListResponse {
+  /** 本次实际用的工作空间（后端回显的，软链已展开） */
+  workspace: string
+  skills: SkillInfo[]
 }
 
 /* -------------------------------------------------------- LangGraph 平台协议 */

@@ -10,6 +10,7 @@ import { readSseStream } from './sse'
 import { mockRuns } from './mock'
 import { MODEL_KEY } from '../lib/model'
 import { PERMISSIONS_KEY, WORKSPACE_KEY } from '../lib/permissions'
+import { SKILLS_KEY } from '../lib/skills'
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -73,17 +74,23 @@ export function streamRun(
      *   workspace   → 工作空间绝对路径；空字符串表示不限定，由后端决定
      *   permissions → 确认档位 manual / normal / auto
      *   model       → 选中的对话模型 id（`供应商名:模型名`）
+     *   skills      → 本次对话勾选的 skill 名字列表
      * 后端需要在工具调用入口按 permissions 拦截并挂起等前端确认，
      * 否则这两项只是摆设。
      *
      * model 由后端在**每次模型调用前**换成对应供应商的实例
      * （见后端 graph/model_switch.py），所以切换不需要重启后端。
+     *
+     * skills 是**任务级**参数：工作空间是运行期参数，项目级 skill 跟着它走，
+     * 所以 skill 选择不能建图时定死，只能每次运行带过去
+     * （见后端 graph/skills.py）。
      */
     config: {
       configurable: {
         [WORKSPACE_KEY]: options.workspace,
         [PERMISSIONS_KEY]: options.permissions,
         [MODEL_KEY]: options.model,
+        [SKILLS_KEY]: options.skills,
       },
     },
   })
@@ -110,6 +117,9 @@ export function streamRun(
  *
  * **模型也要原样带回去**：恢复时后端同样按 configurable 里的 model 换模型，
  * 带空了就换成默认模型，跟批准前用的不是同一个模型。
+ *
+ * **勾选的 skill 也要原样带回去**：skill 是任务级参数，任务参数变了就等于
+ * 换了个任务——恢复的那一轮不该跟批准前不是同一组 skill。
  */
 export function resumeRun(
   threadId: string,
@@ -137,6 +147,7 @@ export function resumeRun(
         [WORKSPACE_KEY]: options.workspace,
         [PERMISSIONS_KEY]: options.permissions,
         [MODEL_KEY]: options.model,
+        [SKILLS_KEY]: options.skills,
       },
     },
   })

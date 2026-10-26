@@ -1,8 +1,8 @@
 /**
- * 任务运行参数：工作空间 + 权限档位。
+ * 任务运行参数：工作空间 + 权限档位 + 勾选的 skill。
  *
- * 按任务存：同一个会话里前后两条消息可能针对不同目录、不同确认策略，
- * 所以不能做成全局设置。但新任务在创建 thread 之前就要能配，
+ * 按任务存：同一个会话里前后两条消息可能针对不同目录、不同确认策略、
+ * 不同 skill，所以不能做成全局设置。但新任务在创建 thread 之前就要能配，
  * 因此额外留一份 draft，threadId 为空时就读写它。
  */
 import { create } from 'zustand'
@@ -12,11 +12,17 @@ export interface TaskSettings {
   /** 工作空间绝对路径。空字符串表示本次任务不选择工作空间 */
   workspace: string
   permissions: PermissionLevel
+  /**
+   * 本次对话勾选的 skill 名字。
+   *
+   * 勾选的会被**钉进上下文**（`SKILL.md` 全文直接进对话历史）。
+   */
+  skills: string[]
 }
 
 function defaultSettings(): TaskSettings {
   // 默认不给工作空间：让用户明确选，而不是默认就授权了某个目录
-  return { workspace: '', permissions: DEFAULT_PERMISSION_LEVEL }
+  return { workspace: '', permissions: DEFAULT_PERMISSION_LEVEL, skills: [] }
 }
 
 export interface TaskStore {
