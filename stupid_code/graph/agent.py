@@ -15,6 +15,7 @@ from stupid_code.graph.model_switch import (
     apply_model_switch_policy,
 )
 from stupid_code.graph.permissions import PermissionLevelMiddleware, build_interrupt_on
+from stupid_code.graph.repeated_calls import RepeatedCallMiddleware
 from stupid_code.graph.skills import build_skills_middleware
 from stupid_code.graph.workspace import WorkspaceMiddleware
 
@@ -84,6 +85,10 @@ graph = create_deep_agent(
     # skill 中间件排在记忆中间件**前面**：记忆块要留在系统提示词的最后一块
     # （prompt-caching 的断点落在那一块上）。skill 块在记忆块之前，同样在
     # 缓存范围内。
+    #
+    # 重复调用中间件排在最后：它只在工具调用的路径上插一刀（拦截同一个 tool
+    # 用同一组参数反复失败），不碰提示词、不碰模型，跟别人的顺序无关。
+    # 它靠扫消息历史判定连续失败，不写图状态，所以放在哪都不影响别的中间件。
     middleware=[
         ChatModelSwitchMiddleware(default_model),
         WorkspaceMiddleware(),
@@ -96,6 +101,7 @@ graph = create_deep_agent(
         # skill：发现全局 + 项目级两份目录，并把用户勾选的钉进上下文
         build_skills_middleware(backend),
         build_memory_middleware(),
+        RepeatedCallMiddleware(),
     ],
     interrupt_on=interrupt_on,
 )
