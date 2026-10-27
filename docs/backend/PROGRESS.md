@@ -764,6 +764,10 @@ protocol**，不用重启后端。
   把配置好的成本结构打乱。
   - `conf/subagents.toml` 里声明了 model 的子 agent：一律用它自己写的那个
   - deepagents 自动加的 `general-purpose`：用建图时继承来的那个（即启动时的默认模型）
+  - `mode="fork"` 的子 agent：**默认会跟着切**——它继承父级全部 middleware，
+    `agent.py` 用 `apply_model_switch_policy()` 给它的规格塞一个同名但 `enabled=False`
+    的切换中间件顶掉继承来的那个，保证它用 `subagents.toml` 里配的模型。新增 fork
+    入口时别漏掉这一步。
   - 要改某个子 agent 用哪个模型，去 `conf/subagents.toml` 写死——那才是「显式配置」该待的地方
 
   （框架层面做得到：子 agent 的中间件也能拿到父图的 `configurable`。这里选择不用。）
@@ -779,7 +783,7 @@ protocol**，不用重启后端。
 | harness profile 不跟着换 | deepagents 按**启动时**的模型决定系统提示词附加内容、工具描述改写、排除哪些工具 |
 | 摘要阈值不跟着换 | 压缩历史的触发阈值按启动时模型的上下文窗口算；切到窗口更小的模型可能触发偏晚 |
 | ~~摘要用的还是旧模型~~ | **011 期已修**：摘要改用当前选中的模型，见下面的 011 期 |
-| 子 agent 不跟着换 | 子 agent 用哪个模型是**配置**出来的（`conf/subagents.toml`），切换只影响主对话 |
+| 子 agent 不跟着换 | 子 agent 用哪个模型是**配置**出来的（`conf/subagents.toml`），切换只影响主对话；fork 继承的切换中间件已用 `enabled=False` 的同名实例顶掉 |
 | 选了不存在的模型 | 静默退回默认模型（后端有 warning 日志，界面上看不出来） |
 
 ### 011 · 手动压缩对话历史（`/compaction`）

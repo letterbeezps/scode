@@ -37,6 +37,9 @@ conf/config.toml 查 base_url / api_key / protocol，现场建一个模型实例
 
 - `conf/subagents.toml` 里声明了 model 的子 agent：一律用它自己写的那个
 - deepagents 自动加的 `general-purpose`：用建图时继承来的那个（即启动时的默认模型）
+- `mode="fork"` 的子 agent：**会继承父级全部 middleware**，默认也会跟着切；
+  `apply_model_switch_policy()` 会给它的规格塞一个同名但 `enabled=False` 的
+  实例顶掉继承来的切换中间件。新增 fork 入口时别忘了调用它。
 
 **为什么不跟着切**：子 agent 用哪个模型是**配置**出来的——本项目的 `reviewer` /
 `summarizer` 刻意用便宜的 `MiniMax-M3.1-Flash`，主 agent 用 `MiniMax-M3`，
@@ -106,22 +109,32 @@ def selected_model_spec() -> str | None:
     return None
 
 
-def resolve_selected_model(default_model: BaseChatModel) -> BaseChatModel:
-    """当前运行该用哪个模型：用户选中的那个，取不到就退回 default_model。
+def _build_selected_model() -> BaseChatModel | None:
+    """按 `configurable["model"]` 建模型；没选或建不出来返回 None。
 
-    与 `ChatModelSwitchMiddleware` 共用同一套解析逻辑——**摘要也算一次模型
-    调用**，走这里才能保证压缩历史时用的也是用户选中的供应商
-    （见 graph/compaction.py）。
+    这是中间件与摘要共用的唯一解析入口。返回 None 的两种情况调用方处理不同：
+    中间件据此决定「不覆盖 request.model」，摘要则退回默认模型。
     """
     spec = selected_model_spec()
     if not spec:
-        return default_model
+        return None
     try:
         config = load_config()
         return build_model_by_spec(config, spec)
     except Exception as exc:  # noqa: BLE001 — 取不到不该弄死整轮对话
         logger.warning("切换到模型 %r 失败，改用默认模型：%s", spec, exc)
-        return default_model
+        return None
+
+
+def resolve_selected_model(default_model: BaseChatModel) -> BaseChatModel:
+    """当前运行该用哪个模型：用户选中的那个，取不到就退回 default_model。
+
+    与 `ChatModelSwitchMiddleware` 共用 `_build_selected_model()`——**摘要也算
+    一次模型调用**，走这里才能保证压缩历史时用的也是用户选中的供应商
+    （见 graph/compaction.py）。
+    """
+    model = _build_selected_model()
+    return default_model if model is None else model
 
 
 class ChatModelSwitchMiddleware(AgentMiddleware[Any, Any, Any]):
@@ -132,10 +145,16 @@ class ChatModelSwitchMiddleware(AgentMiddleware[Any, Any, Any]):
     NotImplementedError（只实现一个时）。
     """
 
-    def __init__(self, default_model: BaseChatModel) -> None:
-        """default_model 是后端启动时带的那个模型，选中项取不到时退回它。"""
+    def __init__(self, default_model: BaseChatModel, *, enabled: bool = True) -> None:
+        """default_model 是后端启动时带的那个模型，选中项取不到时退回它。
+
+        `enabled=False` 用于 fork 子 agent：它的父级中间件会被整份继承，
+        需要在子 agent 规格里放一个**同名**的禁用实例去顶掉继承来的那个
+        （见 `apply_model_switch_policy()`）。
+        """
         super().__init__()
         self._default_model = default_model
+        self._enabled = enabled
 
     @property
     def default_model(self) -> BaseChatModel:
@@ -168,14 +187,40 @@ class ChatModelSwitchMiddleware(AgentMiddleware[Any, Any, Any]):
         """按 selectable 的模型 id 建一个模型实例。
 
         返回 None 表示「不切换」：没选模型、或者选了但建不出来
-        （这时已经记过 warning）。
+        （这时已经记过 warning）。fork 子 agent 用禁用实例，直接返回 None。
         """
-        spec = selected_model_spec()
-        if not spec:
+        if not self._enabled:
             return None
-        try:
-            config = load_config()
-            return build_model_by_spec(config, spec)
-        except Exception as exc:  # noqa: BLE001 — 切换失败不该弄死整轮对话
-            logger.warning("切换到模型 %r 失败，改用默认模型：%s", spec, exc)
-            return None
+        return _build_selected_model()
+
+
+def apply_model_switch_policy(
+    spec: dict[str, Any],
+    default_model: BaseChatModel,
+) -> dict[str, Any]:
+    """给子 agent 规格补上「该不该跟着切模型」的策略。
+
+    `mode="fork"` 的子 agent 会继承父 agent 的**全部 middleware**
+    （deepagents `graph.py` 里 `if is_forked and middleware: ...`），
+    其中就包括 `ChatModelSwitchMiddleware`。不处理的话，fork 子 agent 自己
+    `conf/subagents.toml` 里配的模型会被父对话选中的模型覆盖。
+
+    处理方式是往规格的 `middleware` 里放一个 `.name` 相同、但
+    `enabled=False` 的实例：deepagents 按 `.name` 合并自定义中间件，
+    同名项原地替换，父级继承来的那个就被顶掉了。`isolated` 子 agent
+    不继承父级 middleware，原样返回即可。
+
+    **新增任何 fork 入口时都要调用这个函数**，别只依赖 agent.py 当前这一处。
+    """
+    if spec.get("mode") != "fork":
+        return spec
+
+    middleware = list(spec.get("middleware", []))
+    return {
+        **spec,
+        "middleware": [
+            *middleware,
+            # 放在最后：万一规格里已经有同名实例，dict 合并时后写入的值生效
+            ChatModelSwitchMiddleware(default_model, enabled=False),
+        ],
+    }

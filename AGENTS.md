@@ -102,7 +102,9 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
 
 13. **切换对话模型靠中间件，不靠重建图**。① `ModelRequest.runtime` **没有 `.config` 属性**，取 `configurable` 用
     `langgraph.config.get_config()`；② `middleware=` 里**越靠前越外层**，切换中间件要排在 prompt-caching / memory 之前；
-    ③ 切换**只作用于主 agent**，子 agent 用各自配置里的模型——**别让子 agent 跟着切**。*→ 010 / §8.5*
+    ③ 切换**只作用于主 agent**，`isolated` / `general-purpose` 子 agent 用各自配置里的模型——**别让子 agent 跟着切**。
+    `mode="fork"` 的子 agent 会继承父级**全部 middleware**，所以 `agent.py` 用 `apply_model_switch_policy()` 往它的规格里塞一个同名但
+    `enabled=False` 的切换中间件，顶掉继承来的那个；新增 fork 入口时别漏掉这一步。*→ 010 / §8.5*
 
 14. **压缩历史用 `graph/compaction.py` 的 `CompactionMiddleware`**。① `.name` 报成**框架自带那一份的公开别名**（从框架问出来，
     不写死字面量）；② 用 `summarizer=` 这个公开扩展点接管摘要调用，让摘要用**当前选中的模型**；③ **别用 `RunnableLambda` 包

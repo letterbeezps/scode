@@ -10,7 +10,10 @@ from stupid_code.graph.compaction import (
 )
 from stupid_code.graph.mcp import load_mcp_tools
 from stupid_code.graph.memory import build_memory_middleware
-from stupid_code.graph.model_switch import ChatModelSwitchMiddleware
+from stupid_code.graph.model_switch import (
+    ChatModelSwitchMiddleware,
+    apply_model_switch_policy,
+)
 from stupid_code.graph.permissions import PermissionLevelMiddleware, build_interrupt_on
 from stupid_code.graph.skills import build_skills_middleware
 from stupid_code.graph.workspace import WorkspaceMiddleware
@@ -42,9 +45,14 @@ graph = create_deep_agent(
     # 来自 conf/subagents.toml；文件不存在时为空列表，
     # deepagents 自带的 general-purpose subagent 照常可用。
     # 这里统一收紧策略：子 agent 继承父级 interrupt_on；声明了 permissions 的
-    # 子 agent 换无 shell 的 backend，并且不继承 MCP 工具（见 graph/backend.py）
+    # 子 agent 换无 shell 的 backend，并且不继承 MCP 工具（见 graph/backend.py）。
+    # fork 子 agent 还会继承父级全部 middleware，所以再用
+    # apply_model_switch_policy() 顶掉模型切换中间件，保证它用自己配置的模型。
     subagents=[
-        apply_subagent_policies(spec, default_interrupt_on=interrupt_on)
+        apply_model_switch_policy(
+            apply_subagent_policies(spec, default_interrupt_on=interrupt_on),
+            default_model,
+        )
         for spec in load_subagents()
     ],
     # MCP 服务器的工具：建图时按 conf/mcp.json 取一次，交给框架当普通工具。
