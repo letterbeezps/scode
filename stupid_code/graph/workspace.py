@@ -1,31 +1,14 @@
 """工作空间：这一轮运行，agent 在哪个目录里干活。
 
-前端在对话框下面选一个工作空间，通过 `configurable["workspace"]` 传过来
-（key 与前端 `web/src/lib/permissions.ts` 的 `WORKSPACE_KEY` 一致）。
-后端把它归一化成真实目录，agent 的文件工具（ls / read_file / write_file /
-edit_file / delete / glob / grep）和 `execute`（shell 的 cwd）都落在这个目录里。
+前端通过 `configurable["workspace"]` 传绝对路径；没传就用 `SCODE_WORKSPACE`
+或后端启动目录。文件工具和 shell 的 cwd 都跟着它走。
 
-## 为什么根目录不能在建图时定死
+根目录不能在建图时定死：同一张图要服务不同项目的 thread，所以 backend 的
+`cwd` 是 property，背后是 contextvar。解析/校验要读文件系统，必须在线程里做；
+每轮 `before_agent` 重新校验并刷新缓存，HITL 恢复不经过 `before_agent`，
+所以模型调用前还要补一次缓存。
 
-框架的 backend 在构造时就把根目录写进 `self.cwd`（`FilesystemBackend.__init__`），
-之后所有路径解析都从它出发。但前端是**按任务**选工作空间的——同一张图要服务
-不同项目目录的对话。所以根目录必须在**每次工具调用时**按当前运行解析。
-
-做法见 `graph/backend.py`：把 `cwd` 做成 property，取值时读当前运行的
-`configurable`。用 property 而不是"每次运行换一个新 backend 实例"有两个原因：
-
-- backend 实例在建图时就注册进框架的工具里了，运行期换不了
-- 同一时刻可能有多个对话在跑（不同 thread、不同工作空间）。property 背后是
-  contextvar，天然按运行隔离；改共享实例的属性则会串目录
-
-## 没选工作空间时怎么办
-
-前端没选（`configurable["workspace"]` 为空串）就**用后端启动时的工作空间**
-——也就是 `SCODE_WORKSPACE` 或运行 `uv run scode` 时所在的目录。
-
-不是拒绝一切文件操作：原生跑法（`cd /path/to/project && uv run scode`）里，
-用户根本没有前端可选，后端自己的工作空间就是那个项目目录，拒绝等于什么都干不了。
-前端按钮上的提示也是这么写的（"未选择工作空间，Agent 将使用后端默认目录"）。
+细节见 AGENTS.md 第 17 条、`docs/backend/PROGRESS.md` 014 期。
 """
 
 from __future__ import annotations
@@ -88,7 +71,7 @@ def default_workspace() -> Path:
     return _default_workspace
 
 
-class WorkspaceRoot(NamedTuple):
+class WorkspacePaths(NamedTuple):
     """一个工作空间的两种路径形态。
 
     - `resolved`：真实路径（软链已展开）。**文件系统工具的根目录用这个**，
@@ -114,7 +97,7 @@ class WorkspaceRoot(NamedTuple):
         return (self.resolved, self.given)
 
 
-_resolved_cache: dict[str, WorkspaceRoot] = {}
+_resolved_cache: dict[str, WorkspacePaths] = {}
 """原始路径 -> 解析后的工作空间（两种形态）。
 
 解析（`resolve()` 展开软链、`exists()` / `is_dir()` 校验）要读文件系统，
@@ -127,7 +110,7 @@ _resolved_cache: dict[str, WorkspaceRoot] = {}
 """
 
 
-def _normalize_workspace(raw: str) -> WorkspaceRoot:
+def _normalize_workspace(raw: str) -> WorkspacePaths:
     """把用户给的路径归一化成真实存在的目录。**会读文件系统。**
 
     - `~` 展开成用户主目录
@@ -156,7 +139,7 @@ def _normalize_workspace(raw: str) -> WorkspaceRoot:
     # given 形态：只做纯字符串归一化（`normpath` 收掉 `.` / `..`），
     # 不碰文件系统、不展开软链
     given = Path(os.path.normpath(str(path)))
-    return WorkspaceRoot(resolved=resolved, given=given)
+    return WorkspacePaths(resolved=resolved, given=given)
 
 
 def resolve_workspace_path(raw: str) -> Path:
@@ -225,13 +208,13 @@ def current_workspace() -> Path:
     保证走线程），否则 `Path.resolve()` 展开软链会撞上 blockbuster。
     运行中途目录被删掉不会每次工具调用都重新 stat，热路径看到的是缓存。
 
-    实现就是 `current_workspace_root().resolved`——两者在所有分支上等价
+    实现就是 `current_workspace_paths().resolved`——两者在所有分支上等价
     （实测过），别再各写一份。
     """
-    return current_workspace_root().resolved
+    return current_workspace_paths().resolved
 
 
-def current_workspace_root() -> WorkspaceRoot:
+def current_workspace_paths() -> WorkspacePaths:
     """当前运行的工作空间（两种路径形态）。
 
     热路径用：每次工具调用都要拿根目录来剥绝对路径前缀。
@@ -242,11 +225,11 @@ def current_workspace_root() -> WorkspaceRoot:
         config = get_config()
     except RuntimeError:
         resolved = default_workspace()
-        return WorkspaceRoot(resolved=resolved, given=resolved)
+        return WorkspacePaths(resolved=resolved, given=resolved)
     raw = workspace_from_configurable(configurable_of(config))
     if raw is None:
         resolved = default_workspace()
-        return WorkspaceRoot(resolved=resolved, given=resolved)
+        return WorkspacePaths(resolved=resolved, given=resolved)
     cached = _resolved_cache.get(raw)
     if cached is not None:
         return cached

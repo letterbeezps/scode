@@ -1,95 +1,13 @@
 """拦同一个 tool 用同一组参数反复失败。
 
-## 要解决什么
+连续同签名 `status="error"` 到阈值（默认 3）就不再执行，返回错误消息让模型
+换思路。签名 = tool 名 + 参数排序后的 JSON；中间夹了别的调用或成功就清零。
+HITL 拒绝和本中间件自己的拦截消息不计入。
 
-模型调 `edit_file` 对不上字符串，调了 8 次，每次参数一模一样，每次都失败。
-它不是在推进，是在原地转圈——每一轮都烧掉一次真实的工具执行（`execute` 可能
-好几秒）和一次模型往返。
+判定扫消息历史，不写图状态。`execute` 的非零退出码是 `status="success"`，
+不会被拦；它拦的是工具本身用不了（路径不存在、edit_file 对不上等）。
 
-框架和项目里原本都没有针对这件事的机制：
-
-- LangGraph 的 `recursion_limit`（默认 10007）只管**总步数**，管不了重复。
-- deepagents 的压缩中间件管上下文长度，不管重复。
-- deepagents 内建提示词里有一句「If something fails repeatedly, stop and
-  analyze *why*」——但本项目自己写全了系统提示词（见 `config/prompts.py`），
-  **这句没被继承到**。
-
-所以这里补一个工具层的兜底：同一个 tool + 同一组参数连续失败到阈值，就不再
-执行，返回一条错误消息告诉模型「换个思路」。
-
-## 判定：签名 + 连续性
-
-**签名** = tool 名 + 参数的稳定序列化：
-
-```python
-key = (tool_name, json.dumps(args, sort_keys=True, ensure_ascii=False, default=str))
-```
-
-`sort_keys=True` 必须有——否则 `{"a":1,"b":2}` 和 `{"b":2,"a":1}` 会被当成两次
-不同的调用，判定就漏了。`default=str` 是兜底：参数里可能有非 JSON 可序列化的值。
-
-**连续性**很重要：**失败之后换个参数再试是正常的**（模型换了思路），不该连坐。
-所以只数「紧邻的」同签名失败——中间夹了别的调用，计数就清零。
-
-## 失败怎么判定
-
-`ToolMessage.status == "error"`。框架统一用这个标记表示失败：
-
-- 工具抛异常 → deepagents 在**工具边界**把它转成 `status="error"` 的
-  ToolMessage（`deepagents/middleware/filesystem.py` 的 `except Exception` 分支，
-  注释写明 "never let them escape"）——所以异常不会穿透到中间件。
-- **参数校验错误**也是这个状态：那种情况工具压根没跑，但消息已经是
-  `status="error"`。
-
-两种失败形态统一处理，不用管异常是怎么来的。
-
-**但 `execute` 的命令失败（exit code ≠ 0）返回的是 `status="success"`**——
-它不是工具失败，是命令的退出码。所以 `pytest` 跑不过不会被这个中间件拦。
-被拦的是「工具本身用不了」：路径不存在、`edit_file` 对不上字符串、权限拒绝。
-
-**用户手动拒绝不算**：HITL 拒绝也生成 `status="error"` 的 ToolMessage
-（`langchain/agents/middleware/human_in_the_loop.py` 的 `_answer_message`），
-content 形如 "User rejected the tool call for `X` with reason: ..."。那是**用户
-的决策**，不是模型重试失败——用户拒绝两次就把 agent 的正常后续调用挡了是错的。
-按 content 前缀排除掉。
-
-## 计数从哪来：消息历史，不是 state
-
-**扫 `request.state["messages"]`**，不维护自己的计数器。原因：
-
-1. **工具结果在执行之后才写回 state**（实测：`wrap_tool_call` 里看到的
-   `state["messages"]` 只到当前这条 AI 消息，上一次迭代的工具结果已经在里面
-   了）。所以「上一次失败」是看得见的——正好够判「连续失败几次」。
-2. **不需要额外 state 字段**。自己维护计数器就得处理「什么时候清零」，
-   而「连续性」的语义（中间夹了别的调用就清零）直接从消息历史扫更准。
-
-时序上唯一的例外：**同一批并行发出的 tool call 互相看不到对方的结果**——这是
-对的，并行不是重试。
-
-## 消息历史会被压缩
-
-对话长了会被 `SummarizationMiddleware` 压缩（`graph/compaction.py`），老消息
-被摘要替换。压缩之后「连续失败」的证据就没了——判定会漏。
-
-这是可接受的：压缩说明上下文已经很长了，模型自己都记不清前面失败了什么，
-这时候拦住它意义不大。宁可漏判不可误判。
-
-## 中间件顺序
-
-放在 `middleware=` 里，位置不敏感——它不碰提示词、不碰模型，只在工具调用的
-路径上插一刀。
-
-**但跟 HITL 的相对顺序有讲究**：deepagents 把 `HumanInTheLoopMiddleware` 放在
-core 栈（`graph.py` 里 `deepagent_middleware.append(HumanInTheLoopMiddleware(...))`），
-自定义 middleware 在它之后。按 langchain 的「先定义 = 最外层」，**HITL 在外层**——
-HITL 拒绝发生在本中间件**之前**，所以本中间件能看到那条拒绝消息（然后排除它）。
-这正是要的顺序。
-
-## 子 agent
-
-**不继承**。子 agent 是独立 `create_agent()` 建的图（`deepagents/middleware/
-subagents.py`），父级的 `middleware=` 不会传下去——跟 `PermissionLevelMiddleware`
-一样，得显式挂。主 agent 的重复调用是主要问题，子 agent 先不管。
+细节和边界见 `docs/backend/PROGRESS.md` 021 期。
 """
 
 from __future__ import annotations

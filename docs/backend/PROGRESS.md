@@ -422,7 +422,7 @@ subagent 配置里重复写。
 当虚拟路径 → 文件落到 `<工作空间>/tmp/x/.scode-memory.md` 这种嵌套目录里，
 **还不报错**（014 期只修了一半：软链形态一致时是好的）。
 
-现在 `graph/workspace.py` 的 `WorkspaceRoot` 同时记两种形态，解析时一起算好缓存
+现在 `graph/workspace.py` 的 `WorkspacePaths` 同时记两种形态，解析时一起算好缓存
 （热路径只读缓存，不碰文件系统）；`graph/backend.py` 的 `_workspace_relative()`
 对两种形态各试一次。实测（工作空间 `/tmp/scode-sym-xxx`）：
 
@@ -1538,7 +1538,7 @@ ps -axo pid,command | grep -E "server-memory|langgraph dev"
 （`FilesystemBackend._resolve_path`、glob/grep 的搜索根、
 `LocalShellBackend.execute` 的 cwd）。所以只要改这一个属性，全对。
 
-做法是把它做成 property（`graph/backend.py` 的 `_WorkspaceRoot`）：取值时读当前
+做法是把它做成 property（`graph/backend.py` 的 `_WorkspaceCwdMixin`）：取值时读当前
 运行的 `configurable.workspace`。为什么不是「运行期换 backend 实例」：
 
 - backend 实例在建图时就注册进框架的工具里了，运行期换不了
@@ -1572,7 +1572,7 @@ ps -axo pid,command | grep -E "server-memory|langgraph dev"
 调 `write_file("/private/var/.../hello.txt")`，文件跑到了工作空间里的
 `private/var/.../` 嵌套目录）。
 
-所以 `_WorkspaceRoot._resolve_path()` 先把「以工作空间绝对路径开头」的写法剥掉
+所以 `_WorkspaceCwdMixin._resolve_path()` 先把「以工作空间绝对路径开头」的写法剥掉
 前缀，两种写法指向同一个文件。剥不掉的（工作空间之外的绝对路径）交回框架按
 虚拟路径处理——它出不去工作空间，只是落到工作空间内的同名子目录里。
 
@@ -1744,7 +1744,7 @@ ls -la "$WS"
 | 改了什么 | 在哪 |
 |---|---|
 | 抽出 `configurable_of(config)`：读运行期参数（工作空间 / 档位 / 模型 / skill）的统一入口。原来 `config.get("configurable") if isinstance(config, dict) else None` 这句在 5 个文件里各写了一遍，而 `permissions.py` 那份还多检查了一层 `isinstance(configurable, dict)` | `graph/workspace.py` |
-| `current_workspace()` 改成 `current_workspace_root().resolved`——两者在所有分支上等价（实测过），原来把「取 config → 提 configurable → 查缓存」抄了一遍 | `graph/workspace.py` |
+| `current_workspace()` 改成 `current_workspace_paths().resolved`——两者在所有分支上等价（实测过），原来把「取 config → 提 configurable → 查缓存」抄了一遍 | `graph/workspace.py` |
 | 删掉 `resolve_workspace()`：只有 `workspace_of()` 一个调用者，两层各包一行 | `graph/workspace.py` |
 | 抽出 `_model_entry()`：模型列表和详情原本各手写同一份 8 字段字典 | `config/model.py` |
 | `_parse_model_id()` 上移复用，`build_model_by_spec()` 不再自己写一遍 `provider:model` 的解析；`build_model()` 内联进 `load_model()`（只有它一个调用者） | `config/model.py` |
@@ -1824,12 +1824,12 @@ ls -la "$WS"
 | 删掉 `WorkspaceCompositeBackend` 整个类（71 行，含 7 个覆写方法） | `graph/backend.py` |
 | `build_backend()` 的 routes 只剩 `/user-memory/` 和 `/user-skills/`，返回裸 `CompositeBackend` | `graph/backend.py` |
 | `build_restricted_backend()` 同样返回裸 `CompositeBackend`——**保留 `artifacts_root`**：框架读它的条件是 `isinstance(backend, CompositeBackend)`，裸 `FilesystemBackend` 拿不到，产物会退回 `/` 根目录 | `graph/backend.py` |
-| `_workspace_relative()`（22 行独立函数）内联进 `_WorkspaceRoot._resolve_path()`（9 行循环）——它只剩一个调用者 | `graph/backend.py` |
+| `_workspace_relative()`（22 行独立函数）内联进 `_WorkspaceCwdMixin._resolve_path()`（9 行循环）——它只剩一个调用者 | `graph/backend.py` |
 | 删掉 `StateBackend` / `GlobResult` / `GrepResult` / `LsResult` 四个 import | `graph/backend.py` |
 
 **关键取舍**
 
-- **保留 `_WorkspaceRoot._resolve_path()` 的宿主绝对路径剥离**。这一段跟路由无关：
+- **保留 `_WorkspaceCwdMixin._resolve_path()` 的宿主绝对路径剥离**。这一段跟路由无关：
   系统提示词会把工作空间的**真实绝对路径**给模型，模型可能直接拿它调文件工具，
   框架会当成虚拟路径处理，文件落进 `<工作空间>/private/var/.../` 这种嵌套目录里
   **还不报错**。这条机制必须留。
@@ -1997,13 +1997,15 @@ graph = create_deep_agent(
     model=default_model,
     system_prompt=SYSTEM_PROMPT,
     subagents=[
-        apply_subagent_policies(spec, default_interrupt_on=interrupt_on)
+        apply_model_switch_policy(
+            apply_subagent_policies(spec, default_interrupt_on=interrupt_on)
+        )
         for spec in load_subagents()
     ],
     backend=backend,
     # 切换中间件放最前 → 在最终栈里比 prompt-caching / memory 更外层
     middleware=[
-        ChatModelSwitchMiddleware(default_model),
+        ChatModelSwitchMiddleware(),
         # 名字叫 SummarizationMiddleware → 顶掉 create_deep_agent 自带的那份
         compaction,
         # compact_conversation 工具：模型自己也能压缩

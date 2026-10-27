@@ -1,77 +1,14 @@
-"""MCP 工具的加载：把 conf/mcp.json 里配的服务器变成 agent 能用的工具。
+"""MCP 工具加载与会话管理。
 
-## 思路：协议交给 SDK，只补 SDK 不管的三件事
+协议交给 `langchain-mcp-adapters` + 官方 `mcp` SDK；这里只补三件事：工具改名
+`mcp__{服务器}__{工具}`、建图时逐个服务器加载（并行 + 单服务器 12 秒预算）、
+每个服务器一条长会话（专用 MCP 线程，同服务器调用串行，失败重连）。
 
-MCP 协议本身一行都不手写：
+不能直接用 `client.get_tools()`：它每次工具调用都新建会话，有状态服务器会丢
+状态。这里列原始 MCP Tool 定义，再用 `_SessionProxy` 绑到长会话上。
+`conf/mcp.json` 改了要重启；MCP 工具只有异步实现。
 
-- `langchain-mcp-adapters` 的 `MultiServerMCPClient` 负责连服务器、取工具清单、
-  把 MCP 工具转成 LangChain 工具。http / sse / stdio / websocket 四种传输都支持，
-  我们只是把 `conf/mcp.json` 的内容翻译成它要的连接参数字典。
-- `mcp`（官方 Python SDK）是 adapter 的底层依赖——stdio 子进程的管道、
-  streamable-http 的握手、会话初始化都在它那里。
-
-所以我们只做三件 SDK 不做的事：
-
-**① 改名。** adapter 造的工具名就是服务器给的名字（`search` 之类）。两个服务器
-撞名时，工具会在 `bind_tools` 阶段互相盖掉，模型最后只能调到一个。
-项目约定用 `mcp__{服务器}__{工具}`（Claude Code 那套）；项目自带的参考资料
-（`.agents/skills/ecosystem-primer/SKILL.md`）里也写着 agent 要认
-`mcp__docs-langchain__*`——名字对不上，agent 会以为 MCP 没接上，转而自己拿
-`execute` 去 curl MCP 端点（实测过，能 work 但绕一大圈）。
-
-**② 每个服务器一条长会话。** adapter 的 `client.get_tools()` 默认**每次工具
-调用新建一个会话**（文档原话："A new session will be created for each tool
-call"）：stdio 每次 fork 一个新子进程，http 每次重新握手。对无状态服务器
-（文档搜索）只是慢一点，对**有状态服务器**（`server-memory` 的知识图谱、
-浏览器、REPL）等于每次调用都重置——写进去的实体下一次就读不到了。
-
-所以不直接用 `get_tools()` 造好的工具，而是：
-
-- 建图时用一个**临时会话**列工具清单（拿 schema 和描述），列完就关
-- 工具对象绑到一个 `_SessionProxy`（鸭子类型的 `ClientSession`，adapter 只用
-  它的 `call_tool()`）
-- 第一次真正调用时才在**运行事件循环**上开持久会话，之后一直复用
-- 传输层失败就丢掉这条会话，下一次调用（或重试）重新建
-
-**③ 兜住传输层失败，并在调用期重试一次。** adapter 把话说得很清楚：MCP 服务器
-自己报的错（`isError=True`）会变成 `status="error"` 的 ToolMessage，但**传输层
-失败一律往上抛**——一次网络抖动就会让整轮 run 变成 internal error
-（实测 `anyio.BrokenResourceError`）。这里用 adapter 公开的 `tool_interceptors`
-扩展点接住它：瞬时失败重试一次（重试会触发重新建会话），仍失败就构造一个
-`isError=True` 的 `CallToolResult`——adapter 会把它转成错误 ToolMessage，模型
-看得见「这个工具没调通」，可以换个工具重试或者告诉用户原因，整轮对话不会崩。
-
-## 代价：改 conf/mcp.json 要重启后端
-
-工具名和 schema 在建图时取一次，交给 `create_deep_agent(tools=[...])`，于是它们
-就是**普通工具**——注册在框架的 ToolNode 里，模型调用时框架自己执行。
-不需要中间件：既不用在 `wrap_model_call` 里往 `request.tools` 注入，
-也不用在 `wrap_tool_call` 里覆盖工具对象。
-
-（另一条路是运行期注入：中间件在每次模型调用前把工具挂进 `request.tools`。
-改配置不用重启，但要多一个中间件和 `wrap_model_call` / `wrap_tool_call`
-两套钩子。框架留这条路（见 langchain/agents/factory.py 的
-`DYNAMIC_TOOL_ERROR_TEMPLATE`），本项目选了简单的那条。）
-
-## 会话的生命周期与边界
-
-- 所有会话都跑在一个**专用的 MCP 线程**上（daemon，第一次调用时启动）：MCP SDK
-  基于 anyio，会话的 cancel scope 必须由建立它的任务退出；把它放在独立线程的
-  事件循环里，主服务的循环关停不会去并发取消这些内部任务，也不会卡住
-  `asyncio.run()` 的收尾。工具调用通过 `run_coroutine_threadsafe` 送过去。
-- **同一服务器的调用是串行的**（每个服务器一个 worker 任务 + 队列）：有状态
-  服务器（浏览器、REPL）并发操作会互相踩；MCP 客户端通常也是按顺序用一条连接。
-- 会话是**进程级共享**的，不按 thread 区分：不同对话看到的是同一个服务器状态。
-  这是有意的（MCP 服务器本来就该像「一个外部服务」），单用户项目够用。
-- 应用关停时 `admin/app.py` 的 lifespan 调 `close_mcp_sessions()`：取消 worker
-  任务、等会话退出、再停掉 MCP 线程。不调用也不会留下僵尸进程（线程是 daemon，
-  stdio 子进程随父进程退出），但显式关闭的日志更干净。
-
-## 只能异步调用
-
-adapter 造的工具只填了 `coroutine`（`func` 是 None）。框架在 Agent Server 里
-全程走异步执行路径，没有问题；但本地脚本的 `graph.invoke()` 是同步的，
-调用 MCP 工具会抛 `NotImplementedError`——本项目没有同步调用场景，不额外补壳。
+细节、生命周期、重试分类见 AGENTS.md 第 16 条、PROGRESS 013 期。
 """
 
 from __future__ import annotations

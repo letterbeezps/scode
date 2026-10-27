@@ -1,74 +1,15 @@
-"""agent 的文件与命令后端。
+"""agent 的文件与命令 backend。
 
-主 agent 用 **CompositeBackend**，默认 backend 是 **LocalShellBackend**：
-文件操作直接落在真实磁盘（工作空间），`execute` 工具直接在本机跑 shell。
-这是"真实 backend"的意思——之前默认的 StateBackend 是虚拟文件系统，
-agent 的 `write_file` / `edit_file` 写的是内存里的副本，落不了盘，
-长期记忆文件也因此写不进去。
+主 agent 用 `CompositeBackend(default=LocalShellBackend)`：文件操作落真实磁盘，
+`execute` 直接跑本机 shell；`/user-memory/`、`/user-skills/` 两条虚拟路由指向
+`$SCODE_HOME`，`artifacts_root="/.scode"` 收拢 agent 自己的中间产物。
 
-    backend = CompositeBackend(
-        default=LocalShellBackend(...),   # 真实磁盘 + 本机 shell
-        routes={"/user-memory/": FilesystemBackend(...)},  # 例外：用户级记忆目录
-    }
+文件的根目录是运行期属性（`cwd` 是 property），跟着当前 thread 的工作空间；
+文件工具用虚拟路径（`/` = 工作空间根），`_resolve_path` 把宿主绝对路径剥成
+相对路径。声明了 `permissions` 的子 agent 用 `build_restricted_backend()`
+（无 shell），策略组装在 `graph/subagent_policy.py`。
 
-用 CompositeBackend 而不是直接用 LocalShellBackend，是为了让"哪部分路径走哪种
-存储"这件事写在配置里而不是散落在各处。现在有两条 route：
-
-- `/user-memory/` → `~/.scode/`：用户级记忆。**这是工作空间之外的一条写路径**，
-  但只覆盖这一个目录——agent 写用户级记忆就得走它。
-- `/user-skills/` → `~/.scode/.agents/skills/`：全局 skill，**只读**。
-
-两条 route 都是**虚拟名**——`/user-memory`、`/user-skills` 在磁盘上并不存在。
-所以它们永远不会跟模型传进来的宿主绝对路径撞上：路由按虚拟前缀匹配，而真实
-路径里不会出现这两个前缀。
-
-（早先还有第三条 `/tmp/` → StateBackend 的路由，给 agent 一个会话内的临时区。
-它已经删了。那条路由是唯一可能跟宿主绝对路径撞上的（macOS 的 `/tmp` 是软链、
-Linux 的 `mktemp -d` 默认就在那儿），为了防它得额外套一层守卫类；而它提供的
-「会话内临时区」跟项目自己的产物策略（收在 `<工作空间>/.scode/`）也是重复的。
-详见 `docs/backend/PROGRESS.md` 的「020 · 删掉 `/tmp/` 路由」。）
-
-## agent 自己的产物落在哪儿
-
-deepagents 会往 backend 里写三样东西（对话历史、超大工具结果、二进制块），
-写哪儿由 `CompositeBackend.artifacts_root` 说了算，默认是 `/`——也就是直接落在
-工作空间根目录，冒出三个顶层目录。本项目把它设成 `/.scode`，收成一个隐藏目录
-（见 `ARTIFACTS_ROOT`）。
-
-注意产物路径**必须在工作空间里**：工具消息里就是这么告诉 agent 的
-"结果太大，存到这个路径，你可以 read_file 读回来"，路径出了工作空间的
-`virtual_mode` 边界就读不回来了，eviction 会退化成"存了但读不到"。
-
-## 为什么要区分主 agent 和子 agent 的 backend
-
-框架有一条硬限制（deepagents 0.7.28，`middleware/filesystem.py`）：
-
-> backend 支持命令执行（实现 `SandboxBackendProtocol`）时，
-> `FilesystemMiddleware` 不接受 `permissions`——直接抛 `NotImplementedError`。
-
-理由是站得住的：`execute` 能用 shell 绕过任何文件权限（`echo x > file`），
-所以"工具层拦住写操作"这件事在有 shell 的情况下根本不成立。框架不愿意给你
-一个假的保证，索性报错。
-
-我们主 agent 的 backend 有 shell，但 `conf/subagents.toml` 里的 `reviewer`
-声明了 `permissions`（只读）。两件事直接冲突——不处理的话图在建的时候
-就炸了。本模块只提供 `build_restricted_backend()`（无 shell 的 backend），
-具体的子 agent 策略在 `graph/subagent_policy.py` 里组装。
-
-## 根目录是运行期定的，不是建图时定的
-
-前端按任务选工作空间，同一张图要服务不同项目目录的对话，所以根目录不能
-在建图时写死。框架的 `FilesystemBackend` 把根目录存在 `self.cwd` 里，
-所有路径解析都从它出发（`_resolve_path`、glob/grep 的搜索根、
-`LocalShellBackend.execute` 的 shell cwd）。
-
-所以这里把 `cwd` 做成 property：取值时读当前运行的 `configurable`
-（见 `graph/workspace.py`）。这样一次工具调用落在哪个目录，取决于这一轮
-对话选了哪个工作空间，而不是后端启动时在哪个目录。
-
-用 property 而不是"运行期换 backend 实例"有两个原因：backend 实例在建图时
-就注册进框架的工具里了，运行期换不了；而且同一时刻可能有多个对话在跑，
-property 背后是 contextvar，天然按运行隔离，改共享实例的属性则会串目录。
+细节见 AGENTS.md 第 12/17/18 条、`docs/backend/PROGRESS.md` 007/016/020 期。
 """
 
 from __future__ import annotations
@@ -87,7 +28,7 @@ from stupid_code.graph.paths import (
 )
 from stupid_code.graph.workspace import (
     current_workspace,
-    current_workspace_root,
+    current_workspace_paths,
     default_workspace,
 )
 
@@ -112,7 +53,7 @@ deepagents 会把三类东西写进 backend：
 """
 
 
-class _WorkspaceRoot:
+class _WorkspaceCwdMixin:
     """让 backend 的根目录跟着「当前运行的工作空间」走。
 
     框架里所有路径解析都从 `self.cwd` 出发，所以改这一个属性就够：
@@ -162,7 +103,7 @@ class _WorkspaceRoot:
         path = Path(key)
         # `/` 单独放行：它是虚拟根（`ls("/")` 要保留 composite 的聚合行为）。
         if path.is_absolute() and path != Path("/"):
-            for root in current_workspace_root().candidates():
+            for root in current_workspace_paths().candidates():
                 try:
                     relative = path.relative_to(root).as_posix()
                 except ValueError:
@@ -171,11 +112,11 @@ class _WorkspaceRoot:
         return super()._resolve_path(key)
 
 
-class WorkspaceShellBackend(_WorkspaceRoot, LocalShellBackend):
+class WorkspaceShellBackend(_WorkspaceCwdMixin, LocalShellBackend):
     """真实磁盘 + 本机 shell，根目录跟着当前运行的工作空间走。"""
 
 
-class WorkspaceFilesBackend(_WorkspaceRoot, FilesystemBackend):
+class WorkspaceFilesBackend(_WorkspaceCwdMixin, FilesystemBackend):
     """真实磁盘、没有 shell，根目录同样跟着当前运行的工作空间走。"""
 
 

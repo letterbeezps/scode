@@ -1,57 +1,11 @@
-"""agent 的长期记忆：项目级（工作空间）+ 用户级（跨工作空间）。
+"""长期记忆：项目级 `.scode-memory.md` + 用户级 `~/.scode/memory.md`。
 
-用 deepagents 的 `MemoryMiddleware`，通过 `create_deep_agent` 的 **middleware 参数**
-挂上去，不用它自带的 `memory` 参数——两者最终是同一个中间件，但显式挂载能自己
-决定 backend 与 sources（`memory=` 只能用框架默认的 backend）。
+通过 `middleware=` 挂框架的 `MemoryMiddleware`，自己指定 backend 和 sources。
+两个文件都是可选的、不自动创建；同一工作空间只在会话开始时读一次，换工作
+空间时摘掉 `memory_contents` 强制重读。没有记忆时系统提示词会提示模型用
+`write_file` 创建，而不是让 `edit_file` 打在空文件上。
 
-## 两个作用域
-
-| 作用域 | 文件 | 跟着谁走 |
-|---|---|---|
-| 项目级 | `<工作空间>/.scode-memory.md` | 项目 |
-| 用户级 | `~/.scode/memory.md` | 用户（跨所有工作空间） |
-
-框架本来就支持多来源（`MemoryMiddleware(sources=[...])`，框架自己的示例就是
-`["~/.deepagents/AGENTS.md", "./.deepagents/AGENTS.md"]`——一条用户级、一条项目级）。
-本项目实现的就是这两条：**用户级在前、项目级在后**，冲突时项目级更靠近提示词
-末尾、优先被读到。
-
-项目级 = **这一轮运行选的那个目录**（前端通过 `configurable["workspace"]` 传，
-后端没收到就用启动时的默认工作空间）。agent 的文件工具和这里的记忆中间件
-用的是同一个 backend，所以两边解析出来的真实路径始终一致。
-
-用户级 = 用户主目录下的 `~/.scode/memory.md`（位置见 `graph/paths.py`），
-跟工作空间无关。
-
-两个记忆文件都是**可选**的：**不会自动创建**（避免往用户选的项目、或者用户
-主目录里凭空塞文件），第一次保存记忆时由 agent 用 `write_file` 建出来。
-
-**为什么不用 `AGENTS.md`**：deepagents 的默认约定是读 `AGENTS.md`，但那通常是
-"写给编码 agent 看的项目约定"（本项目根目录那份就是），跟"agent 自己攒的长期
-记忆"是两回事，混在一起会把开发者的项目说明当成 agent 的记忆注入进去。换成
-独立文件名后两者的语义就分开了。
-
-四个要注意的点：
-
-1. **同一工作空间内只在会话开始时读一次**。MemoryMiddleware 的 before_agent
-   钩子见到 state 里已经有 `memory_contents` 就不重复读——改了文件要开新会话
-   才生效（**用户级记忆同样如此**）。**换工作空间会重新读**：
-   `WorkspaceMemoryMiddleware` 在 state 里记了"上次读的是哪个工作空间"，
-   变了就把 `memory_contents` 摘掉逼框架重读，否则会拿 A 项目的记忆去指导
-   B 项目的活。
-2. **和 agent 的文件工具指向同一个真实文件**。中间件自己持有一个以工作空间
-   为根的 FilesystemBackend（外面再套一层 CompositeBackend 挂用户级路由），
-   agent 的 `write_file` / `edit_file` 走 `graph/backend.py` 那个
-   CompositeBackend（真实磁盘）——两边解析出来的真实路径都是
-   `<工作空间>/.scode-memory.md` 和 `~/.scode/memory.md`。
-3. **文件操作锁在工作空间内**（用户级那一条除外，它就该锁在 `~/.scode/`）。
-   backend 用 `virtual_mode=True`，路径越不出各自的根。
-4. **提示词是本项目自己写的，不是框架那份英文模板**。框架默认那段
-   `MEMORY_SYSTEM_PROMPT` 写着"用 `edit_file` 保存新知识"——但本项目的记忆
-   文件可能根本不存在（可选、不自动创建），`edit_file` 打在不存在的文件上会
-   直接报错，模型要白白浪费一轮失败的工具调用才知道该用 `write_file`。
-   框架那段还不包含本项目的真实语义（可选 / 两个作用域 / 一会话读一次），
-   而且整段是英文，跟项目的中文系统提示词不一致。见 `_MEMORY_TEMPLATE`。
+细节见 AGENTS.md 第 10/19 条、`docs/backend/PROGRESS.md` 006/015/017 期。
 """
 
 from __future__ import annotations

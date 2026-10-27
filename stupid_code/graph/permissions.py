@@ -1,46 +1,14 @@
 """危险操作的人工确认（HITL）。
 
-前端在每次运行的 `configurable` 里传一个权限档位（`manual` / `normal` / `auto`，
-见 `web/src/lib/permissions.ts`），后端在这里把它翻译成「这条命令要不要先问人」。
+`configurable.permissions` 三档：`auto` 全放行、`normal` 只拦危险模式、
+`manual` 每条 `execute` / `delete` 都问；写记忆文件和非只读 MCP 工具在
+`manual` 下也拦。档位在开跑前记进图状态，恢复时 `when` 谓词重跑也不会被
+客户端改值带偏。
 
-拦住的方式是给 `create_deep_agent` 传 `interrupt_on={...}`：命中时
-LangChain 的 `HumanInTheLoopMiddleware` 抛 `interrupt()`，图挂起，等前端把
-approve / edit / reject 的决定用 `command.resume` 送回来，图才继续。
+`normal` 只是正则过滤器，不是安全边界；要确定性就切 `manual`。shell 本身
+仍能绕过文件工具的权限。
 
-**为什么不能只靠提示词**：deepagents 是 "trust the LLM" 模型，agent 不会自我
-约束。提示词里那句「破坏性命令先问用户」只是一句建议，模型可以不听——边界必须
-在工具层强制执行。
-
-## 三档怎么定的
-
-| 档位 | 行为 |
-|---|---|
-| `auto` | 不确认，直接执行（用户明确选择了不被打断） |
-| `manual` | **每一条**执行命令、以及每一次删文件都确认——命令会做什么你事先不知道 |
-| `normal` | 只有命中「危险模式」的命令才确认（默认） |
-
-`normal` 档原本设想由 AI 审核这次操作是否危险再决定要不要问（前端文案里写过），
-本期没做：AI 审核要额外一次模型调用，判断标准也没法复现，出了问题说不清是谁
-该负责。改成固定规则——命中就是命中，不命中就不命中，行为可预期。
-
-**`normal` 是过滤器，不是安全边界**：它只看命令字符串，绕得开（`find -delete`、
-`python -c "shutil.rmtree(...)"`、先 `write_file` 写个脚本再 `execute` 它）。
-真正要确定性就切 `manual`。
-
-## 为什么档位要记进 state
-
-框架的 `when` 谓词**在恢复时会再跑一次**，而且框架明确要求「同一次调用必须给出
-同样的答案」。档位要是只从运行配置里读，恢复时前端回传的值一变，结论就变：
-
-- 变成 `auto` → 谓词返回 False → 用户的「拒绝」被跳过，**被拒绝的命令照样执行**
-  （框架文档原话：the reviewer's answer is skipped and the tool runs, even if
-  they rejected it）
-- 变成 `manual` → 多出/少掉待确认的调用 → decisions 数量对不上 → 框架抛
-  `ValueError`，整轮跑挂
-
-所以 `PermissionLevelMiddleware` 在**开跑前**把档位写进图状态（checkpoint 里的
-私有字段）。恢复时 `before_agent` 不会重跑（实测），state 里留着的就是发起这轮
-运行时的那一档，谓词读它而不是读客户端回传的值。
+细节见 AGENTS.md 的安全姿态、`docs/backend/PROGRESS.md` 009/015/017 期。
 """
 
 from __future__ import annotations

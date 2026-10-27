@@ -52,8 +52,7 @@ graph = create_deep_agent(
     # apply_model_switch_policy() 顶掉模型切换中间件，保证它用自己配置的模型。
     subagents=[
         apply_model_switch_policy(
-            apply_subagent_policies(spec, default_interrupt_on=interrupt_on),
-            default_model,
+            apply_subagent_policies(spec, default_interrupt_on=interrupt_on)
         )
         for spec in load_subagents()
     ],
@@ -91,7 +90,7 @@ graph = create_deep_agent(
     # 用同一组参数反复失败），不碰提示词、不碰模型，跟别人的顺序无关。
     # 它靠扫消息历史判定连续失败，不写图状态，所以放在哪都不影响别的中间件。
     middleware=[
-        ChatModelSwitchMiddleware(default_model),
+        ChatModelSwitchMiddleware(),
         WorkspaceMiddleware(),
         # 权限档位记进 state：HITL 的 when 谓词在恢复时会再跑一次，必须给出
         # 同样的答案，只读客户端回传的值会被档位变化带偏（详见 permissions.py）

@@ -1,56 +1,13 @@
-"""手动压缩对话历史：`/compaction` 命令 + 模型自压缩工具。
+"""手动压缩对话历史，并让摘要用当前选中的模型。
 
-## 框架自带的两层
+继承框架 `SummarizationMiddleware`：`.name` 报成框架自带那份的公开别名，
+原地顶掉而不是叠加；用户发 `/compaction` 时强制压缩一次；`summarizer=`
+接管摘要调用，避免切模型后还烧旧供应商（阈值仍按启动模型算）。
 
-deepagents 的摘要中间件分两层，两者共用 `_summarization_event` 这个私有 state key：
+被压缩的旧消息落到工作空间的 `.scode/conversation_history/`，agent 可以
+`read_file` 读回来。
 
-- **SummarizationMiddleware**（自动层）：对话超阈值时自动把旧消息总结成一段摘要，
-  原始消息写到 backend 的 `.scode/conversation_history/<session_id>.md`（agent 之后
-  还能 `read_file` 读回来），然后用摘要替换掉旧消息。
-- **SummarizationToolMiddleware**（手动层）：注册一个 `compact_conversation` 工具，
-  模型可以自己决定什么时候压缩。
-
-本模块做三件事：
-
-1. **摘要用「当前选中的模型」写**，不是建图时那个。
-2. **`/compaction` 命令强制压缩一次**（不等阈值）。
-3. 挂上 `compact_conversation` 工具，模型也能自己压缩。
-
-## 一、摘要的模型：框架是建图时定死的
-
-`langchain` 的 `SummarizationMiddleware.__init__` 里有一句
-`self._summary_chat_model = self.model`——**摘要模型在构造那一刻就固定了**，
-之后不管 `request.model` 换成谁，摘要都还是用建图时那个实例发出去的。
-
-所以「切到新供应商之后，压缩历史还在烧旧供应商」是默认行为，不是 bug。
-但那跟「这段对话用这个模型」的意图对不上：用户特意切过去，图省钱的，
-压缩却偷偷按旧价结算。
-
-框架留了公开的扩展点：`summarizer` 参数。传进去的 Runnable 会接管摘要调用
-（收到的���是待总结的消息，摘要提示词要自己拼）。本模块用这个口子，
-在**每次调用时**解析 `configurable.model`，拿到用户当前选中的模型再写摘要。
-
-## 二、`/compaction` 怎么强制压缩
-
-自动层判断「要不要压缩」的地方是 `_should_summarize()`。子类覆盖它：
-**这一轮用户发的是 `/compaction` 就返回 True**，剩下的活全部交给框架原有 machinery
-（切分 → 总结 → 落盘 → 生成 summary event）。
-
-**只看最后一条用户消息**：`/compaction` 这条消息会留在对话里，如果只看「有没有
-出现过」，下一轮又会误判一次，把历史反复压缩。
-
-**顶掉自带的那份，不叠加**：deepagents 按中间件的 `.name` 合并——名字撞上已有
-槽位就原地替换，不撞就多一份。所以本类把 `.name` 报成框架自带那一份的公开别名
-（**从框架那里问出来的，不写死字面量**——框架升级改别名时这边跟着变），让它
-原地替换掉 `create_deep_agent()` 塞进来的那一份。两份摘要中间件同时跑会重复
-压缩、互相打架。
-
-## 三、压缩了什么
-
-框架的默认行为，被压缩的旧消息会**写到 backend 的文件里**
-（`.scode/conversation_history/<session_id>.md`，落点由 backend 的
-`artifacts_root` 决定，见 `graph/backend.py`），摘要里带着那个路径，agent 之后
-可以 `read_file` 读回来。所以压缩不是「丢历史」，是「把历史挪进文件」。
+细节见 AGENTS.md 第 14 条、`docs/backend/PROGRESS.md` 011 期。
 """
 
 from __future__ import annotations

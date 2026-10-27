@@ -1,72 +1,17 @@
 """运行期切换对话模型：不重启后端也能换供应商。
 
-## 为什么是中间件，而不是重建一张图
+前端每次运行在 `configurable["model"]` 里送 `供应商名:模型名`；中间件在每次模型
+调用前重新读 `conf/config.toml`，用 `request.override(model=...)` 换掉
+`request.model`。框架最终拿 `request.model.bind_tools(...)` 发请求，所以换的是
+真的。取不到就记 warning、退回启动时的默认模型；模型调用本身的错误不兜底。
 
-deepagents 在 `create_deep_agent()` 时把模型实例交给了 `create_agent()`，
-之后每次模型调用都用同一个实例发起。框架在每次调用前组装一个 `ModelRequest`，
-其中 `request.model` 就是「这次该用哪个模型」——中间件的 `wrap_model_call` /
-`awrap_model_call` 拿到它，可以 `request.override(model=...)` 换掉。
+作用域：主 agent。`isolated` / `general-purpose` 子 agent 用各自配置的模型；
+`mode="fork"` 会继承父级 middleware，由 `apply_model_switch_policy()` 用同名
+`enabled=False` 实例顶掉切换中间件。
 
-换了是真的换了：框架最终是拿 `request.model.bind_tools(...)` 去发请求的
-（见 langchain/agents/factory.py 的 `_get_bound_model`），不是拿建图时那个实例。
-
-## 模型从哪来
-
-前端在每次运行的 `configurable["model"]` 里带上选中的模型 id
-（`供应商名:模型名`，与 conf/config.toml 的写法一致）。中间件按这个 id 去
-conf/config.toml 查 base_url / api_key / protocol，现场建一个模型实例。
-
-**每次调用都重新读配置**，所以新增模型、改 base_url、改 api_key 都不用重启
-后端——这是本功能跟「后端启动时固定一个 default model」最大的区别。
-
-## 取不到就退回默认模型
-
-选了一个不存在的模型（刚被删掉、id 写错、供应商段缺字段）时，不能让整个
-对话挂掉：记一条 warning，继续用后端启动时带的默认模型。
-
-**这个失败在界面上看不出来**——前端只管把 id 发过去，不知道后端退回了默认模型。
-唯一能看到的是后端日志里的那条 warning。真要确认切没切成功，看消息里的
-`response_metadata.model_name`（见 docs/backend/PROGRESS.md 的验证步骤）。
-
-模型**调用**阶段的失败（401、限流、上下文超长）不在这里兜底：那是真实错误，
-直接抛给用户看。
-
-## 作用域：只切主 agent，子 agent 不跟着切
-
-**这个中间件只挂在主 agent 上。子 agent 保持各自原有的模型。**
-
-- `conf/subagents.toml` 里声明了 model 的子 agent：一律用它自己写的那个
-- deepagents 自动加的 `general-purpose`：用建图时继承来的那个（即启动时的默认模型）
-- `mode="fork"` 的子 agent：**会继承父级全部 middleware**，默认也会跟着切；
-  `apply_model_switch_policy()` 会给它的规格塞一个同名但 `enabled=False` 的
-  实例顶掉继承来的切换中间件。新增 fork 入口时别忘了调用它。
-
-**为什么不跟着切**：子 agent 用哪个模型是**配置**出来的——本项目的 `reviewer` /
-`summarizer` 刻意用便宜的 `MiniMax-M3.1-Flash`，主 agent 用 `MiniMax-M3`，
-「主对话用强模型、委派出去用便宜模型」是这个结构的一部分。用户在下拉框里选一个
-模型，意图是「**这段对话**用这个模型」，不是「我买的这个模型套餐随便怎么烧都行」。
-让子 agent 跟着切，等于把委派出去的活偷偷挪到新选（可能很贵）的模型上，
-把配置好的成本结构打乱。
-
-真要改某个子 agent 用哪个模型，去 `conf/subagents.toml` 写死它——那才是
-「显式配置」该待的地方。
-
-（框架层面其实做得到：子 agent 的中间件也能拿到父图的 `configurable`。
-这里选择不用。）
-
-## 已知边界
-
-这几条是「不重启后端换模型」的固有代价，不是实现偷懒：
-
-1. **harness profile 跟着启动时的模型走**。deepagents 按模型决定系统提示词
-   的附加内容、工具描述改写、排除哪些工具，这些在建图时定死。切到另一个
-   供应商后这套 profile 不会跟着换。
-2. **历史压缩（summarization）的阈值也按启动时的模型算**。切到上下文窗口
-   更小的模型时，压缩可能触发得偏晚，出现超长上下文错误。
-3. **摘要用的模型跟着切换走**（011 期改的）。框架默认把摘要模型在构造时定死
-   （`self._summary_chat_model = self.model`），切了之后压缩还在烧旧供应商；
-   `graph/compaction.py` 用 `summarizer=` 接管了摘要调用，改成每次调用时解析
-   当前选中的模型。但**阈值判断仍按启动时的模型算**——那条属于第 2 点。
+摘要模型也跟着切（`graph/compaction.py` 的 `summarizer=`），但 harness profile
+和压缩阈值仍按启动模型算。完整机制与已知边界见 `docs/backend/PROGRESS.md`
+010 期、AGENTS.md 第 13 条。
 """
 
 from __future__ import annotations
@@ -108,7 +53,7 @@ def selected_model_spec() -> str | None:
     return None
 
 
-def _build_selected_model() -> BaseChatModel | None:
+def _select_model() -> BaseChatModel | None:
     """按 `configurable["model"]` 建模型；没选或建不出来返回 None。
 
     这是中间件与摘要共用的唯一解析入口。返回 None 的两种情况调用方处理不同：
@@ -128,11 +73,11 @@ def _build_selected_model() -> BaseChatModel | None:
 def resolve_selected_model(default_model: BaseChatModel) -> BaseChatModel:
     """当前运行该用哪个模型：用户选中的那个，取不到就退回 default_model。
 
-    与 `ChatModelSwitchMiddleware` 共用 `_build_selected_model()`——**摘要也算
+    与 `ChatModelSwitchMiddleware` 共用 `_select_model()`——**摘要也算
     一次模型调用**，走这里才能保证压缩历史时用的也是用户选中的供应商
     （见 graph/compaction.py）。
     """
-    model = _build_selected_model()
+    model = _select_model()
     return default_model if model is None else model
 
 
@@ -144,21 +89,14 @@ class ChatModelSwitchMiddleware(AgentMiddleware[Any, Any, Any]):
     NotImplementedError（只实现一个时）。
     """
 
-    def __init__(self, default_model: BaseChatModel, *, enabled: bool = True) -> None:
-        """default_model 是后端启动时带的那个模型，选中项取不到时退回它。
+    def __init__(self, *, enabled: bool = True) -> None:
+        """`enabled=False` 用于 fork 子 agent。
 
-        `enabled=False` 用于 fork 子 agent：它的父级中间件会被整份继承，
-        需要在子 agent 规格里放一个**同名**的禁用实例去顶掉继承来的那个
-        （见 `apply_model_switch_policy()`）。
+        fork 会继承父级整份 middleware，需要在子 agent 规格里放一个**同名**的
+        禁用实例去顶掉继承来的那个（见 `apply_model_switch_policy()`）。
         """
         super().__init__()
-        self._default_model = default_model
         self._enabled = enabled
-
-    @property
-    def default_model(self) -> BaseChatModel:
-        """启动时的默认模型（取不到选中项时的退路）。"""
-        return self._default_model
 
     def wrap_model_call(
         self,
@@ -166,7 +104,7 @@ class ChatModelSwitchMiddleware(AgentMiddleware[Any, Any, Any]):
         handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
     ) -> ModelResponse[Any]:
         """同步路径：换掉 request.model 再交给 handler。"""
-        model = self._resolve_model()
+        model = self._model_for_request()
         if model is None:
             return handler(request)
         return handler(request.override(model=model))
@@ -177,26 +115,24 @@ class ChatModelSwitchMiddleware(AgentMiddleware[Any, Any, Any]):
         handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
     ) -> ModelResponse[Any]:
         """异步路径：换掉 request.model 再交给 handler。"""
-        model = self._resolve_model()
+        model = self._model_for_request()
         if model is None:
             return await handler(request)
         return await handler(request.override(model=model))
 
-    def _resolve_model(self) -> BaseChatModel | None:
-        """按 selectable 的模型 id 建一个模型实例。
+    def _model_for_request(self) -> BaseChatModel | None:
+        """这次模型调用该不该换模型。
 
-        返回 None 表示「不切换」：没选模型、或者选了但建不出来
-        （这时已经记过 warning）。fork 子 agent 用禁用实例，直接返回 None。
+        返回 None 表示「不切换」：禁用实例（fork 子 agent）、没选模型、或者选了
+        但建不出来（这时已经记过 warning）。不切换时就继续用 `request.model`
+        ——也就是启动时带的默认模型。
         """
         if not self._enabled:
             return None
-        return _build_selected_model()
+        return _select_model()
 
 
-def apply_model_switch_policy(
-    spec: dict[str, Any],
-    default_model: BaseChatModel,
-) -> dict[str, Any]:
+def apply_model_switch_policy(spec: dict[str, Any]) -> dict[str, Any]:
     """给子 agent 规格补上「该不该跟着切模型」的策略。
 
     `mode="fork"` 的子 agent 会继承父 agent 的**全部 middleware**
@@ -220,6 +156,6 @@ def apply_model_switch_policy(
         "middleware": [
             *middleware,
             # 放在最后：万一规格里已经有同名实例，dict 合并时后写入的值生效
-            ChatModelSwitchMiddleware(default_model, enabled=False),
+            ChatModelSwitchMiddleware(enabled=False),
         ],
     }

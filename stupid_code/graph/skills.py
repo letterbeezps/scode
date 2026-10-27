@@ -1,54 +1,11 @@
-"""skill 的发现与注入。
+"""skill 发现与注入：全局 `$SCODE_HOME/.agents/skills/` + 项目级
+`<工作空间>/.agents/skills/`。
 
-deepagents 自带 `SkillsMiddleware`：它扫描若干个「skill 源目录」，把每个
-`SKILL.md` 的**名称和描述**列进系统提示词，agent 觉得相关时再 `read_file`
-读全文（渐进式披露）。本项目在这个基础上加了两件事。
+项目级源用虚拟路径 `/.agents/skills/`，跟着运行期工作空间走；用户勾选的
+skill 由 `configurable.skills` 送来，正文钉进上下文。换工作空间或换勾选时
+摘掉 `skills_metadata` 强制重读。
 
-## 两个作用域
-
-| 作用域 | 目录 | 跟着谁走 |
-|---|---|---|
-| 全局 | `~/.scode/.agents/skills/`（`$SCODE_HOME` 可改） | 用户，跨所有工作空间 |
-| 项目级 | `<工作空间>/.agents/skills/` | 当前选中的那个项目 |
-
-**全局是静态的，项目级不是**——这是两者的根本差别：
-
-- 全局 skill 目录跟工作空间无关，所以它可以是一个**建图时就定死的常量**
-  （`GLOBAL_SKILL_SOURCES`），写进 `create_deep_agent(skills=...)` 也行。
-- 项目级 skill 在**工作空间里**，而工作空间是**运行期参数**
-  （`configurable["workspace"]`，见 `graph/workspace.py`）。建图时还不知道用户
-  会选哪个目录，所以它**不能**是静态的——必须每轮运行现算。
-
-本项目用**虚拟路径**解决这个矛盾：项目级源写成 `/.agents/skills/`，由主
-backend 的**运行期根目录**（`_WorkspaceRoot.cwd` 是个 property）解析成
-`<本轮工作空间>/.agents/skills/`。同一个图能服务不同项目目录的对话，skill
-也跟着走——跟文件工具、`execute` 的 cwd 是同一套机制。
-
-## 用户勾选的 skill：钉进上下文
-
-前端在输入框敲 `/` 可以勾选本次对话要用哪些 skill，勾选的名字随
-`configurable["skills"]` 发过来。语义是**钉进上下文 + 全部可见**：
-
-- **全部可见**：所有发现的 skill 都列在系统提示词里，agent 知道有什么可用，
-  觉得相关就自己 `read_file` 加载。
-- **勾选的额外钉进去**：框架的 `pinned_skills` 机制会把选中的 `SKILL.md`
-  **全文**（去掉 frontmatter）作为一条 `HumanMessage` 追加进对话历史——
-  不用等 agent 自己去读，也不用赌它会不会读。
-
-**只钉一次**：pin 的消息进了对话历史就一直在，每轮都会被重发。所以只有
-→「选择变了」才重新钉——否则每轮都追加一份同样的全文，几轮下来上下文就爆了。
-
-**取消勾选不会把已经钉进去的内容从历史里拿掉**（框架的 pin 语义是追加）。
-这是框架的机制决定的，不是这里能改的。
-
-## 换工作空间要重读
-
-框架的 `before_agent` 见到 state 里已有 `skills_metadata` 就跳过——一个 thread
-只读一次。但项目级 skill 跟着工作空间走，换了工作空间就得重读，否则会拿 A
-项目的 skill 指导 B 项目的活。这里记下「上次读的是哪个工作空间」，变了就把
-`skills_metadata` 摘掉逼框架重读（跟 `graph/memory.py` 的记忆是同一套路）。
-
-「选择变了」也走同一条路：重读一次，顺便把新的选择钉进去。
+细节见 `docs/backend/PROGRESS.md` 018 期、AGENTS.md 第 20 条。
 """
 
 from __future__ import annotations
@@ -220,7 +177,7 @@ class WorkspaceSkillsMiddleware(SkillsMiddleware):
 
         `sources` 传**两个**源：全局（静态）和项目级（虚拟路径，指向运行期
         工作空间）。这两个源字符串是恒定的——**「项目级」跟着工作空间走，靠的
-        不是源字符串，而是主 backend 那个运行期根目录**（`_WorkspaceRoot.cwd`
+        不是源字符串，而是主 backend 那个运行期根目录**（`_WorkspaceCwdMixin.cwd`
         是个 property）。所以同一个中间件实例能服务不同项目的对话。
 
         `system_prompt` 换成本项目自己的中文模板（框架那份提到的标签跟我们对
