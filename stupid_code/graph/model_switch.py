@@ -80,6 +80,7 @@ from langchain_core.language_models import BaseChatModel
 from langgraph.config import get_config
 
 from stupid_code.config.model import build_model_by_spec, load_config
+from stupid_code.graph.workspace import configurable_of
 
 logger = logging.getLogger(__name__)
 
@@ -94,14 +95,12 @@ def selected_model_spec() -> str | None:
     （None 的意思是「不切换，按后端默认模型来」）。
     """
     try:
-        config = get_config()
+        configurable = configurable_of(get_config())
     except RuntimeError:
         # 不在 runnable 上下文里（本地直接调中间件、或框架换了实现），
         # 取不到就当用户没选
         return None
-
-    configurable = config.get("configurable")
-    if not isinstance(configurable, dict):
+    if not configurable:
         return None
     spec = configurable.get(MODEL_KEY)
     if isinstance(spec, str) and spec.strip():

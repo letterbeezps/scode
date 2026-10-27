@@ -77,8 +77,6 @@ from stupid_code.graph.workspace import default_workspace, workspace_of
 
 # 两条来源的虚拟路径。定义在 memory_home.py（记忆落点的单一事实来源），
 # 那边也被 graph/permissions.py 用着——写记忆文件要人工确认。
-_MEMORY_SOURCE = PROJECT_MEMORY_SOURCE
-_USER_MEMORY_SOURCE = USER_MEMORY_SOURCE
 
 
 MEMORY_MAX_CHARS = 8000
@@ -352,7 +350,7 @@ def build_memory_middleware() -> WorkspaceMemoryMiddleware:
         backend=backend,
         # 顺序：用户级在前、项目级在后。框架按 sources 顺序拼接，后面的在
         # 提示词里更靠后、冲突时优先被读到——项目级更具体，理应压过用户级。
-        sources=[_USER_MEMORY_SOURCE, _MEMORY_SOURCE],
+        sources=[USER_MEMORY_SOURCE, PROJECT_MEMORY_SOURCE],
         # 用本项目自己的模板替换框架那份英文通用模板
         system_prompt=_MEMORY_TEMPLATE,
         # 与框架自己挂 MemoryMiddleware 时的行为一致：给记忆块加缓存断点，

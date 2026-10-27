@@ -1,7 +1,8 @@
 """模型 CRUD 的请求处理函数。
 
 每个函数接收 Starlette Request，返回 Response。
-配置层的 ConfigError 在处理器内捕获并转成 400。
+配置层的 ConfigError 在处理器内捕获并转成 400；模型不存在（NotFoundError）
+转成 404。
 
 注意：langgraph dev 装了 blockbuster，async 函数里直接调同步阻塞 IO
 （os.mkdir / open / os.replace 等）会被拦截报 500。
@@ -14,12 +15,15 @@ toml 内部按 provider 分组只是为了避免重复写 key/base_url，接口�
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from stupid_code.config.model import (
     ConfigError,
+    NotFoundError,
     add_model,
     delete_model,
     get_model,
@@ -28,6 +32,47 @@ from stupid_code.config.model import (
     save_config,
     update_model,
 )
+
+T = TypeVar("T")
+
+
+async def _mutate(
+    fn: Callable[[dict[str, Any]], T],
+) -> tuple[T | None, ConfigError | None]:
+    """加载配置 → 调 fn → 存回配置。
+
+    fn 抛 ConfigError 时**不落盘**（写坏了就别动用户的配置文件），错误原样
+    交给调用方转 400 / 404。
+
+    `load_config` 的错误故意不在这里拦——配置文件缺失/损坏不是「请求写错了」，
+    跟原来一样冒上去变成 500。
+    """
+    config = await asyncio.to_thread(load_config)
+    try:
+        result = fn(config)
+    except ConfigError as exc:
+        return None, exc
+    await asyncio.to_thread(save_config, config)
+    return result, None
+
+
+async def _read_json(request: Request) -> tuple[Any, JSONResponse | None]:
+    """读 JSON 请求体。解析失败返回 (None, 400 响应)。
+
+    **不校验 body 是不是对象**——那件事交给配置层（`add_model` / `update_model`
+    自己会抛 ConfigError），顺序跟原来一样：先查模型在不在，再看 body 合不合法。
+    """
+    try:
+        return await request.json(), None
+    except Exception as exc:  # noqa: BLE001 —— 任何解析失败都是「body 不是 JSON」
+        return None, JSONResponse(
+            {"error": f"请求体不是合法 JSON：{exc}"}, status_code=400
+        )
+
+
+def _status_of(err: ConfigError) -> int:
+    """配置层报错的 HTTP 状态码：模型不存在是 404，其余是 400。"""
+    return 404 if isinstance(err, NotFoundError) else 400
 
 
 async def list_all(request: Request) -> JSONResponse:
@@ -51,9 +96,7 @@ async def get_one(request: Request) -> JSONResponse:
     try:
         item = get_model(config, model_id, reveal=reveal)
     except ConfigError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    if item is None:
-        return JSONResponse({"error": f"模型 {model_id!r} 不存在"}, status_code=404)
+        return JSONResponse({"error": str(exc)}, status_code=_status_of(exc))
     return JSONResponse(item)
 
 
@@ -62,23 +105,13 @@ async def create(request: Request) -> JSONResponse:
     body 必含 name/protocol/provider/api_key，base_url / display_name 可选。
     若 provider 不存在则自动创建供应商段。
     """
-    try:
-        body = await request.json()
-    except Exception as exc:
-        return JSONResponse({"error": f"请求体不是合法 JSON：{exc}"}, status_code=400)
+    body, err = await _read_json(request)
+    if err is not None:
+        return err
 
-    async def _do() -> tuple[int, str | None, str | None]:
-        config = await asyncio.to_thread(load_config)
-        try:
-            model_id = add_model(config, body)
-            await asyncio.to_thread(save_config, config)
-        except ConfigError as exc:
-            return 400, None, str(exc)
-        return 201, model_id, None
-
-    status, model_id, err = await _do()
-    if status != 201:
-        return JSONResponse({"error": err}, status_code=status)
+    model_id, err = await _mutate(lambda config: add_model(config, body))
+    if err is not None:
+        return JSONResponse({"error": str(err)}, status_code=_status_of(err))
     return JSONResponse(
         {"id": model_id, "created": True, "restart_required": True},
         status_code=201,
@@ -93,25 +126,15 @@ async def update(request: Request) -> JSONResponse:
     （toml 按 provider 分组，连接字段属于整个供应商段）。
     """
     model_id = request.path_params["id"]
-    try:
-        body = await request.json()
-    except Exception as exc:
-        return JSONResponse({"error": f"请求体不是合法 JSON：{exc}"}, status_code=400)
+    body, err = await _read_json(request)
+    if err is not None:
+        return err
 
-    async def _do() -> tuple[int, str | None, list[str] | None]:
-        config = await asyncio.to_thread(load_config)
-        try:
-            ok, co_affected = update_model(config, model_id, body)
-            if not ok:
-                return 404, f"模型 {model_id!r} 不存在", None
-            await asyncio.to_thread(save_config, config)
-        except ConfigError as exc:
-            return 400, str(exc), None
-        return 200, None, co_affected
-
-    status, err, co_affected = await _do()
-    if status != 200:
-        return JSONResponse({"error": err}, status_code=status)
+    co_affected, err = await _mutate(
+        lambda config: update_model(config, model_id, body)
+    )
+    if err is not None:
+        return JSONResponse({"error": str(err)}, status_code=_status_of(err))
     return JSONResponse({
         "id": model_id,
         "updated": True,
@@ -127,20 +150,9 @@ async def delete(request: Request) -> JSONResponse:
     """
     model_id = request.path_params["id"]
 
-    async def _do() -> tuple[int, str | None, list[str] | None]:
-        config = await asyncio.to_thread(load_config)
-        try:
-            ok, remaining = delete_model(config, model_id)
-            if not ok:
-                return 404, f"模型 {model_id!r} 不存在", None
-            await asyncio.to_thread(save_config, config)
-        except ConfigError as exc:
-            return 400, str(exc), None
-        return 200, None, remaining
-
-    status, err, remaining = await _do()
-    if status != 200:
-        return JSONResponse({"error": err}, status_code=status)
+    remaining, err = await _mutate(lambda config: delete_model(config, model_id))
+    if err is not None:
+        return JSONResponse({"error": str(err)}, status_code=_status_of(err))
     return JSONResponse({
         "id": model_id,
         "deleted": True,

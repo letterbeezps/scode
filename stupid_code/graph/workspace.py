@@ -175,6 +175,19 @@ def resolve_workspace_path(raw: str) -> Path:
     return root.resolved
 
 
+def configurable_of(config: RunnableConfig | None) -> dict[str, Any] | None:
+    """从一份 runnable config 里取 `configurable` 字典（运行期任务级参数）。
+
+    中间件的钩子拿得到 `config` 参数（框架按签名注入），比 `get_config()`
+    可靠——同步路径下钩子可能不在 runnable 上下文里，所以**优先用它**。
+    拿不到（建图阶段、本地脚本）返回 None。
+    """
+    if not isinstance(config, dict):
+        return None
+    configurable = config.get("configurable")
+    return configurable if isinstance(configurable, dict) else None
+
+
 def workspace_from_configurable(configurable: Any) -> str | None:
     """从运行的 configurable 里取工作空间路径。
 
@@ -188,26 +201,16 @@ def workspace_from_configurable(configurable: Any) -> str | None:
     return None
 
 
-def resolve_workspace(configurable: Any) -> Path:
-    """这一轮运行该用哪个工作空间。
+def workspace_of(config: RunnableConfig | None) -> Path:
+    """从一份 runnable config 里解析工作空间。
 
     前端选了就用它（校验不通过就抛 WorkspaceError，不静默改道）；
     没选就用默认工作空间。
     """
-    raw = workspace_from_configurable(configurable)
+    raw = workspace_from_configurable(configurable_of(config))
     if raw is None:
         return default_workspace()
     return resolve_workspace_path(raw)
-
-
-def workspace_of(config: RunnableConfig | None) -> Path:
-    """从一份 runnable config 里解析工作空间。
-
-    中间件的钩子拿得到 `config` 参数（框架按签名注入），比
-    `get_config()` 更可靠——同步路径下钩子可能不在 runnable 上下文里。
-    """
-    configurable = config.get("configurable") if isinstance(config, dict) else None
-    return resolve_workspace(configurable)
 
 
 def current_workspace() -> Path:
@@ -221,16 +224,11 @@ def current_workspace() -> Path:
     缓存未命中时仍会解析一次并校验——那条路只能在事件循环之外跑（由调用方
     保证走线程），否则 `Path.resolve()` 展开软链会撞上 blockbuster。
     运行中途目录被删掉不会每次工具调用都重新 stat，热路径看到的是缓存。
+
+    实现就是 `current_workspace_root().resolved`——两者在所有分支上等价
+    （实测过），别再各写一份。
     """
-    try:
-        config = get_config()
-    except RuntimeError:
-        return default_workspace()
-    configurable = config.get("configurable") if isinstance(config, dict) else None
-    raw = workspace_from_configurable(configurable)
-    if raw is None:
-        return default_workspace()
-    return resolve_workspace_path(raw)
+    return current_workspace_root().resolved
 
 
 def current_workspace_root() -> WorkspaceRoot:
@@ -245,8 +243,7 @@ def current_workspace_root() -> WorkspaceRoot:
     except RuntimeError:
         resolved = default_workspace()
         return WorkspaceRoot(resolved=resolved, given=resolved)
-    configurable = config.get("configurable") if isinstance(config, dict) else None
-    raw = workspace_from_configurable(configurable)
+    raw = workspace_from_configurable(configurable_of(config))
     if raw is None:
         resolved = default_workspace()
         return WorkspaceRoot(resolved=resolved, given=resolved)
@@ -283,8 +280,7 @@ _WORKSPACE_PROMPT_TEMPLATE = """## 当前工作空间
 
 def _raw_workspace(config: RunnableConfig | None) -> str | None:
     """从一份 runnable config 里取前端传的工作空间原始值。"""
-    configurable = config.get("configurable") if isinstance(config, dict) else None
-    return workspace_from_configurable(configurable)
+    return workspace_from_configurable(configurable_of(config))
 
 
 def _refresh_workspace(raw: str) -> Path:

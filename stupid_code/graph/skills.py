@@ -60,7 +60,7 @@ from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.runnables import RunnableConfig
 
 from stupid_code.graph.memory_home import scode_home_dir
-from stupid_code.graph.workspace import workspace_of
+from stupid_code.graph.workspace import configurable_of, workspace_of
 
 SKILLS_KEY = "skills"
 """`configurable` 里的 key：本次对话勾选的 skill 名字列表。
@@ -140,8 +140,8 @@ def selected_skills(config: RunnableConfig | None) -> list[str]:
     去重、去掉空串、保持前端给的顺序。名字对不上已加载的 skill 时，框架
     的 pin 逻辑会跳过它（不报错）。
     """
-    configurable = config.get("configurable") if isinstance(config, dict) else None
-    raw = configurable.get(SKILLS_KEY) if isinstance(configurable, dict) else None
+    configurable = configurable_of(config)
+    raw = configurable.get(SKILLS_KEY) if configurable else None
     if not isinstance(raw, list):
         return []
     out: list[str] = []

@@ -59,11 +59,10 @@ from langchain_core.tools import BaseTool
 
 from stupid_code.graph.memory_home import (
     MEMORY_FILENAME,
-    PROJECT_MEMORY_SOURCE,
     USER_MEMORY_SOURCE,
     user_memory_path,
 )
-from stupid_code.graph.workspace import WorkspaceError, current_workspace
+from stupid_code.graph.workspace import WorkspaceError, configurable_of, current_workspace
 
 PERMISSIONS_KEY = "permissions"
 """`configurable` 里的 key，与前端 `web/src/lib/permissions.ts` 的 PERMISSIONS_KEY 一致。"""
@@ -129,7 +128,7 @@ class PermissionLevelMiddleware(AgentMiddleware[Any, Any, Any]):
         config: RunnableConfig,
     ) -> dict[str, Any] | None:
         """同步路径：记下这一轮的档位。"""
-        return {PERMISSION_LEVEL_STATE_KEY: permission_level(_configurable_of(config))}
+        return {PERMISSION_LEVEL_STATE_KEY: permission_level(configurable_of(config))}
 
     async def abefore_agent(
         self,
@@ -139,14 +138,6 @@ class PermissionLevelMiddleware(AgentMiddleware[Any, Any, Any]):
     ) -> dict[str, Any] | None:
         """异步路径：同上（不碰文件系统，没有 blockbuster 风险）。"""
         return self.before_agent(state, runtime, config)
-
-
-def _configurable_of(config: RunnableConfig | None) -> dict[str, Any] | None:
-    """从一份 runnable config 里取 configurable。"""
-    if not isinstance(config, dict):
-        return None
-    configurable = config.get("configurable")
-    return configurable if isinstance(configurable, dict) else None
 
 
 def permission_level(configurable: dict[str, Any] | None) -> str:

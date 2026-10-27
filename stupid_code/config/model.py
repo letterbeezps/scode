@@ -40,6 +40,14 @@ class ConfigError(Exception):
     """配置缺失或不合法。message 面向用户，可直接展示。"""
 
 
+class NotFoundError(ConfigError):
+    """要操作的模型不存在（HTTP 404，不是 400）。
+
+    单列一个类型，是为了让调用方能区分「写错了」（400）和「没有这个东西」
+    （404）——两者都是 ConfigError，但状态码不同。
+    """
+
+
 def config_path() -> Path:
     return _CONF_DIR / _CONFIG_FILENAME
 
@@ -96,13 +104,19 @@ def _optional_str(body: dict[str, Any], key: str) -> str | None:
     return value
 
 
-def build_model(config: dict[str, Any]) -> BaseChatModel:
-    """按 [models].default → recent 的顺序构建主 agent 的模型。"""
-    models = config.get("models")
-    if not isinstance(models, dict):
-        raise ConfigError("config.toml 缺少 [models] 段")
+def _parse_model_id(model_id: str) -> tuple[str, str]:
+    """解析 'provider:model' 为 (provider, model_name)。
 
-    return build_model_by_spec(config, _pick_model_spec(models))
+    与 conf/config.toml 里 [models].default = "minimax:MiniMax-M3" 的格式对齐。
+    """
+    if ":" not in model_id:
+        raise ConfigError(f'模型 ID {model_id!r} 不合法，应为 "供应商名:模型名"')
+    provider, _, model_name = model_id.partition(":")
+    provider = provider.strip()
+    model_name = model_name.strip()
+    if not provider or not model_name:
+        raise ConfigError(f'模型 ID {model_id!r} 不合法，应为 "供应商名:模型名"')
+    return provider, model_name
 
 
 def build_model_by_spec(config: dict[str, Any], spec: str) -> BaseChatModel:
@@ -122,11 +136,7 @@ def build_model_by_spec(config: dict[str, Any], spec: str) -> BaseChatModel:
     if not isinstance(models, dict):
         raise ConfigError("config.toml 缺少 [models] 段")
 
-    provider_name, _, model_id = spec.partition(":")
-    provider_name = provider_name.strip()
-    model_id = model_id.strip()
-    if not provider_name or not model_id:
-        raise ConfigError(f'模型标识 {spec!r} 不合法，应为 "供应商名:模型名"')
+    provider_name, model_id = _parse_model_id(spec)
 
     providers = models.get("providers")
     if not isinstance(providers, dict) or not providers:
@@ -173,7 +183,17 @@ def build_model_by_spec(config: dict[str, Any], spec: str) -> BaseChatModel:
 
 
 def load_model() -> BaseChatModel:
-    return build_model(load_config())
+    """后端启动时带的默认模型：按 [models].default → recent 的顺序选。
+
+    建图时（`graph/agent.py` 导入）调用一次。改 conf/config.toml 要重启
+    后端才换得掉——运行期切换模型走的是 `graph/model_switch.py`，那条路
+    每次调用都重新读本文件。
+    """
+    config = load_config()
+    models = config.get("models")
+    if not isinstance(models, dict):
+        raise ConfigError("config.toml 缺少 [models] 段")
+    return build_model_by_spec(config, _pick_model_spec(models))
 
 
 def save_config(config: dict[str, Any]) -> None:
@@ -200,17 +220,25 @@ def _mask(key: str | None) -> str | None:
     return f"***{key[-4:]}"
 
 
-def _parse_model_id(model_id: str) -> tuple[str, str]:
-    """解析 'provider:model' 为 (provider, model_name)。
-    与 conf/config.toml 里 [models].default = "minimax:MiniMax-M3" 的格式对齐。"""
-    if ":" not in model_id:
-        raise ConfigError(f'模型 ID {model_id!r} 不合法，应为 "供应商名:模型名"')
-    provider, _, model_name = model_id.partition(":")
-    provider = provider.strip()
-    model_name = model_name.strip()
-    if not provider or not model_name:
-        raise ConfigError(f'模型 ID {model_id!r} 不合法，应为 "供应商名:模型名"')
-    return provider, model_name
+def _model_entry(
+    provider_name: str,
+    model_name: str,
+    provider: dict[str, Any],
+    reveal: bool,
+) -> dict[str, Any]:
+    """一个模型的扁平表示（接口层不暴露 toml 的 provider 分组结构）。
+
+    api_key 默认脱敏；`reveal=True` 才给明文。
+    """
+    return {
+        "id": f"{provider_name}:{model_name}",
+        "name": model_name,
+        "provider": provider_name,
+        "protocol": provider.get("protocol"),
+        "display_name": provider.get("display_name"),
+        "base_url": provider.get("base_url"),
+        "api_key": provider.get("api_key") if reveal else _mask(provider.get("api_key")),
+    }
 
 
 def list_models(config: dict[str, Any], reveal: bool = False) -> list[dict[str, Any]]:
@@ -220,33 +248,20 @@ def list_models(config: dict[str, Any], reveal: bool = False) -> list[dict[str, 
     out = []
     for prov_name, p in providers.items():
         for model_name in p.get("models", []):
-            out.append({
-                "id": f"{prov_name}:{model_name}",
-                "name": model_name,
-                "provider": prov_name,
-                "protocol": p.get("protocol"),
-                "display_name": p.get("display_name"),
-                "base_url": p.get("base_url"),
-                "api_key": p.get("api_key") if reveal else _mask(p.get("api_key")),
-            })
+            out.append(_model_entry(prov_name, model_name, p, reveal))
     return out
 
 
-def get_model(config: dict[str, Any], model_id: str, reveal: bool = False) -> dict[str, Any] | None:
-    """按 'provider:model' 取单个模型详情。不存在返回 None。"""
+def get_model(config: dict[str, Any], model_id: str, reveal: bool = False) -> dict[str, Any]:
+    """按 'provider:model' 取单个模型详情。
+
+    不存在抛 `NotFoundError`（HTTP 404）；id 格式不合法抛 `ConfigError`（400）。
+    """
     provider_name, model_name = _parse_model_id(model_id)
     p = config.get("models", {}).get("providers", {}).get(provider_name)
     if p is None or model_name not in p.get("models", []):
-        return None
-    return {
-        "id": model_id,
-        "name": model_name,
-        "provider": provider_name,
-        "protocol": p.get("protocol"),
-        "display_name": p.get("display_name"),
-        "base_url": p.get("base_url"),
-        "api_key": p.get("api_key") if reveal else _mask(p.get("api_key")),
-    }
+        raise NotFoundError(f"模型 {model_id!r} 不存在")
+    return _model_entry(provider_name, model_name, p, reveal)
 
 
 def add_model(config: dict[str, Any], body: dict[str, Any]) -> str:
@@ -318,20 +333,22 @@ def add_model(config: dict[str, Any], body: dict[str, Any]) -> str:
 
 def update_model(
     config: dict[str, Any], model_id: str, body: dict[str, Any]
-) -> tuple[bool, list[str]]:
+) -> list[str]:
     """改模型属性。可改：protocol、base_url、api_key、display_name。
     model_name 自身不可改（要改请删后增）。
     base_url / display_name 传 null 表示删除该字段（TOML 没有 null）。
 
-    返回 (是否成功, 受影响的其他同级模型 id 列表)。
+    返回受影响的其他同级模型 id 列表。
     注意：toml 按 provider 分组，这些字段属于整个供应商段，所以会
     影响该供应商下所有同级模型——co_affected 列出它们让用户知情。
+
+    模型不存在抛 `NotFoundError`（HTTP 404）。
     """
     provider_name, model_name = _parse_model_id(model_id)
     providers = config.get("models", {}).get("providers", {})
     p = providers.get(provider_name)
     if p is None or model_name not in p.get("models", []):
-        return False, []
+        raise NotFoundError(f"模型 {model_id!r} 不存在")
 
     if not isinstance(body, dict):
         raise ConfigError("请求体必须是 JSON 对象")
@@ -360,26 +377,28 @@ def update_model(
             p["display_name"] = display_name
 
     co_affected = [f"{provider_name}:{m}" for m in p.get("models", []) if m != model_name]
-    return True, co_affected
+    return co_affected
 
 
-def delete_model(config: dict[str, Any], model_id: str) -> tuple[bool, list[str]]:
-    """删模型。返回 (是否删除, 剩余同级模型 id 列表)。
+def delete_model(config: dict[str, Any], model_id: str) -> list[str]:
+    """删模型。返回剩余同级模型 id 列表。
 
     若删除后该供应商 models[] 为空，自动删除整个供应商段，保持 toml 一致性。
+
+    模型不存在抛 `NotFoundError`（HTTP 404）。
     """
     provider_name, model_name = _parse_model_id(model_id)
     providers = config.get("models", {}).get("providers", {})
     p = providers.get(provider_name)
     if p is None:
-        return False, []
+        raise NotFoundError(f"模型 {model_id!r} 不存在")
     models_list = p.get("models", [])
     if model_name not in models_list:
-        return False, []
+        raise NotFoundError(f"模型 {model_id!r} 不存在")
     models_list.remove(model_name)
     co_remaining = [f"{provider_name}:{m}" for m in models_list]
     if not models_list:
         # 该供应商段已空，自动清理
         providers.pop(provider_name, None)
         co_remaining = []
-    return True, co_remaining
+    return co_remaining
