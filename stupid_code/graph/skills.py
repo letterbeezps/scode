@@ -208,9 +208,7 @@ class WorkspaceSkillsMiddleware(SkillsMiddleware):
         config: RunnableConfig,
     ) -> dict[str, Any] | None:
         """同步路径：读 skill（换工作空间或换选择就重读），并钉住勾选的。"""
-        workspace = str(workspace_of(config))
-        selected = selected_skills(config)
-        prepared = self._state_for_reload(state, workspace, selected)
+        prepared, workspace, selected = self._prepare_before(state, config)
         update = super().before_agent(prepared, runtime, config)
         return self._finish(update, workspace, selected)
 
@@ -221,11 +219,19 @@ class WorkspaceSkillsMiddleware(SkillsMiddleware):
         config: RunnableConfig,
     ) -> dict[str, Any] | None:
         """异步路径：同上；框架自己的目录扫描走 backend 的异步接口。"""
-        workspace = str(workspace_of(config))
-        selected = selected_skills(config)
-        prepared = self._state_for_reload(state, workspace, selected)
+        prepared, workspace, selected = self._prepare_before(state, config)
         update = await super().abefore_agent(prepared, runtime, config)
         return self._finish(update, workspace, selected)
+
+    def _prepare_before(
+        self,
+        state: Any,
+        config: RunnableConfig,
+    ) -> tuple[Any, str, list[str]]:
+        """算出本轮工作空间和勾选，并在需要时摘掉旧 skill 列表。"""
+        workspace = str(workspace_of(config))
+        selected = selected_skills(config)
+        return self._state_for_reload(state, workspace, selected), workspace, selected
 
     # ---------------------------------------------------------------- 内部
 

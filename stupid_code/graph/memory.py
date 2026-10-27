@@ -144,10 +144,8 @@ class WorkspaceMemoryMiddleware(MemoryMiddleware):
         config: RunnableConfig,
     ) -> dict[str, Any] | None:
         """同步路径：让框架读记忆（换了工作空间就重读），并截断超长内容。"""
-        workspace = workspace_of(config)
-        update = super().before_agent(
-            self._state_for_load(state, str(workspace)), runtime, config
-        )
+        prepared, workspace = self._prepare_load(state, config)
+        update = super().before_agent(prepared, runtime, config)
         return self._with_workspace_marker(self._truncate(update), workspace)
 
     async def abefore_agent(
@@ -157,11 +155,14 @@ class WorkspaceMemoryMiddleware(MemoryMiddleware):
         config: RunnableConfig,
     ) -> dict[str, Any] | None:
         """异步路径：同上；框架自己的文件读取走线程。"""
-        workspace = workspace_of(config)
-        update = await super().abefore_agent(
-            self._state_for_load(state, str(workspace)), runtime, config
-        )
+        prepared, workspace = self._prepare_load(state, config)
+        update = await super().abefore_agent(prepared, runtime, config)
         return self._with_workspace_marker(self._truncate(update), workspace)
+
+    def _prepare_load(self, state: Any, config: RunnableConfig) -> tuple[Any, Path]:
+        """算出本轮工作空间，并在换目录时摘掉旧记忆。"""
+        workspace = workspace_of(config)
+        return self._state_for_load(state, str(workspace)), workspace
 
     def _format_agent_memory(
         self,

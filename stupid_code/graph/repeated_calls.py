@@ -195,25 +195,22 @@ class RepeatedCallMiddleware(AgentMiddleware[Any, Any, Any]):
 
     def wrap_tool_call(self, request: ToolCallRequest, handler: Any) -> Any:
         """同步路径。"""
-        tool_call = request.tool_call
-        signature = call_signature(tool_call["name"], tool_call.get("args") or {})
-
-        failures = consecutive_failures(_messages_of(request.state), signature)
-        if failures < self.threshold - 1:
-            # 还没到阈值：正常执行，失败的话下一轮就会数上
-            return handler(request)
-
-        return self._blocked_message(tool_call, failures + 1)
+        blocked = self._blocked_message_or_none(request)
+        return blocked if blocked is not None else handler(request)
 
     async def awrap_tool_call(self, request: ToolCallRequest, handler: Any) -> Any:
         """异步路径：同上（项目走的就是这条路）。"""
+        blocked = self._blocked_message_or_none(request)
+        return blocked if blocked is not None else await handler(request)
+
+    def _blocked_message_or_none(self, request: ToolCallRequest) -> ToolMessage | None:
+        """这次调用是否已经达到「连续同样失败」的阈值。"""
         tool_call = request.tool_call
         signature = call_signature(tool_call["name"], tool_call.get("args") or {})
-
         failures = consecutive_failures(_messages_of(request.state), signature)
         if failures < self.threshold - 1:
-            return await handler(request)
-
+            # 还没到阈值：正常执行，失败的话下一轮就会数上
+            return None
         return self._blocked_message(tool_call, failures + 1)
 
     def _blocked_message(self, tool_call: dict[str, Any], attempts: int) -> ToolMessage:

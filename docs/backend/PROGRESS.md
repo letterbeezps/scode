@@ -149,6 +149,7 @@ stupid-code/
 │   │   └── prompts.py          # 主 agent 的系统提示词
 │   ├── admin/
 │   │   ├── app.py              # Starlette 子应用与路由表
+│   │   ├── common.py           # 路由共用：解析 ?workspace= + 统一 400 响应
 │   │   ├── memory.py           # /admin/memory 两个端点（记忆读写）
 │   │   ├── models.py           # /admin/models 五个端点
 │   │   ├── skills.py           # GET /admin/skills（skill 清单）

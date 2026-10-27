@@ -104,10 +104,7 @@ class ChatModelSwitchMiddleware(AgentMiddleware[Any, Any, Any]):
         handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
     ) -> ModelResponse[Any]:
         """同步路径：换掉 request.model 再交给 handler。"""
-        model = self._model_for_request()
-        if model is None:
-            return handler(request)
-        return handler(request.override(model=model))
+        return handler(self._request_with_selected_model(request))
 
     async def awrap_model_call(
         self,
@@ -115,10 +112,12 @@ class ChatModelSwitchMiddleware(AgentMiddleware[Any, Any, Any]):
         handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
     ) -> ModelResponse[Any]:
         """异步路径：换掉 request.model 再交给 handler。"""
+        return await handler(self._request_with_selected_model(request))
+
+    def _request_with_selected_model(self, request: ModelRequest[Any]) -> ModelRequest[Any]:
+        """选中了可用模型就替换 request.model，否则原样返回。"""
         model = self._model_for_request()
-        if model is None:
-            return await handler(request)
-        return await handler(request.override(model=model))
+        return request if model is None else request.override(model=model)
 
     def _model_for_request(self) -> BaseChatModel | None:
         """这次模型调用该不该换模型。

@@ -36,12 +36,9 @@ from pathlib import Path
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from stupid_code.admin.common import resolve_workspace, workspace_error
 from stupid_code.graph.paths import MEMORY_FILENAME, user_memory_path
-from stupid_code.graph.workspace import (
-    WorkspaceError,
-    default_workspace,
-    resolve_workspace_path,
-)
+from stupid_code.graph.workspace import WorkspaceError
 
 SCOPES = ("user", "project")
 """记忆的作用域：用户级 / 项目级。"""
@@ -67,22 +64,12 @@ def _write(path: Path, content: str) -> int:
     return len(content.encode("utf-8"))
 
 
-def _project_memory_path(workspace: str) -> Path:
-    """项目级记忆的完整路径。
-
-    工作空间没给就用后端默认工作空间——跟 agent 的行为一致（没选工作空间
-    = 用后端启动时的目录，见 `graph/workspace.py`）。
-    """
-    root = resolve_workspace_path(workspace) if workspace else default_workspace()
-    return root / MEMORY_FILENAME
-
-
 async def _resolve(workspace: str) -> Path:
     """解析工作空间并返回项目级记忆的路径。**会读文件系统，走线程。**
 
     工作空间不合法时抛 `WorkspaceError`（继承 ValueError，message 面向用户）。
     """
-    return await asyncio.to_thread(_project_memory_path, workspace)
+    return (await resolve_workspace(workspace)) / MEMORY_FILENAME
 
 
 async def read_memory(request: Request) -> JSONResponse:
@@ -94,7 +81,7 @@ async def read_memory(request: Request) -> JSONResponse:
     try:
         project_path = await _resolve(workspace)
     except WorkspaceError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
+        return workspace_error(exc)
 
     user_path = user_memory_path()
     try:
@@ -158,7 +145,7 @@ async def write_memory(request: Request) -> JSONResponse:
         try:
             path = await _resolve(workspace)
         except WorkspaceError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=400)
+            return workspace_error(exc)
 
     try:
         size = await asyncio.to_thread(_write, path, content)

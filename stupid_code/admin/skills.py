@@ -32,13 +32,10 @@ from deepagents.middleware.skills import SkillsMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from stupid_code.admin.common import workspace_error, workspace_from_query
 from stupid_code.graph.paths import GLOBAL_SKILLS_ROUTE, global_skills_dir
 from stupid_code.graph.skills import PROJECT_SKILLS_SOURCE, skill_sources
-from stupid_code.graph.workspace import (
-    WorkspaceError,
-    default_workspace,
-    resolve_workspace_path,
-)
+from stupid_code.graph.workspace import WorkspaceError
 
 SCOPE_USER = "user"
 SCOPE_PROJECT = "project"
@@ -114,15 +111,10 @@ async def read_skills(request: Request) -> JSONResponse:
 
     `workspace` 可以不给——不给就是后端默认工作空间。
     """
-    workspace = (request.query_params.get("workspace") or "").strip()
     try:
-        root = (
-            await asyncio.to_thread(resolve_workspace_path, workspace)
-            if workspace
-            else default_workspace()
-        )
+        root = await workspace_from_query(request)
     except WorkspaceError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
+        return workspace_error(exc)
 
     try:
         skills = await _list(root)
