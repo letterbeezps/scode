@@ -1,11 +1,11 @@
-# 后端进度快照（001–018 合并版）
+# 后端进度快照（001–020 合并版）
 
-> **这份文档是什么**：项目后端从第 001 期到第 018 期的**进度快照**。
+> **这份文档是什么**：项目后端从第 001 期到第 020 期的**进度快照**。
 > 它把原先散在 `001_*.md` ~ `009_*.md` 九份阶段文档里的内容合并成一份，
 > 回答三个问题：**现在做到了哪一步 / 为什么这么做 / 接下来还欠什么**。
 >
-> - 快照时间：2026-10-26，代码基线 `c184207` + 013 期改动 + 015/016/017/018 期
-> - 后端：`stupid_code/`（Python 3152 行）　前端：`web/`（TS/TSX 5920 行）
+> - 快照时间：2026-10-27，代码基线 `335a890` + 019 / 020 期改动
+> - 后端：`stupid_code/`（Python 5879 行）　前端：`web/src/`（TS/TSX 7775 行）
 > - 依赖版本：`deepagents 0.7.28` / `langchain 1.4.6` / `langgraph 1.2.16` /
 >   `langgraph-cli 0.4.36` / `langchain-anthropic 1.7.6` / `langchain-openai 1.7.2` /
 >   `langchain-mcp-adapters 0.3.2`
@@ -79,22 +79,31 @@
 | 016 | agent 自己的中间产物收拢到 `.scode/` | ✅ 已落地 | `stupid_code/graph/backend.py` |
 | 017 | 长期记忆分两个作用域（用户级 + 项目级）+ 前端记忆面板 + 写记忆走人工确认 | ✅ 已落地 | `stupid_code/graph/memory_home.py` + `stupid_code/admin/memory.py` + `graph/permissions.py` + 前端 `components/memory/` |
 | 018 | skill（全局 `~/.scode/.agents/skills/` + 项目级 `<工作空间>/.agents/skills/`）+ 前端斜杠菜单勾选 | ✅ 已落地 | `stupid_code/graph/skills.py` + `stupid_code/admin/skills.py` + 前端 `lib/skills.ts` |
+| 019 | 全仓精简（重复逻辑归一）+ 文档收敛到单一事实源 | ✅ 已落地 | `stupid_code/graph/workspace.py` + `stupid_code/config/model.py` + `stupid_code/admin/models.py` + 本文档 §3 末节 |
+| 020 | 删掉 `/tmp/` 路由（及其守卫类 `WorkspaceCompositeBackend`） | ✅ 已落地 | `stupid_code/graph/backend.py` + 本文档 §3 末节 |
 
 ### 1.3 前端完成度
 
-按 [`docs/frontend-design.md`](../frontend-design.md) 实现，**功能上已完成**：
+按 [`docs/frontend-design.md`](../frontend-design.md) 实现，**功能上已完成**。
+逐条能力对照（✅/❌ 清单）见同文档 §12「实现现状」——那里是前端能力清单的**单一事实源**，
+本文不复刻。
 
-- 会话列表 / 建会话 / 删会话 / 标题（存平台的 `metadata.title`）
-- 流式对话、工具调用可视化、Diff 渲染、Todo 同步
+与后端耦合最深的几条（**改后端时先看这几条**）：
+
 - **工作空间选择器**（点按钮弹系统原生目录选择框；下拉里还有「最近用过的项目」
-  和手动输入路径——014 期）
-- 权限档位选择器（`manual` / `normal` / `auto`）
-- 人工确认卡片（显示命令 + 为什么被拦，批准 / 拒绝）
-- 模型管理界面（直连 `/admin/models`）
+  和手动输入路径——014 期）→ `POST /workspaces/pick`
+- **权限档位选择器**（`manual` / `normal` / `auto`）+ **人工确认卡片**
+  （显示命令 + 为什么被拦，批准 / 拒绝 / 改后执行）→ `configurable.permissions`
+  + `interrupt_on`（009/015 期）
 - **对话模型切换**（侧边栏下拉框，选中即生效，不用重启后端——010 期）
+  → `configurable.model`
 - **斜杠命令菜单**（输入 `/` 弹列表，`/compaction` 手动压缩对话历史——011 期）
 - **skill 勾选**（同一个斜杠菜单里混排 skill，勾中的 `SKILL.md` 全文钉进上下文——018 期）
+  → `configurable.skills`
 - **记忆面板**（输入区「记忆」按钮，查看/编辑用户级 + 项目级两份记忆——017 期）
+  → `GET`/`PUT /admin/memory`
+- 模型管理界面（直连 `/admin/models`）、会话列表 / 建会话 / 删会话 / 标题
+  （存平台的 `metadata.title`）、流式对话、工具调用可视化、Diff 渲染、Todo 同步
 - mock 模式（`VITE_USE_MOCK=true`，签名与真实后端完全一致）
 
 ### 1.4 验证方式
@@ -553,10 +562,18 @@ CompositeBackend(
         virtual_mode=True,          # 文件操作锁在工作空间内（shell 不受限）
         inherit_env=True,           # shell 继承当前环境，否则 PATH 是空的
     ),
-    routes={"/tmp/": StateBackend()},   # 临时区走虚拟 FS，不落盘
+    routes={
+        "/tmp/": StateBackend(),    # 临时区走虚拟 FS，不落盘（020 期已删）
+        "/user-memory/": FilesystemBackend(root_dir="~/.scode/"),   # 017 期加
+        "/user-skills/": FilesystemBackend(root_dir="~/.scode/.agents/skills/"),  # 018 期加
+    },
     artifacts_root="/.scode",           # agent 自己的中间产物收在这一个目录里
 )
 ```
+
+> 📌 **现状以 020 期为准**：`/tmp/` 那条路由已经删掉，`WorkspaceCompositeBackend`
+> 守卫类也一并没了。上面这段保留 007 期的形态，方便对照当时的取舍。
+> 见下方「020 · 删掉 `/tmp/` 路由」。
 
 **016 期改动：agent 自己的产物收拢到 `.scode/`**
 
@@ -596,6 +613,7 @@ deepagents 会往 backend 里写三样东西，落点由 `CompositeBackend.artif
 - **`/tmp/` 路由到 `StateBackend`**：会话内的临时区，agent 的临时产物不该在用户磁盘上
   留垃圾。框架会自动为 CompositeBackend 生成一段"虚拟路径 ↔ shell 路径"的提示，
   `/tmp/` 会被标成"shell 访问不到，只能用文件工具"。
+  **（020 期已删掉这条路由和它的守卫类——见下方「020 · 删掉 `/tmp/` 路由」）**
 - **`inherit_env=True`**：`LocalShellBackend` 默认 `inherit_env=False`，shell 拿到的是
   **空环境**——PATH 是空的，`uv` / `python` / `node` 全都找不到。
 - **声明了 `permissions` 的子 agent 要换一套 backend**。框架有条硬限制：backend
@@ -1594,6 +1612,10 @@ During task with name 'WorkspaceMiddleware.before_agent'
 以当前工作空间开头，是就交给 default backend；虚拟 `/tmp/...`（不在工作空间下）
 仍然走 `StateBackend`，临时产物的语义不变。
 
+> 📌 **020 期结论**：整条 `/tmp/` 路由连同 `WorkspaceCompositeBackend` 守卫类一起删了。
+> 守卫类存在的唯一理由就是防这条路由——路由没了，守卫类自然也没了。现状见
+> 下方「020 · 删掉 `/tmp/` 路由」。
+
 **九、记忆文件不自动创建**
 
 之前启动/开跑时都会补一份 `/.scode-memory.md`，用户选中一个项目就会凭空多出
@@ -1684,6 +1706,7 @@ ls -la "$WS"
 - 工作空间在 `/tmp` 下时，宿主绝对路径不再被 `/tmp/` 路由吞掉：`WorkspaceCompositeBackend`
   把「以工作空间开头」的 key 交给 default backend，文件真的落盘；不在工作空间下的
   虚拟 `/tmp/...` 仍然走 `StateBackend` ✔
+  **（020 期：那条路由和守卫类都删了——现在压根没有 `/tmp/` 路由可吃）**
 - 普通跑一轮不会创建 `.scode-memory.md`；模型自己调 `write_file` 写记忆时才创建 ✔
 - 2026-10-26 对真实服务（MiniMax 真模型）实测：`/tmp/scode-real-a` → 记忆读入
   A；同一 thread 切到 `/tmp/scode-real-b` → `memory_contents` 换成 B；
@@ -1702,6 +1725,153 @@ ls -la "$WS"
   磁盘上的文件不动 ✔（015 期实测：20 万字符的记忆文件 → 系统提示词 9212 字符）
 
 ---
+
+### 019 · 全仓精简 + 文档收敛
+
+**做了什么**：对整个后端做了一遍「有没有为了复杂而复杂」的审查，把确定冗余的地方收掉，
+并把散在多处的文档收敛到单一事实源。
+
+**先说结论**：这个后端**没有**「为了复杂而复杂」的模块。AST 全仓扫过——240 个顶层符号
+**零死代码**、唯一一处未使用的 import、所有模块级常量都在用。看着复杂的那些地方
+（同步/异步双钩子、`.name` 覆写、MCP 长会话、权限档位钉进 state）逐条查过框架源码，
+**都有硬依据**。真正的问题不在代码，在**文档**：同一批实测结论存了两份、目录树抄了三遍、
+其中一份已经漂移。
+
+**代码侧改了这些**（都是行为等价的重构）
+
+| 改了什么 | 在哪 |
+|---|---|
+| 抽出 `configurable_of(config)`：读运行期参数（工作空间 / 档位 / 模型 / skill）的统一入口。原来 `config.get("configurable") if isinstance(config, dict) else None` 这句在 5 个文件里各写了一遍，而 `permissions.py` 那份还多检查了一层 `isinstance(configurable, dict)` | `graph/workspace.py` |
+| `current_workspace()` 改成 `current_workspace_root().resolved`——两者在所有分支上等价（实测过），原来把「取 config → 提 configurable → 查缓存」抄了一遍 | `graph/workspace.py` |
+| 删掉 `resolve_workspace()`：只有 `workspace_of()` 一个调用者，两层各包一行 | `graph/workspace.py` |
+| 抽出 `_model_entry()`：模型列表和详情原本各手写同一份 8 字段字典 | `config/model.py` |
+| `_parse_model_id()` 上移复用，`build_model_by_spec()` 不再自己写一遍 `provider:model` 的解析；`build_model()` 内联进 `load_model()`（只有它一个调用者） | `config/model.py` |
+| 三个 `_do()` 闭包收成一个 `_mutate()`；原来三个返回的 tuple **顺序还不一致**（`(status, id, err)` / `(status, err, co)` / `(status, err, rest)`），是「记错顺序」的隐患 | `admin/models.py` |
+| 删掉 `permissions.py` 里唯一一处未使用的 import；删掉 `memory.py` 里两个纯别名 | — |
+
+**关键取舍**
+
+- **`config/model.py` 的「模型不存在」从返回值改成异常**：新增 `NotFoundError(ConfigError)`。
+  `get_model` / `update_model` / `delete_model` 不再返回 `(bool, ...)`，直接抛
+  `NotFoundError`；成功时只返回结果本身。调用方按异常类型分 404 和 400。
+  - **为什么**：`(ok, data)` 那个 tuple 让每个调用点都要写一遍「先看 bool 再看数据」，
+    而且三个调用点的 tuple 顺序还不一样。异常把「没有这个东西」和「写错了」分成两类，
+    状态码直接跟着异常类型走。
+  - **HTTP 行为完全没变**：404 的响应体还是 `{"error": "模型 'minimax:foo' 不存在"}`，
+    400 还是 400——`stupid_code/API.md` 里写的就是这两个，没动。
+  - **「404 不写盘」也保住了**：`_mutate()` 只在 fn 没抛异常时才 `save_config`——
+    模型不存在时不该把 `conf/config.toml` 重新序列化一遍（那会丢掉用户写的注释）。
+- **同一规则的报错措辞统一**：`_parse_model_id()` 报「模型 ID 'x' 不合法」，原来
+  `build_model_by_spec()` 报「模型标识 'x' 不合法」——同一套规则两种措辞，现在统一成前者。
+- **评估后回退了一处**：本来想把「记忆 / skill 换工作空间就重读」抽成共享 helper，
+  做完发现那是**为抽象而抽象**——它替换掉的是几行自洽代码，却多出一个 16 行的 helper
+  和跨模块跳转。已回退，两处逻辑保持各自内联。
+
+**文档侧**：把「同一件事写两遍」的地方收敛成单一事实源，每处都留了指针
+
+| 内容 | 收敛到 | 原来散在 |
+|---|---|---|
+| 实测结论 | 本文档 §8 | `stupid_code/API.md` 的「已验证的事实」（整节已删，-79 行） |
+| 目录树 | 本文档 §2.1 | `docs/overall-design.md` §9（**已漂移**：缺 `workspace.py` / `skills.py` / `admin/skills.py`，还列着「待建」目录）、`stupid_code/README.md`（-29 行，已删） |
+| 当前安全姿态 | 本文档 §5 | 根 `README.md` §安全（改成只留结论）、`docs/overall-design.md` §6（改成只写设计意图） |
+| 前端能力清单 | `docs/frontend-design.md` §12 | 本文档 §1.3（改成只留与后端耦合的条目） |
+
+顺手修掉了 `docs/frontend-design.md` §12 的两行漂移：「权限三级下拉（拦截点待后端实现）」
+和「与真实后端联调 ❌ 后端 P0 未开始」——后端早就到 018 期了。
+
+**验证**
+
+- 等价性逐条对照（`current_workspace` / `configurable_of` / 记忆与 skill 的「摘 key 逼
+  框架重读」逻辑 / `list_models` / `get_model`）：全部一致
+- `/admin/models` 五个端点端到端：状态码（200 / 201 / 400 / 404）和「什么时候写
+  `conf/config.toml`」全部与改动前一致
+- `uv run langgraph validate --config stupid_code/langgraph.json` → `1 graph found`
+
+### 020 · 删掉 `/tmp/` 路由
+
+**做了什么**：删掉主 backend 上那条 `/tmp/` → `StateBackend` 的路由，以及为它专门写的
+守卫类 `WorkspaceCompositeBackend`。
+
+**目标**：`/tmp/` 路由是 019 期审查出的唯一一处「为了复杂而复杂」——它有 69 行代码
+专门伺候，而且那条代码防的问题，删掉路由之后压根不存在了。
+
+**为什么删**
+
+- **它是唯一可能跟宿主绝对路径撞上的路由**。其余两条（`/user-memory/` /
+  `/user-skills/`）是**虚拟名**，磁盘上根本不存在，真实路径里不会出现这两个前缀。
+  而 `/tmp` 是真实目录：macOS 上它是 `/private/tmp` 的软链，Linux 上 `mktemp -d`
+  默认就落在那儿——**工作空间本身完全可能在 `/tmp/...` 下**。
+- **为了防这个撞车，才有了 69 行的守卫类**。`WorkspaceCompositeBackend` 覆写了
+  `_get_backend_and_key` / `ls` / `als` / `grep` / `agrep` / `glob` / `aglob` 七处，
+  在路由之前先判断「这个 key 是不是以当前工作空间绝对路径开头」，是就绕开路由交给
+  default backend。**删掉路由，这个判断就没有存在意义了**——没有任何路由会再吃掉
+  工作空间自己的路径。
+- **它的功能跟项目已有的产物策略重复**。`/tmp/` 路由当初是为了给 agent 一个
+  「会话内临时区」（不落盘），但项目自己的中间产物早就收在 `<工作空间>/.scode/`
+  （016 期），agent 要写临时文件直接写工作空间里就行。
+- **提示词反而更清楚了**。框架会给 CompositeBackend 自动生成一段「虚拟路径 ↔ shell
+  路径」的映射提示（`deepagents/middleware/filesystem.py` 的 `_route_host_path_prompt()`）。
+  `/tmp/` 那条路由因为指向 `StateBackend`（不是 `FilesystemBackend`），在提示词里
+  只占一行 `- \`/tmp/\``——**没有对应的 shell 路径**，意思就是「这个路径 shell 访问不到」。
+  删掉之后提示词少两行，剩下两条路由都带真实宿主路径映射，更清楚。
+
+**代码侧改了这些**
+
+| 改了什么 | 在哪 |
+|---|---|
+| 删掉 `WorkspaceCompositeBackend` 整个类（71 行，含 7 个覆写方法） | `graph/backend.py` |
+| `build_backend()` 的 routes 只剩 `/user-memory/` 和 `/user-skills/`，返回裸 `CompositeBackend` | `graph/backend.py` |
+| `build_restricted_backend()` 同样返回裸 `CompositeBackend`——**保留 `artifacts_root`**：框架读它的条件是 `isinstance(backend, CompositeBackend)`，裸 `FilesystemBackend` 拿不到，产物会退回 `/` 根目录 | `graph/backend.py` |
+| `_workspace_relative()`（22 行独立函数）内联进 `_WorkspaceRoot._resolve_path()`（9 行循环）——它只剩一个调用者 | `graph/backend.py` |
+| 删掉 `StateBackend` / `GlobResult` / `GrepResult` / `LsResult` 四个 import | `graph/backend.py` |
+
+**关键取舍**
+
+- **保留 `_WorkspaceRoot._resolve_path()` 的宿主绝对路径剥离**。这一段跟路由无关：
+  系统提示词会把工作空间的**真实绝对路径**给模型，模型可能直接拿它调文件工具，
+  框架会当成虚拟路径处理，文件落进 `<工作空间>/private/var/.../` 这种嵌套目录里
+  **还不报错**。这条机制必须留。
+- **顺带把两种路径形态的判断留住了**。`_resolve_path()` 依次试 `resolved`（软链已
+  展开）和 `given`（用户给的那条）两个根——macOS 上用户手打 `/tmp/proj` 而真实路径是
+  `/private/tmp/proj` 时，只拿 `resolved` 去比会失配。这跟路由无关，是另一码事。
+- **行为变化只有一个，而且是预期内的**：agent 写 `/tmp/xxx` 时，以前进虚拟 FS
+  （不落盘），现在跟其它路径一样落在 `<工作空间>/tmp/xxx`。这条路径以前 agent 也
+  基本不用——框架提示词里明确说 `/tmp/` 是「shell 访问不到，只能用文件工具」，
+  而 agent 要写临时文件时更自然会写工作空间里的相对路径。
+
+**验证**
+
+A/B 对比脚本（`/tmp/scode_backend_ab.py`）：把 `HEAD` 版 `backend.py` 和工作区新版
+装进同一个进程，跑同一批场景比结果。**必须一致的场景全部一致**，**预期差异的场景
+确认有差异**：
+
+| 场景 | 结果 |
+|---|---|
+| 写宿主绝对路径（resolved 形态） | old == new ✔ |
+| 写虚拟路径 `/v.txt` | old == new ✔ |
+| 写工作空间之外的绝对路径 | old == new ✔ |
+| 写 `/user-memory/` 路由 | old == new ✔ |
+| 写 `/user-skills/` 路由 | old == new ✔ |
+| `ls` / `grep` / `glob` 传工作空间绝对路径 | old == new ✔ |
+| 软链形态（given ≠ resolved）下 `_resolve_path` 的五种输入 | old == new ✔ |
+| **工作空间在 `/tmp/` 下时写宿主绝对路径（两种形态）** | **old == new ✔**（这条最关键——守卫类存在的理由） |
+| 受限 backend 的 routes / default 类型 / artifacts_root / 有无 execute | old == new ✔ |
+| `ls("/")` 的路由目录列表 | old 有 `/tmp/`、new 没有（预期差异）✔ |
+| 写 `/tmp/probe.txt` 的落点 | old 进虚拟 FS、new 落 `<工作空间>/tmp/probe.txt`（预期差异）✔ |
+| 系统提示词的路由段落 | old 少一行 `- \`/tmp/\``（预期差异）✔ |
+
+另外：
+
+- `uv run langgraph validate --config stupid_code/langgraph.json` → `1 graph found`
+- `uv run python -c "import stupid_code.graph.agent"` → 图建起来（`CompiledStateGraph`）
+
+**已验证的事实**
+
+- 删掉 `/tmp/` 路由后，**工作空间在 `/tmp/` 下时宿主绝对路径依然正确落盘**（两种路径
+  形态都试了）——因为压根没有路由会再吃它，守卫类不必存在 ✔
+- 软链形态（`given ≠ resolved`）下 `_resolve_path` 的行为跟改动前逐项一致 ✔
+- 系统提示词里剩下的两条路由都带真实宿主路径映射（`- \`/user-memory/\` -> \`~/.scode/\``），
+  没有「shell 访问不到」的条目 ✔
 
 ## 4. 关键机制速查
 

@@ -351,15 +351,16 @@ docker compose up --build
 
 `deepagents` 明确采用 **"trust the LLM"** 模型：agent 的能力上限就是你给它的工具权限，它**不会自我约束**。
 
-一个 code agent 天然带着 shell 执行和文件写入权限，所以：
+一个 code agent 天然带着 shell 执行和文件写入权限，所以边界要**在工具层 / 沙箱层**强制执行，不要指望模型自觉。跑在真实仓库里之前，先在容器或一次性沙箱里试。
 
-- 边界要**在工具层 / 沙箱层**强制执行，不要指望模型自觉
-- 跑在真实仓库里之前，先在容器或一次性沙箱里试
-- 危险命令的批准流程用 `HumanInTheLoopMiddleware` 搭；中断恢复需要的 checkpointer 由 `langgraph dev` 平台自动提供，**不要手动传给 `create_deep_agent()`**（会直接抛 ValueError）
-- **只监听 `127.0.0.1`**。`scode` 已经写死了这个地址，别改成 `0.0.0.0` —— 一个天生带 shell 执行和文件写权限的 agent 暴露到局域网，等于把整台机器交出去
-- 目录选择走系统原生弹窗（`POST /workspaces/pick`），后端不提供「列目录」接口；这个端点会阻塞到用户选完（上限 600 秒），后端仍只监听 `127.0.0.1`
-- 文件工具有**两条工作空间之外的路径**，都只覆盖一个目录：`/user-memory/`（`~/.scode/`，**可写**——用户级记忆）和 `/user-skills/`（`~/.scode/.agents/skills/`，**只读**——全局 skill）。这是这两个功能本身要求的权限面，工作空间内的路径依然出不去
-- API key 永远走 `conf/config.toml` 或环境变量，别硬编码进代码
+几条硬约束（**每条的理由、完整的姿态表和已知缺口见
+[`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md) §5「安全姿态」**）：
+
+- **只监听 `127.0.0.1`** —— `scode` 已经写死了这个地址，别改成 `0.0.0.0`
+- **API key 走 `conf/config.toml`**，别硬编码进代码
+- **工作空间之外有两条路径**，各只覆盖一个目录：`/user-memory/`（`~/.scode/`，**可写**——用户级记忆）和 `/user-skills/`（`~/.scode/.agents/skills/`，**只读**——全局 skill）
+- **checkpointer 由 `langgraph dev` 平台自动提供**，**不要手动传给 `create_deep_agent()`**（会直接抛 ValueError）；危险命令的批准流程用 `HumanInTheLoopMiddleware` 搭
+- **目录选择走系统原生弹窗**（`POST /workspaces/pick`），后端不提供「列目录」接口；该端点会阻塞到用户选完（上限 600 秒）
 
 ---
 

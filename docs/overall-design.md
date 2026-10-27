@@ -130,10 +130,14 @@
 > 核实方式：配置完成后跑一个最小用例——让 Agent 写一个临时文件，检查磁盘上是否真的出现该文件。
 >
 > 📌 **007 期落地**：`stupid_code/graph/backend.py` 构造 `CompositeBackend(default=LocalShellBackend)`
-> ——真实磁盘 + 本机 shell（`execute` 由此而来），`/tmp/` 路由到 `StateBackend`。
+> ——真实磁盘 + 本机 shell（`execute` 由此而来）。
 > 框架的硬限制：**backend 支持命令执行时不能同时用 `permissions`**（shell 能绕过任何权限），
 > 所以声明了 `permissions` 的子 agent 会被换成无 shell 的 backend。
 > 详见 `docs/backend/PROGRESS.md` 的「007 · 真实 backend」一节。
+>
+> 📌 **020 期调整**：原先还有一条 `/tmp/` → `StateBackend` 的虚拟路由（会话内临时区），已删除——
+> 它是唯一可能跟宿主绝对路径撞上的路由，为它单独养了一层守卫类，而它提供的临时区跟项目自己的
+> 产物策略（收在 `<工作空间>/.scode/`）重复。现状见 PROGRESS 的「020 · 删掉 `/tmp/` 路由」。
 >
 > 📌 **016 期补充**：`CompositeBackend` 的 `artifacts_root` 决定 agent 自己的中间产物落在哪
 > （对话历史 / 超大工具结果 / 二进制块，默认 `/` = 工作空间根目录）。本项目设成 `/.scode`，
@@ -324,7 +328,7 @@ interface Message {
 - **根目录是运行期属性**：框架把 backend 的根目录存在 `self.cwd` 里，所有路径解析都从它出发。本项目把它做成 property，每次取值读当前运行的 `configurable.workspace`——同一张图能服务不同项目目录的对话（contextvar 天然按运行隔离）。
 - **文件工具的路径由框架自己兜住**：`virtual_mode=True` 时 `FilesystemBackend._resolve_path` 会 `resolve()` 展开软链再校验是否落在根目录内，`..` / `~` / 越界绝对路径都进不来。
 - **workspace 自己也 realpath**：否则软链目录会失效（macOS 上 `/tmp` → `/private/tmp`，不解析的话框架的越界检查会误判）。
-- **`/tmp/` 虚拟路由不会吃掉工作空间**：工作空间在 `/tmp/...` 时（Linux 的 `mktemp -d` 默认就在那儿），以工作空间绝对路径开头的 key 优先交给 default backend；不在工作空间下的虚拟 `/tmp/...` 仍走 `StateBackend`。
+- **工作空间路径不会被路由吃掉**：路由按虚拟前缀匹配，`/user-memory/` 和 `/user-skills/` 在磁盘上并不存在，宿主绝对路径不会撞上它们；工作空间自己的绝对路径由 `_resolve_path` 剥掉前缀后按虚拟路径处理。
 - **每轮运行开跑前重新校验**：存在性 / 目录类型 / 软链解析都在 `before_agent` 里重做（放线程），结果刷进缓存供热路径读取——只缓存首次结果的话，目录被删掉后校验会永远命中缓存、形同虚设。
 - **一次 run 内锁定**：`configurable` 是运行级参数，一轮对话中途改不了。
 - **空字符串 = 用后端默认工作空间**（`SCODE_WORKSPACE` 或启动时的 cwd），不是拒绝一切操作——原生跑法（`cd project && uv run scode`）里用户没有前端可选。
@@ -449,6 +453,10 @@ LangChain 提供 `HumanInTheLoopMiddleware`，通过 `interrupt_on` 声明哪些
 ## 6. 安全设计
 
 > 一个能在本机执行命令的 Web 服务，安全章节不能只有一句话。
+>
+> **当前的安全姿态表（每条边界的现状）见
+> [`docs/backend/PROGRESS.md`](backend/PROGRESS.md) §5「安全姿态」**，已知缺口见同节 §6。
+> 本节只写**设计意图和理由**——同一件事不要在两处各写一遍。
 
 ### 6.1 监听地址
 
@@ -564,66 +572,16 @@ stupid_code/prompts/
 
 ## 9. 目录结构
 
-**实际布局**（随代码演进，维护中的活目录树见 [`docs/backend/PROGRESS.md`](backend/PROGRESS.md) §2.1，路径约束见同节 §2.2）：
+**实际布局**看 [`docs/backend/PROGRESS.md`](backend/PROGRESS.md) §2.1（活目录树，随代码演进）
+和同节 §2.2（`langgraph.json` 的三条硬编码路径、`__file__` 定位目录的层数约束）。
+本文档不复刻目录树——抄一份就多一个会漂移的地方。
 
-```
-stupid-code/
-├── AGENTS.md                # 给编码 Agent 的硬约束清单（细节在 docs/backend/PROGRESS.md）
-├── pyproject.toml           # 依赖与 scode 入口（scode = stupid_code:start）
-├── uv.lock                  # 依赖锁定
-├── .python-version          # 3.12
-├── skills-lock.json         # langchain-skills 安装记录与 hash
-├── conf/                    # 模型配置（config.toml 不入库）+ 子 agent 声明（subagents.toml 入库）+ MCP 服务器（mcp.json 不入库，从 mcp.example.json 复制）
-├── examples/                # 可直接跑的示例（mcp_stdio_server.py：零依赖的 stdio MCP 服务器）
-├── docs/
-│   ├── overall-design.md    # 本文档
-│   ├── frontend-design.md   # 前端交互设计
-│   ├── learning-path.md     # 框架背景与学习路线
-│   └── backend/
-│       └── PROGRESS.md      # 后端进度快照（001–011 期合并成一份）
-├── web/                     # 前端 Web 应用（独立子项目，注意不是 frontend/）
-│   ├── src/
-│   │   ├── components/
-│   │   ├── pages/
-│   │   ├── api/             # 后端通信层
-│   │   ├── store/           # 状态管理
-│   │   └── lib/
-│   ├── package.json
-│   └── vite.config.ts
-├── stupid_code/             # 后端 Python 包
-│   ├── __init__.py          # scode 命令入口（start()）
-│   ├── launcher.py          # scode：拉起 langgraph dev 子进程、就绪探测、优雅关停
-│   ├── langgraph.json       # langgraph-cli 配置（图注册 / http.app / checkpointer / store）
-│   ├── graph/               # 图与它的持久化
-│   │   ├── agent.py         # create_deep_agent 构建入口，导出 graph
-│   │   ├── backend.py       # 真实 backend：CompositeBackend(default=LocalShellBackend)
-│   │   ├── compaction.py    # /compaction 手动压缩历史 + 摘要用当前选中的模型
-│   │   ├── memory.py        # 长期记忆：项目级 .scode-memory.md + 用户级 ~/.scode/memory.md（都不自动创建）
-│   │   ├── memory_home.py   # 用户级记忆的家目录（$SCODE_HOME / ~/.scode）+ /user-memory/ 路由常量
-│   │   ├── model_switch.py  # 运行期切换对话模型的中间件
-│   │   ├── mcp.py           # MCP 工具加载：建图时列工具 + 每服务器一条长会话（专用线程）+ 调用期重试 / 错误兜底
-│   │   ├── permissions.py   # shell 人工确认：档位与危险判定
-│   │   └── persistence.py   # SQLite 工厂：checkpoint/store → ../data/langgraph.db
-│   ├── config/              # 读项目根 conf/ 的那层（代码在这，数据在 ../../conf/）
-│   │   ├── model.py         # 读 conf/config.toml、校验、构建模型、模型 CRUD helpers
-│   │   ├── subagent.py      # 读 conf/subagents.toml、校验、转成 deepagents 的 SubAgent 规格
-│   │   ├── mcp.py           # 读 conf/mcp.json、校验、转成 MCP 客户端的连接参数
-│   │   └── prompts.py       # 主 agent 的系统提示词（框架已无内置提示词，见 §3.1）
-│   ├── admin/               # 挂在 /admin 下的管理接口 + /workspaces/pick（弹系统目录框）
-│   │   ├── app.py           # Starlette 子应用与路由表
-│   │   ├── memory.py        # /admin/memory 端点（记忆读写）
-│   │   ├── models.py        # /admin/models 端点处理
-│   │   └── workspaces.py    # POST /workspaces/pick（弹系统目录框）
-│   ├── data/                # SQLite 数据库目录（gitignore，checkpoint/store 落这儿）
-│   ├── middlewares/         # 自研中间件（护栏、埋点）—— 待建（工作空间中间件已落在 graph/workspace.py）
-│   ├── tools/               # 自定义工具 —— 待建
-│   └── prompts/             # 版本化提示词（§8）—— 待建
-└── .agents/skills/          # langchain-skills（gitignore，需自行安装）
-```
+**目标设计里规划了、但尚未建的目录**：`stupid_code/middlewares/`（自研中间件）、
+`stupid_code/tools/`（自定义工具）、`stupid_code/prompts/`（版本化提示词，见 §8）。
+中间件目前落在 `graph/workspace.py` 里。
 
-> `middlewares/` / `tools/` / `prompts/` 仍是目标设计，尚未建。
 > `langgraph.json` 直接引用了 `./graph/agent.py:graph`、`./graph/persistence.py:checkpointer`、
-> `./admin/app.py:app` 三条路径，挪动这些文件必须同步改配置。
+> `./admin/app.py:app` 三条路径，挪动这些文件必须同步改配置（细节见 PROGRESS §2.2）。
 
 
 ---

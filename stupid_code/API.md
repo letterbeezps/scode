@@ -762,94 +762,15 @@ agent 能用的 skill 有**两个来源**（见 `stupid_code/graph/skills.py`）
 
 ---
 
-## 已验证的事实（2026-10-19 实测）
+## 已验证的事实
 
-对着真后端逐条打过，凭空猜的地方都改了：
+实测结论**统一收在** [`docs/backend/PROGRESS.md`](../docs/backend/PROGRESS.md) §8「已验证的事实」——
+那是后端的活文档，按期分节（平台与框架 / 持久化 / HITL / 模型切换 / 压缩 / MCP / 工作空间 /
+记忆 / skill），每条都注明了验证时间。框架在 0.x 迭代快，改行为前先去那里核。
 
-- `POST /threads` 的 body **必填**，空 body → 422 `Invalid JSON in request body`
-- `GET /threads` → **405**（`allow: POST`）；列表走 `POST /threads/search`
-- Thread **没有 title 字段**，标题要自己存 `metadata.title`，用 `PATCH /threads/{id}` 写
-- 平台错误体的字段是 `{"detail": "..."}`，不是我们 `/admin/*` 用的 `{"error": "..."}` —— 前端两种都认
-- `GET /threads/{id}/state` 的 `values.messages` 是标准 LangChain 消息数组
-  （`type` 取 `human`/`ai`/`tool`，`content` 是字符串），前端能直接还原
-- `POST /threads/{id}/runs/stream` 的 body 形状
-  （`assistant_id` + `input.messages` + `stream_mode` + `on_disconnect` + `config.configurable`）被平台接受
-- `assistant_id` 传 graph_id（`code_agent`）也能跑，平台会自己解析到对应的 assistant
-- run 结束（尤其出错）时服务端直接关连接，浏览器把这个记成 `net::ERR_ABORTED`——
-  **这是正常收尾，不是前端 bug**。error 事件在关闭之前已经送到，前端能正常显示
-- 平台 `error` 事件是 `{"error": "AnthropicAuthenticationError", "message": "An internal error occurred"}`，
-  只显示 message 等于什么都没说，两个字段要合起来给用户看
-- **自定义异常的 message 会被打码**：平台只对内置异常（`ValueError` / `TypeError` /
-  `RuntimeError` 等）透传 `str(exc)`，其它一律 `"An internal error occurred"`
-  （`langgraph_api/serde.py` 的 `_orjson_default`）。图里要抛面向用户的错误
-  （如 `WorkspaceError`），必须继承 `ValueError` 之类的内置类型
-- **重启后 thread 会整体"消失"，除非保留 `.langgraph_api/`**：checkpoint 快照确实持久化在
-  `stupid_code/data/langgraph.db`（`checkpoints` / `writes` 两张表），但 **thread 索引**
-  （会话列表、metadata、status）存在工作空间的 `.langgraph_api/.langgraph_ops.pckl` 里。
-  删掉该目录再重启，`POST /threads/search` 返回空数组、`GET /threads/{id}/state` 报 404
-  `Thread or assistant not found.`——数据还躺在 SQLite 里，平台却认不出这些 thread 了。
-  保留该目录后，两者都恢复正常（`same-named .langgraph_checkpoint.*.pckl` 是空的，
-  说明 checkpoint 确实只走 SQLite）
-- 附带结论：thread 索引按**工作空间**分（跟着 cwd 走），checkpoint 按**代码文件**定位
-  （全局一份）。两者不在同一个工作空间时索引会与 checkpoint 失配
-
-### 2026-10-22 实测（HITL 人工确认，009 期）
-
-- 平台把挂起的运行放在 **`updates` 事件**的 `__interrupt__` 键下，形状是
-  `{"__interrupt__": [{"value": {"action_requests": [{"name","args","description"}],
-  "review_configs": [{"action_name","allowed_decisions"}]}}]}`。
-  注意 `action_requests` 里**没有工具调用 id**，只有名字和参数
-- `command.resume` 能让图从挂起点继续：平台把它转成 `Command(resume=...)` 当作
-  本次运行的输入（平台侧的实现是 `langgraph_api/command.py` 的 `map_cmd`）
-- **`decisions` 的个数必须和 `action_requests` 一样多**。对不上平台不报错，
-  是框架在 `HumanInTheLoopMiddleware.after_model` 里抛
-  `ValueError: Number of human decisions (N) does not match number of hanging tool calls (M)`，
-  SSE 里表现为一个 `error` 事件
-- **一次 interrupt 可能含多个 `action_request`**（模型一轮里发了多条命令），
-  不是"一次一条"
-- reject 决定的理由字段是 **`message`**，不是 `feedback`
-- `config.configurable` 里的档位能到达后端的 `when` 谓词（`when` 拿到的
-  `ToolRuntime.config` 就是 `get_config()` 的结果，含 `configurable`）
-- **`review_configs` 跟 `action_requests` 一一对应、顺序一致**（同一个循环 append
-  的）。前端靠它渲染每条动作允许哪些决定
-
-### 2026-10-26 实测（interrupt_on 复测，015 期）
-
-- **`when` 谓词在恢复时会再跑一次**，框架明确要求「同一次调用必须给出同样的答案」。
-  档位只从运行配置里读的话，恢复时回传的值一变，被用户拒绝的命令会照样执行
-  （框架文档原话：the reviewer's answer is skipped and the tool runs, even if they
-  rejected it）。**015 期起档位记在图状态里**（`PermissionLevelMiddleware` 在开跑前
-  写入），谓词优先读它；恢复时 `before_agent` 不会重跑，state 里留的就是发起那轮
-  运行时的那一档
-- **`edit` 决定**：`{"type": "edit", "edited_action": {"name", "args"}}`。改完的命令
-  直接执行，模型收到 `Note: a human reviewer replaced this tool call before it ran.`
-  ——**改完的命令不会再过一遍危险模式判定**（那是用户自己敲的）
-- **`delete` 工具也进 `interrupt_on` 了**（015 期起）：它删目录是递归的、跟 `rm -rf`
-  等价，模型换个工具就能绕过确认。只在 `manual` 档拦
-- **写记忆文件也进 `interrupt_on` 了**（017 期起）：`write_file` / `edit_file` 的
-  目标是记忆文件时，`normal` 和 `manual` 档都挂起。**判据只看路径**——
-  写普通文件返回 False 不拦。路径判定是**纯字符串**操作（`os.path.basename` /
-  `expanduser`），不碰文件系统：`when` 谓词跑在工具调用链上，而 `langgraph dev`
-  装了 blockbuster，事件循环里的同步 FS 调用会把整轮 run 带崩
-
-### 2026-10-26 实测（skill，018 期）
-
-- **`configurable.skills` 里的名字会被框架 pin 进对话历史**：`SKILL.md` 全文（去掉
-  frontmatter）作为一条 `HumanMessage` 追加进去，形状是
-  `<skill name="xxx" path="...">正文</skill>`
-- **pin 是追加语义**：同一条正文在同一个 thread 里只出现一次（框架用
-  `Overwrite([])` 清 `pinned_skills` 再追加）。**取消勾选不会把它从历史里拿掉**
-- **全局 skill 的虚拟路径是 `/user-skills/<name>/SKILL.md`**，项目级是
-  `/.agents/skills/<name>/SKILL.md`——都不是宿主绝对路径
-- **`FilesystemBackend.__init__` 会读文件系统**（`Path(root_dir).resolve()`）：
-  在 `langgraph dev` 的事件循环里直接构造会被 blockbuster 拦下来
-  （`BlockingError: Blocking call to os.readlink`），请求 500。`GET /admin/skills`
-  的 backend 构造必须走 `asyncio.to_thread`
-- **框架的 `SkillsMiddleware.before_agent` 见到 state 里已有 `skills_metadata` 就跳过**：
-  一个 thread 只读一次。摘掉那个 key 才会重读
-- **`deepagents` 按中间件 `.name` 合并**：撞名原地替换（保留 core 栈里的位置），
-  不撞名就追加到 core 区之后。**两份 skill 中间件同时跑会往系统提示词里塞两块
-  skill 列表**
+本文档只管**接口形状**：请求体字段、响应字段、状态码。形状类的说明在上面的端点章节里
+逐个端点写着（比如 `POST /threads` 的 body 必填、`runs/stream` 的 body 形状、
+`/admin/memory` 的响应字段）。
 
 ### 官方文档
 

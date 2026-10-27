@@ -56,37 +56,10 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 
 按职责分四块：起停、图与持久化、配置解析、管理接口。
 
-顶层只放「进程入口」和「配置」两类东西，实现细节按职责进子包：
+顶层只放「进程入口」和「配置」两类东西，实现细节按职责进子包。
 
-```
-stupid_code/
-├── __init__.py       # scode 命令入口
-├── launcher.py       # 起停 langgraph dev
-├── langgraph.json    # 图注册（框架读的配置）
-├── graph/            # 图与它的持久化
-│   ├── agent.py           # create_deep_agent()，导出 graph
-│   ├── backend.py         # 真实 backend：CompositeBackend(default=LocalShellBackend)
-│   ├── workspace.py       # 解析 configurable.workspace + 每轮校验/缓存
-│   ├── memory.py          # 长期记忆：项目级 .scode-memory.md + 用户级 ~/.scode/memory.md
-│   ├── memory_home.py     # 用户级记忆的家目录（$SCODE_HOME）与 /user-memory/ 路由常量
-│   ├── skills.py          # skill 发现：全局（静态）+ 项目级（运行期）+ 用户勾选的 pin
-│   ├── compaction.py      # /compaction 手动压缩 + 摘要用当前选中的模型
-│   ├── model_switch.py    # 运行期切换对话模型（configurable.model）
-│   ├── mcp.py             # MCP 工具加载：建图时取一次，交给 create_deep_agent(tools=...)
-│   └── persistence.py     # SQLite 工厂：checkpoint/store → ../data/langgraph.db
-├── config/           # 读项目根 conf/ 的那层（代码在这里，数据在 ../../conf/）
-│   ├── model.py           # conf/config.toml → 模型实例 + CRUD helpers
-│   ├── subagent.py        # conf/subagents.toml → SubAgent 规格
-│   ├── mcp.py             # conf/mcp.json → MCP 连接参数
-│   └── prompts.py         # 主 agent 的系统提示词
-├── admin/            # 挂在 /admin 下的管理接口 + /workspaces/pick
-│   ├── app.py             # Starlette 子应用与路由表
-│   ├── models.py          # /admin/models 五个端点的处理函数
-│   ├── memory.py          # /admin/memory：读和写两份长期记忆
-│   ├── skills.py          # GET /admin/skills：列全局 + 项目级两份 skill
-│   └── workspaces.py      # POST /workspaces/pick（弹系统目录选择框）
-└── data/             # SQLite 数据库目录（gitignore）
-```
+完整的目录树见 [`docs/backend/PROGRESS.md`](../docs/backend/PROGRESS.md) §2.1（活文档，随代码演进），
+下面这张表逐个文件说明它负责什么。
 
 | 文件 | 作用 |
 |---|---|
@@ -95,7 +68,7 @@ stupid_code/
 | [launcher.py](launcher.py) | 工作空间（`SCODE_WORKSPACE` 或当前目录，工作空间在仓库根时警告）、生成临时派生配置、就绪探测、生命周期管理（`.langgraph_api` 保留不清理） |
 | **图与持久化**（`graph/`） | |
 | [graph/agent.py](graph/agent.py) | `code_agent` 图：`create_deep_agent()`，导出 `graph` |
-| [graph/backend.py](graph/backend.py) | 真实 backend：`WorkspaceCompositeBackend(default=LocalShellBackend)`（真实磁盘 + 本机 shell，`/tmp/` 走虚拟 FS；工作空间自己的绝对路径不会被 `/tmp/` 路由吞掉；`artifacts_root="/.scode"` 把 agent 自己的产物收进一个隐藏目录）；`apply_subagent_policies()` 给声明了 `permissions` 的子 agent 换无 shell 的 backend、不继承 MCP 工具，并合并父级 `interrupt_on` |
+| [graph/backend.py](graph/backend.py) | 真实 backend：`CompositeBackend(default=LocalShellBackend)`（真实磁盘 + 本机 shell；两条虚拟路由 `/user-memory/`（可写）和 `/user-skills/`（只读）指向工作空间之外，其余路径都落在工作空间内；`artifacts_root="/.scode"` 把 agent 自己的产物收进一个隐藏目录）；`apply_subagent_policies()` 给声明了 `permissions` 的子 agent 换无 shell 的 backend、不继承 MCP 工具，并合并父级 `interrupt_on` |
 | [graph/workspace.py](graph/workspace.py) | 工作空间：解析 `configurable.workspace`；每轮开跑前校验（线程里）并刷新缓存；`WorkspaceMiddleware` 把绝对路径写进系统提示词 |
 | [graph/memory.py](graph/memory.py) | 长期记忆：读**项目级**（工作空间根的 `.scode-memory.md`）和**用户级**（`~/.scode/memory.md`）两份，**不自动创建**（没记忆就当空的），装成 `MemoryMiddleware` 挂进 `middleware=` |
 | [graph/memory_home.py](graph/memory_home.py) | 记忆落点的单一事实来源：用户级记忆的家目录（`$SCODE_HOME`）、两个作用域的文件名与虚拟路径、`/user-memory/` 路由前缀 |
