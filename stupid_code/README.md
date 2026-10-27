@@ -68,10 +68,11 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 | [launcher.py](launcher.py) | 工作空间（`SCODE_WORKSPACE` 或当前目录，工作空间在仓库根时警告）、生成临时派生配置、就绪探测、生命周期管理（`.langgraph_api` 保留不清理） |
 | **图与持久化**（`graph/`） | |
 | [graph/agent.py](graph/agent.py) | `code_agent` 图：`create_deep_agent()`，导出 `graph` |
-| [graph/backend.py](graph/backend.py) | 真实 backend：`CompositeBackend(default=LocalShellBackend)`（真实磁盘 + 本机 shell；两条虚拟路由 `/user-memory/`（可写）和 `/user-skills/`（只读）指向工作空间之外，其余路径都落在工作空间内；`artifacts_root="/.scode"` 把 agent 自己的产物收进一个隐藏目录）；`apply_subagent_policies()` 给声明了 `permissions` 的子 agent 换无 shell 的 backend、不继承 MCP 工具，并合并父级 `interrupt_on` |
+| [graph/backend.py](graph/backend.py) | 真实 backend：`CompositeBackend(default=LocalShellBackend)`（真实磁盘 + 本机 shell；两条虚拟路由 `/user-memory/`（可写）和 `/user-skills/`（只读）指向工作空间之外，其余路径都落在工作空间内；`artifacts_root="/.scode"` 把 agent 自己的产物收进一个隐藏目录）；只负责构建 backend，不处理子 agent 策略 |
+| [graph/subagent_policy.py](graph/subagent_policy.py) | 子 agent 策略：合并父级 `interrupt_on`、给声明了 `permissions` 的子 agent 换无 shell backend、不继承 MCP 工具、把 `mode="interrupt"` 翻译成 `interrupt_on` |
 | [graph/workspace.py](graph/workspace.py) | 工作空间：解析 `configurable.workspace`；每轮开跑前校验（线程里）并刷新缓存；`WorkspaceMiddleware` 把绝对路径写进系统提示词 |
 | [graph/memory.py](graph/memory.py) | 长期记忆：读**项目级**（工作空间根的 `.scode-memory.md`）和**用户级**（`~/.scode/memory.md`）两份，**不自动创建**（没记忆就当空的），装成 `MemoryMiddleware` 挂进 `middleware=` |
-| [graph/memory_home.py](graph/memory_home.py) | 记忆落点的单一事实来源：用户级记忆的家目录（`$SCODE_HOME`）、两个作用域的文件名与虚拟路径、`/user-memory/` 路由前缀 |
+| [graph/paths.py](graph/paths.py) | 路径落点的单一事实源：用户级目录（`$SCODE_HOME`）、记忆文件名与虚拟路径、`/user-memory/` 和 `/user-skills/` 路由前缀 |
 | [graph/skills.py](graph/skills.py) | skill：两个来源（**全局** `~/.scode/.agents/skills/` 是静态常量、**项目级** `<工作空间>/.agents/skills/` 走运行期虚拟路径）；用户勾选的 skill 由 `configurable.skills` 送来，正文钉进上下文；换工作空间或换勾选都重读 |
 | [graph/compaction.py](graph/compaction.py) | `/compaction` 手动压缩历史 + 摘要用当前选中的模型；`.name` 报成框架自带那份的公开别名，顶掉而不是叠加 |
 | [graph/model_switch.py](graph/model_switch.py) | 运行期切换对话模型：中间件在每次模型调用前把 `request.model` 换成用户选中的那个 |

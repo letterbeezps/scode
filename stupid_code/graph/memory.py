@@ -20,7 +20,7 @@
 后端没收到就用启动时的默认工作空间）。agent 的文件工具和这里的记忆中间件
 用的是同一个 backend，所以两边解析出来的真实路径始终一致。
 
-用户级 = 用户主目录下的 `~/.scode/memory.md`（位置见 `graph/memory_home.py`），
+用户级 = 用户主目录下的 `~/.scode/memory.md`（位置见 `graph/paths.py`），
 跟工作空间无关。
 
 两个记忆文件都是**可选**的：**不会自动创建**（避免往用户选的项目、或者用户
@@ -67,7 +67,7 @@ from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.runnables import RunnableConfig
 
 from stupid_code.graph.backend import WorkspaceFilesBackend
-from stupid_code.graph.memory_home import (
+from stupid_code.graph.paths import (
     PROJECT_MEMORY_SOURCE,
     USER_MEMORY_ROUTE,
     USER_MEMORY_SOURCE,
@@ -75,7 +75,7 @@ from stupid_code.graph.memory_home import (
 )
 from stupid_code.graph.workspace import default_workspace, workspace_of
 
-# 两条来源的虚拟路径。定义在 memory_home.py（记忆落点的单一事实来源），
+# 两条来源的虚拟路径。定义在 paths.py（路径落点的单一事实源），
 # 那边也被 graph/permissions.py 用着——写记忆文件要人工确认。
 
 
@@ -321,7 +321,7 @@ def build_memory_middleware() -> WorkspaceMemoryMiddleware:
       走（`cwd` 是 property），所以这一轮选了哪个项目目录，项目级记忆就从
       哪个目录读。
     - 路由 `/user-memory/` → `FilesystemBackend`，根固定在 `~/.scode/`
-      （见 `graph/memory_home.py`），跟工作空间无关。
+      （见 `graph/paths.py`），跟工作空间无关。
 
     `CompositeBackend.download_files()` 会按路径分批路由，两条来源各自落到
     自己的 backend 上——这正是框架多来源机制的设计用途。

@@ -59,25 +59,13 @@ from deepagents.middleware.skills import SkillsMiddleware, SkillsState
 from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.runnables import RunnableConfig
 
-from stupid_code.graph.memory_home import scode_home_dir
+from stupid_code.graph.paths import GLOBAL_SKILLS_ROUTE
 from stupid_code.graph.workspace import configurable_of, workspace_of
 
 SKILLS_KEY = "skills"
 """`configurable` 里的 key：本次对话勾选的 skill 名字列表。
 
 跟 `web/src/store/taskStore.ts` 的 `TaskSettings.skills` 对应。
-"""
-
-GLOBAL_SKILLS_ROUTE = "/user-skills/"
-"""虚拟路径前缀：全局 skill 目录。
-
-主 backend 按这个前缀把文件操作路由到 `~/.scode/.agents/skills/`，agent 就能
-用 `read_file("/user-skills/<skill>/SKILL.md", ...)` 读全局 skill——跟读项目级
-skill 用同一个工具。
-
-**注意**：这个前缀是**公开给模型的**。加了这条路由，agent 的文件工具就能读
-工作空间之外的 `~/.scode/.agents/` 目录（只有这一个目录）。这是「全局 skill」
-这个功能本身要求的权限面，见 AGENTS.md 的安全姿态一节。
 """
 
 GLOBAL_SKILLS_LABEL = "全局"
@@ -111,14 +99,6 @@ _FRAMEWORK_SKILLS_NAME = SkillsMiddleware.__name__
 名字撞上已有槽位就原地替换，不撞就多一份。两份 skill 中间件同时跑，会往
 系统提示词里塞**两块** skill 列表，模型看到重复的条目。
 """
-
-
-def global_skills_dir():
-    """全局 skill 目录：`$SCODE_HOME/.agents/skills`。
-
-    跟用户级记忆共用 `$SCODE_HOME` 这个家目录（`~/.scode`）。
-    """
-    return scode_home_dir() / ".agents" / "skills"
 
 
 def skill_sources() -> tuple[tuple[str, str], ...]:

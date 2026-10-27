@@ -3,7 +3,7 @@ from deepagents import create_deep_agent
 from stupid_code.config.model import load_model
 from stupid_code.config.prompts import SYSTEM_PROMPT
 from stupid_code.config.subagent import load_subagents
-from stupid_code.graph.backend import apply_subagent_policies, build_backend
+from stupid_code.graph.backend import build_backend
 from stupid_code.graph.compaction import (
     build_compaction_middleware,
     build_compaction_tool_middleware,
@@ -17,6 +17,7 @@ from stupid_code.graph.model_switch import (
 from stupid_code.graph.permissions import PermissionLevelMiddleware, build_interrupt_on
 from stupid_code.graph.repeated_calls import RepeatedCallMiddleware
 from stupid_code.graph.skills import build_skills_middleware
+from stupid_code.graph.subagent_policy import apply_subagent_policies
 from stupid_code.graph.workspace import WorkspaceMiddleware
 
 # 真实 backend：文件操作落工作空间的真实磁盘，execute 直接在本机跑 shell。

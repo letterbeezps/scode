@@ -32,12 +32,8 @@ from deepagents.middleware.skills import SkillsMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from stupid_code.graph.skills import (
-    GLOBAL_SKILLS_ROUTE,
-    PROJECT_SKILLS_SOURCE,
-    global_skills_dir,
-    skill_sources,
-)
+from stupid_code.graph.paths import GLOBAL_SKILLS_ROUTE, global_skills_dir
+from stupid_code.graph.skills import PROJECT_SKILLS_SOURCE, skill_sources
 from stupid_code.graph.workspace import (
     WorkspaceError,
     default_workspace,

@@ -57,7 +57,7 @@ from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 
-from stupid_code.graph.memory_home import (
+from stupid_code.graph.paths import (
     MEMORY_FILENAME,
     USER_MEMORY_SOURCE,
     user_memory_path,

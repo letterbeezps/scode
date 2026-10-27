@@ -46,7 +46,7 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
 
 | 路径 | 内容 |
 |---|---|
-| `stupid_code/graph/` | `agent.py` 建图 · `backend.py` 磁盘+shell · `workspace.py` 工作空间 · `memory.py`+`memory_home.py` 长期记忆 · `skills.py` skill · `model_switch.py` 切模型 · `compaction.py` 压缩 · `mcp.py` MCP · `permissions.py` 人工确认 · `persistence.py` SQLite |
+| `stupid_code/graph/` | `agent.py` 建图 · `backend.py` 磁盘+shell · `subagent_policy.py` 子 agent 策略 · `workspace.py` 工作空间 · `memory.py`+`paths.py` 长期记忆/路径常量 · `skills.py` skill · `model_switch.py` 切模型 · `compaction.py` 压缩 · `mcp.py` MCP · `permissions.py` 人工确认 · `persistence.py` SQLite |
 | `stupid_code/config/` | 读 `conf/` 下三个配置：`model.py` / `subagent.py` / `mcp.py`；`prompts.py` 是系统提示词 |
 | `stupid_code/admin/` | `/admin` 下的接口：`models.py` / `memory.py` / `skills.py`；`workspaces.py` 是 `POST /workspaces/pick` |
 | `web/src/` | `api/` 通信层（`mock/` 用**与真实后端完全相同的签名**）· `store/` Zustand · `components/` `pages/` `lib/` |

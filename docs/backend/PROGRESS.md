@@ -77,7 +77,7 @@
 | 014 | 工作空间按任务生效（`configurable.workspace`）+ 系统目录选择框 | ✅ 已落地 | `stupid_code/graph/workspace.py` + `stupid_code/admin/workspaces.py` |
 | 015 | 记忆块模板 + 长度上限；HITL 档位钉进图状态 + `delete` 进关卡 | ✅ 已落地 | `stupid_code/graph/memory.py` + `stupid_code/graph/permissions.py` |
 | 016 | agent 自己的中间产物收拢到 `.scode/` | ✅ 已落地 | `stupid_code/graph/backend.py` |
-| 017 | 长期记忆分两个作用域（用户级 + 项目级）+ 前端记忆面板 + 写记忆走人工确认 | ✅ 已落地 | `stupid_code/graph/memory_home.py` + `stupid_code/admin/memory.py` + `graph/permissions.py` + 前端 `components/memory/` |
+| 017 | 长期记忆分两个作用域（用户级 + 项目级）+ 前端记忆面板 + 写记忆走人工确认 | ✅ 已落地 | `stupid_code/graph/paths.py` + `stupid_code/admin/memory.py` + `graph/permissions.py` + 前端 `components/memory/` |
 | 018 | skill（全局 `~/.scode/.agents/skills/` + 项目级 `<工作空间>/.agents/skills/`）+ 前端斜杠菜单勾选 | ✅ 已落地 | `stupid_code/graph/skills.py` + `stupid_code/admin/skills.py` + 前端 `lib/skills.ts` |
 | 019 | 全仓精简（重复逻辑归一）+ 文档收敛到单一事实源 | ✅ 已落地 | `stupid_code/graph/workspace.py` + `stupid_code/config/model.py` + `stupid_code/admin/models.py` + 本文档 §3 末节 |
 | 020 | 删掉 `/tmp/` 路由（及其守卫类 `WorkspaceCompositeBackend`） | ✅ 已落地 | `stupid_code/graph/backend.py` + 本文档 §3 末节 |
@@ -135,9 +135,10 @@ stupid-code/
 │   ├── graph/
 │   │   ├── agent.py            # create_deep_agent()，导出 graph
 │   │   ├── backend.py          # 真实磁盘 + shell 的 backend
+│   │   ├── subagent_policy.py  # 子 agent 的权限/HITL/工具策略
 │   │   ├── compaction.py       # /compaction 手动压缩 + 摘要用当前模型
 │   │   ├── memory.py           # 长期记忆中间件（用户级 + 项目级两个来源）
-│   │   ├── memory_home.py      # 用户级记忆的家目录（$SCODE_HOME / ~/.scode）
+│   │   ├── paths.py            # 记忆/skill 的路径常量（$SCODE_HOME）
 │   │   ├── model_switch.py     # 运行期切换对话模型的中间件
 │   │   ├── permissions.py      # 人工确认的档位与危险判定
 │   │   ├── skills.py           # skill 发现（全局 + 项目级）+ 运行期源 + pin
@@ -622,7 +623,7 @@ deepagents 会往 backend 里写三样东西，落点由 `CompositeBackend.artif
   `NotImplementedError`。理由站得住——`execute` 能用 shell 绕过任何文件权限
   （`echo x > file`）。处理办法：给这类子 agent 单独一个**没有 shell** 的
   `FilesystemBackend`（真实磁盘，路径同样锁在工作空间内），权限就真的拦得住。
-  实现见 `graph/backend.py` 的 `apply_subagent_policies()`。
+  实现见 `graph/subagent_policy.py` 的 `apply_subagent_policies()`。
 - **长期记忆中间件不共用这个 CompositeBackend**：记忆只需要"工作空间里那一个文件"，
   自己持有一个以工作空间为根的 `FilesystemBackend` 更直白。两者解析出来的真实路径
   是同一个，所以 agent 写进去的内容下次开新会话照样会被读进来。
@@ -1424,7 +1425,7 @@ fork 一个子进程，http 每次重新握手。对文档搜索这种无状态�
   **不给 edit**——参数结构由服务器 schema 管，改错一个字段可能比拒绝更糟
 - `graph/mcp.py` 加载时把 `mcp_server` 写进工具 `metadata`，权限层靠它生成卡片
 - 只读子 agent 本来就不继承 MCP 工具，不受影响；其他子 agent 继承同一份
-  `interrupt_on`（`apply_subagent_policies` 已经做了合并）
+  `interrupt_on`（`apply_subagent_policies` 已经做了合并，见 `graph/subagent_policy.py`）
 
 **③ 配置字段与重试分类**
 
@@ -2654,7 +2655,7 @@ pgrep -f "langgraph_cli dev"        # 应该没有输出
   `conf/subagents.toml` 里的子 agent 没写 `tools` 就继承主 agent 的。
   实测 general-purpose 子 agent 调通了 `mcp__demo__echo`，返回 `echo: sub-agent-test`。
   **但声明了 `permissions` 的 `reviewer` 必须例外**：它的只读靠无 shell 的
-  `FilesystemBackend` 保证，MCP 工具不经过那层——`apply_subagent_policies()`
+  `FilesystemBackend` 保证，MCP 工具不经过那层——`apply_subagent_policies()`（`graph/subagent_policy.py`）
   会把这类子 agent 的 `tools` 置空。另外子 agent 自己写 `interrupt_on` 会**整体
   替换**父级的（`fixer` 因此丢了 `execute` 的确认），这个函数也做了合并
 - **调用期失败由 `tool_interceptors` 兜底**（实测）：拦截器重试一次后返回
@@ -3043,7 +3044,7 @@ agent 能写 `conf/mcp.json` 和后端源码，这些会在下次启动时执行
 **建图时报 `NotImplementedError: FilesystemMiddleware does not yet support
 permissions with backends that provide command execution`**
 有子 agent 声明了 `permissions`，而它的 backend 带 shell。看
-`graph/backend.py` 的 `apply_subagent_policies()`——正常路径下 `permissions`
+`graph/subagent_policy.py` 的 `apply_subagent_policies()`——正常路径下 `permissions`
 会被摘出来换成无 shell 的中间件。出现这个报错说明有子 agent 绕过了那层处理。
 
 **`task` 工具里只有 `general-purpose`**
