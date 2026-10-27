@@ -8,15 +8,25 @@ agent 的 `write_file` / `edit_file` 写的是内存里的副本，落不了盘�
 
     backend = CompositeBackend(
         default=LocalShellBackend(...),   # 真实磁盘 + 本机 shell
-        routes={"/tmp/": StateBackend()}, # 例外：临时区走虚拟 FS，不落盘
+        routes={"/user-memory/": FilesystemBackend(...)},  # 例外：用户级记忆目录
     }
 
 用 CompositeBackend 而不是直接用 LocalShellBackend，是为了让"哪部分路径走哪种
 存储"这件事写在配置里而不是散落在各处。现在有两条 route：
 
-- `/tmp/` → StateBackend：临时区走虚拟 FS，不在用户磁盘上留垃圾。
 - `/user-memory/` → `~/.scode/`：用户级记忆。**这是工作空间之外的一条写路径**，
   但只覆盖这一个目录——agent 写用户级记忆就得走它。
+- `/user-skills/` → `~/.scode/.agents/skills/`：全局 skill，**只读**。
+
+两条 route 都是**虚拟名**——`/user-memory`、`/user-skills` 在磁盘上并不存在。
+所以它们永远不会跟模型传进来的宿主绝对路径撞上：路由按虚拟前缀匹配，而真实
+路径里不会出现这两个前缀。
+
+（早先还有第三条 `/tmp/` → StateBackend 的路由，给 agent 一个会话内的临时区。
+它已经删了。那条路由是唯一可能跟宿主绝对路径撞上的（macOS 的 `/tmp` 是软链、
+Linux 的 `mktemp -d` 默认就在那儿），为了防它得额外套一层守卫类；而它提供的
+「会话内临时区」跟项目自己的产物策略（收在 `<工作空间>/.scode/`）也是重复的。
+详见 `docs/backend/PROGRESS.md` 的「020 · 删掉 `/tmp/` 路由」。）
 
 ## agent 自己的产物落在哪儿
 
@@ -70,8 +80,6 @@ from deepagents import SubAgent
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.local_shell import LocalShellBackend
-from deepagents.backends.protocol import GlobResult, GrepResult, LsResult
-from deepagents.backends.state import StateBackend
 from deepagents.middleware.filesystem import (
     FilesystemMiddleware,
     FilesystemPermission,
@@ -106,30 +114,6 @@ deepagents 会把三类东西写进 backend：
 这么告诉它的）。挪到工作空间外面的话路径出了 `virtual_mode` 的边界，eviction 就
 变成「存了但读不到」。
 """
-
-
-def _workspace_relative(key: str) -> str | None:
-    """这个 key 是不是「工作空间里的宿主绝对路径」？是的话返回相对工作空间的部分。
-
-    返回 None 表示不是（那它是虚拟路径，或者工作空间之外的绝对路径）。
-
-    **对着两种路径形态各试一次**：工作空间根的 `resolved`（软链已展开）和
-    `given`（用户给的那条）。macOS 上 `/tmp` → `/private/tmp` 是软链，用户
-    手打 `/tmp/proj` 时，只有 `given` 形态能匹配上；反过来，模型拿系统提示词
-    里的真实路径来，只有 `resolved` 形态能匹配上。两种都试才不会失配——
-    失配的后果是前缀剥不掉，文件落进工作空间里的嵌套目录，**还不报错**。
-
-    `/` 单独放行：它是虚拟根（`ls("/")` 要保留 composite 的聚合行为）。
-    """
-    path = Path(key)
-    if not path.is_absolute() or path == Path("/"):
-        return None
-    for root in current_workspace_root().candidates():
-        try:
-            return path.relative_to(root).as_posix()
-        except ValueError:
-            continue
-    return None
 
 
 class _WorkspaceRoot:
@@ -179,9 +163,15 @@ class _WorkspaceRoot:
         用 `Path.is_absolute()` 而不是 `startswith("/")`：Windows 的盘符路径
         （`C:\\...`）也是绝对路径，只认 `/` 的话前缀永远剥不掉。
         """
-        relative = _workspace_relative(key)
-        if relative is not None:
-            return super()._resolve_path(f"/{relative}")
+        path = Path(key)
+        # `/` 单独放行：它是虚拟根（`ls("/")` 要保留 composite 的聚合行为）。
+        if path.is_absolute() and path != Path("/"):
+            for root in current_workspace_root().candidates():
+                try:
+                    relative = path.relative_to(root).as_posix()
+                except ValueError:
+                    continue
+                return super()._resolve_path(f"/{relative}")
         return super()._resolve_path(key)
 
 
@@ -193,77 +183,6 @@ class WorkspaceFilesBackend(_WorkspaceRoot, FilesystemBackend):
     """真实磁盘、没有 shell，根目录同样跟着当前运行的工作空间走。"""
 
 
-class WorkspaceCompositeBackend(CompositeBackend):
-    """CompositeBackend + 「工作空间绝对路径优先走 default」的守卫。
-
-    路由是按**虚拟前缀**匹配的，而且发生在 default backend 剥掉工作空间前缀
-    之前。工作空间本身位于 `/tmp/...` 时（Linux 的 `mktemp -d` 默认就在那儿），
-    模型传进来的宿主绝对路径 `/tmp/ws/x.py` 会被 `/tmp/` 路由吃掉，写进
-    `StateBackend`——文件不落盘、还报成功。
-
-    所以路由前先判断 key 是不是「以当前工作空间绝对路径开头」：是的话一律交给
-    default backend（它会把前缀剥掉）。不在工作空间下的虚拟 `/tmp/...` 仍然走
-    `StateBackend`，临时产物的语义不变。
-    """
-
-    @staticmethod
-    def _is_workspace_path(key: str) -> bool:
-        """这个 key 是不是当前工作空间里的宿主绝对路径。
-
-        `/` 单独放行：它是虚拟根，`ls("/")` 要保留 composite 的聚合行为。
-        """
-        return _workspace_relative(key) is not None
-
-    def _get_backend_and_key(self, key: str) -> tuple[Any, str]:
-        if self._is_workspace_path(key):
-            return self.default, key
-        return super()._get_backend_and_key(key)
-
-    def ls(self, path: str) -> LsResult:
-        if self._is_workspace_path(path):
-            return self._coerce_ls_result(self.default.ls(path))
-        return super().ls(path)
-
-    async def als(self, path: str) -> LsResult:
-        if self._is_workspace_path(path):
-            return self._coerce_ls_result(await self.default.als(path))
-        return await super().als(path)
-
-    def grep(
-        self,
-        pattern: str,
-        path: str | None = None,
-        glob: str | None = None,
-        *,
-        max_count: int | None = None,
-    ) -> GrepResult:
-        if path is not None and self._is_workspace_path(path):
-            return self._grep_backend(self.default, pattern, path, glob, max_count)
-        return super().grep(pattern, path, glob, max_count=max_count)
-
-    async def agrep(
-        self,
-        pattern: str,
-        path: str | None = None,
-        glob: str | None = None,
-        *,
-        max_count: int | None = None,
-    ) -> GrepResult:
-        if path is not None and self._is_workspace_path(path):
-            return await self._agrep_backend(self.default, pattern, path, glob, max_count)
-        return await super().agrep(pattern, path, glob, max_count=max_count)
-
-    def glob(self, pattern: str, path: str | None = None) -> GlobResult:
-        if path is not None and self._is_workspace_path(path):
-            return self.default.glob(pattern, path)
-        return super().glob(pattern, path)
-
-    async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
-        if path is not None and self._is_workspace_path(path):
-            return await self.default.aglob(pattern, path)
-        return await super().aglob(pattern, path)
-
-
 def build_backend() -> CompositeBackend:
     """主 agent 的 backend：真实磁盘 + 本机 shell。
 
@@ -271,9 +190,6 @@ def build_backend() -> CompositeBackend:
       挡掉 `..` 和 `~` 越界。注意这只管文件操作——shell 不受这个限制。
     - `inherit_env=True`：shell 继承当前进程的环境变量。默认是空环境，
       PATH 是空的，`uv` / `python` / `node` 这些全都找不到。
-    - `/tmp/` 路由到 StateBackend：临时产物走虚拟 FS，不在用户磁盘上留垃圾。
-      工作空间自己的绝对路径（比如 `/tmp/ws/x`）不会被这条路由吃掉，见
-      `WorkspaceCompositeBackend`。
     - `/user-memory/` 路由到用户级记忆目录（`~/.scode/`）：agent 用
       `write_file("/user-memory/memory.md", ...)` 就能写用户级记忆，跟写项目级
       记忆用同一个工具。**这是工作空间之外的一条写路径**，只覆盖这一个目录。
@@ -283,14 +199,13 @@ def build_backend() -> CompositeBackend:
     - `artifacts_root`：deepagents 自己往 backend 里写产物时用的根路径，
       见 `ARTIFACTS_ROOT`。
     """
-    return WorkspaceCompositeBackend(
+    return CompositeBackend(
         default=WorkspaceShellBackend(
             root_dir=default_workspace(),
             virtual_mode=True,
             inherit_env=True,
         ),
         routes={
-            "/tmp/": StateBackend(),
             USER_MEMORY_ROUTE: FilesystemBackend(
                 root_dir=user_memory_dir(),
                 virtual_mode=True,
@@ -321,7 +236,7 @@ def build_restricted_backend() -> CompositeBackend:
     `_resolve_real_path()` 显式认 `CompositeBackend`（先路由再解析软链），
     所以 `interrupt_on` 谓词的软链解析不受影响。
     """
-    return WorkspaceCompositeBackend(
+    return CompositeBackend(
         default=WorkspaceFilesBackend(
             root_dir=default_workspace(),
             virtual_mode=True,
