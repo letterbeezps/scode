@@ -81,6 +81,7 @@
 | 018 | skill（全局 `~/.scode/.agents/skills/` + 项目级 `<工作空间>/.agents/skills/`）+ 前端斜杠菜单勾选 | ✅ 已落地 | `stupid_code/graph/skills.py` + `stupid_code/admin/skills.py` + 前端 `lib/skills.ts` |
 | 019 | 全仓精简（重复逻辑归一）+ 文档收敛到单一事实源 | ✅ 已落地 | `stupid_code/graph/workspace.py` + `stupid_code/config/model.py` + `stupid_code/admin/models.py` + 本文档 §3 末节 |
 | 020 | 删掉 `/tmp/` 路由（及其守卫类 `WorkspaceCompositeBackend`） | ✅ 已落地 | `stupid_code/graph/backend.py` + 本文档 §3 末节 |
+| 021 | 拦同一个 tool 用同一组参数反复失败 | ✅ 已落地 | `stupid_code/graph/repeated_calls.py` + 本文档 §3 末节 |
 
 ### 1.3 前端完成度
 
@@ -1872,6 +1873,115 @@ A/B 对比脚本（`/tmp/scode_backend_ab.py`）：把 `HEAD` 版 `backend.py` �
 - 软链形态（`given ≠ resolved`）下 `_resolve_path` 的行为跟改动前逐项一致 ✔
 - 系统提示词里剩下的两条路由都带真实宿主路径映射（`- \`/user-memory/\` -> \`~/.scode/\``），
   没有「shell 访问不到」的条目 ✔
+
+### 021 · 拦同一个 tool 用同一组参数反复失败
+
+**做了什么**：加一个中间件（`graph/repeated_calls.py`），同一个 tool 用同一组参数连续失败
+到阈值就不再执行，返回一条错误消息告诉模型「换个思路」。
+
+**要解决什么**：模型调 `edit_file` 对不上字符串，调了 8 次，每次参数一模一样，每次都失败。
+它不是在推进，是在原地转圈——每一轮都烧掉一次真实的工具执行和一次模型往返。
+
+**原本没有任何机制管这件事**（逐条查过）：
+
+| 层次 | 有什么 | 对「重复调用」的效果 |
+|---|---|---|
+| LangGraph | `recursion_limit`（默认 10007） | 只管**总步数**，管不了重复 |
+| deepagents | 压缩中间件 | 管上下文长度，不管重复 |
+| deepagents 内建提示词 | 「If something fails repeatedly, stop and analyze *why*」 | **本项目用不上**——内建提示词 0.7.0 就废弃了，`config/prompts.py` 自己写全了系统提示词，这句没被继承到 |
+
+**判定：签名 + 连续性**
+
+签名 = tool 名 + 参数的稳定序列化（`json.dumps(args, sort_keys=True)`）。`sort_keys=True`
+必须有——否则 `{"a":1,"b":2}` 和 `{"b":2,"a":1}` 是两次不同的调用，模型改一下参数顺序就绕过去了。
+
+**只数「紧邻的」同签名失败**：失败之后换个参数再试是正常的（模型换了思路），不该连坐。
+中间夹了别的调用、或遇到一次成功，计数就清零。
+
+**失败怎么判定**：`ToolMessage.status == "error"`。框架统一用这个标记表示失败——
+
+- 工具抛异常 → deepagents 在**工具边界**把它转成 `status="error"` 的 ToolMessage
+  （`deepagents/middleware/filesystem.py`，注释写明 "never let them escape"），异常不穿透
+- **参数校验错误**也是这个状态（工具压根没跑，但消息已经是 error）
+
+两种形态统一处理。但有两条例外：
+
+- **HITL 拒绝**也产生 `status="error"`（`human_in_the_loop.py` 的 `_answer_message`）——
+  那是**用户的决策**不是模型重试，按 content 前缀排除
+- **本中间件自己发的拦截消息**也是 error——不排除的话它会把自己算成失败，计数滚雪球
+  （实测：拦一次之后每次都拦，提示里的次数一直涨）。排除后次数稳定
+
+**`execute` 的命令失败（exit code ≠ 0）返回 `status="success"`**，所以 `pytest` 跑不过
+不会被拦——那不是工具失败，是命令的退出码。被拦的是「工具本身用不了」：路径不存在、
+`edit_file` 对不上字符串、权限拒绝。
+
+**计数从消息历史来，不是 state**
+
+扫 `request.state["messages"]`，不维护自己的计数器。两条理由：
+
+1. **工具结果在执行之后才写回 state**（实测：`wrap_tool_call` 里看到的 messages 只到当前
+   这条 AI 消息，上一次迭代的工具结果已经在里面了）——「上一次失败」看得见，够判连续失败
+2. **不需要额外 state 字段**。自己维护计数器就得处理「什么时候清零」，而「连续性」的
+   语义（中间夹了别的调用就清零）从消息历史扫更准
+
+时序上唯一的例外：**同一批并行发出的 tool call 互相看不到对方的结果**——这是对的，
+并行不是重试。
+
+**消息历史会被压缩**：对话长了被 `SummarizationMiddleware` 压缩，老消息被摘要替换，
+「连续失败」的证据就没了——判定会漏。可接受：压缩说明上下文已经很长了，模型自己都记不清
+前面失败了什么，这时候拦住它意义不大。宁可漏判不可误判。
+
+**关键取舍**
+
+- **拦下后返回消息，而不是抛异常**：抛异常会中断整轮运行——但模型可能只需要换个参数就能过。
+  返回一条错误消息让它自己调整更温和
+- **阈值 3（允许试 2 次）**：参数写错一两次很正常，第 3 次还没成功基本可以断定它在原地转圈
+- **跟 HITL 的相对顺序有讲究，但恰好是对的**：deepagents 把 `HumanInTheLoopMiddleware` 放在
+  core 栈，自定义 middleware 在它之后；按 langchain 的「先定义 = 最外层」，**HITL 在外层**
+  ——HITL 拒绝发生在本中间件**之前**，所以本中间件能看到那条拒绝消息（然后排除它）
+- **子 agent 不继承**：子 agent 是独立 `create_agent()` 建的图，父级的 `middleware=` 不会传
+  下去（跟 `PermissionLevelMiddleware` 一样，得显式挂）。主 agent 的重复调用是主要问题，
+  子 agent 先不管
+- **提示词也补了一条**：deepagents 内建提示词里那句「失败别重试」本项目没继承到，
+  `config/prompts.py` 补了一条对应的中文。它是软引导，中间件才是硬约束
+
+**验证**
+
+`/tmp/scode_repeated_test.py`：单元层测 `call_signature` / `consecutive_failures` 的判定，
+端到端用 **deepagents 真实的 `FilesystemMiddleware` 工具**跑（不是 langchain 的 `@tool`——
+后者失败时抛异常不返回 error ToolMessage，形态不一样，拿它测会得出错误结论）。
+
+| 场景 | 结果 |
+|---|---|
+| 连续 2 次同签名失败 | 判定为 2 ✔ |
+| 中间换了别的 tool | 不连续（0）✔ |
+| 成功过 | 清零（0）✔ |
+| HITL 拒绝 | 不计入（0）✔ |
+| 参数顺序不同但内容相同 | 算连续（2）✔ |
+| 找不到对应参数 | 0（宁可漏判不可误判）✔ |
+| `threshold=1` | 构造时抛 ValueError ✔ |
+| **端到端：4 次同样失败调用** | **工具只真跑了 2 次，第 3、4 次被拦** ✔ |
+| 端到端：换参数 | 无拦截 ✔ |
+| 端到端：阈值 2 | 第 2 次就拦 ✔ |
+| 端到端：成功的重复调用 | 无拦截 ✔ |
+| 拦截消息里的次数 | 稳定在 3，不滚雪球 ✔ |
+
+另外用**项目真实的 backend** 复验了一遍：前 2 次真失败（`Error: File '/a.py' not found`），
+第 3、4 次返回拦截消息，工具不再执行。
+
+- `uv run langgraph validate --config stupid_code/langgraph.json` → `1 graph found`
+- `uv run python -c "import stupid_code.graph.agent"` → 图建起来（`CompiledStateGraph`）
+- 全仓零未使用 import
+
+**踩过的坑（留给下一个人）**
+
+- **框架只注入它认识的关键字**：`before_agent` / `wrap_tool_call` 的参数是按签名注入的，
+  `config` 只有在注解是 `RunnableConfig` / `RunnableConfig | None` 时才注入——注解写 `Any`
+  会被静默跳过，然后报「missing 1 required positional argument」
+- **同步异步两个钩子都要实现**：只实现 `wrap_tool_call` 在异步路径下会抛
+  `NotImplementedError`（框架明确要求两个都实现）
+- **`wrap_tool_call` 不生成图节点**：`get_graph().nodes` 里看不到它——它在 `tools` 节点内部
+  生效。想确认它挂上了，要么看源码，要么跑一次真实调用看是否触发
 
 ## 4. 关键机制速查
 

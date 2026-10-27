@@ -77,6 +77,7 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 | [graph/model_switch.py](graph/model_switch.py) | 运行期切换对话模型：中间件在每次模型调用前把 `request.model` 换成用户选中的那个 |
 | [graph/mcp.py](graph/mcp.py) | MCP 工具加载：按 `conf/mcp.json` 连服务器取工具（并行 + 总预算限时）、加 `mcp__{服务器}__{工具}` 前缀、检测重名；**每个服务器一条长会话**（专用 MCP 线程 + worker 队列，同服务器调用串行，失败自动重连）；用 adapter 的 `tool_interceptors` 兜传输层失败并在调用期重试一次。协议本身交给 `langchain-mcp-adapters` / 官方 `mcp` SDK |
 | [graph/permissions.py](graph/permissions.py) | 危险操作人工确认：权限档位解析（manual/normal/auto）+ 危险命令识别 + `interrupt_on` 的 `when` 谓词；档位记进图状态，恢复时的判定不受客户端回传值影响。**写记忆文件也在拦截范围内**（判据只看路径，纯字符串不碰 FS） |
+| [graph/repeated_calls.py](graph/repeated_calls.py) | 拦同一个 tool 用同一组参数反复失败：连续失败到阈值就不再执行，返回一条错误消息让模型换思路（阈值 3）。判定扫消息历史（工具结果在执行后才写回 state），HITL 拒绝和本中间件自己的拦截消息都不计入 |
 | [graph/persistence.py](graph/persistence.py) | SQLite 持久化工厂：`AsyncSqliteSaver`（checkpoint）+ `AsyncSqliteStore`（store），都指向 `../data/langgraph.db` |
 | **配置解析**（`config/`） | |
 | [config/model.py](config/model.py) | 加载与校验 `../../conf/config.toml`，构建模型实例；CRUD helpers |
