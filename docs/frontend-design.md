@@ -558,6 +558,7 @@ Deep Agents 的内置工具名固定，但自定义工具（终端、git 等）�
 - 切换任务：加载对应 `thread_id` 的历史消息（`/state` + `restoreMessages`）
 - 删除任务：删线程，并清掉该任务的 `taskStore` 设置与待办
 - 标题：平台的 Thread 结构没有 `title` 字段，**借 `metadata.title` 存一份**（`PATCH /threads/{id}`，合并语义），刷新页面后仍在；读不到时退回从首条用户消息截断推导，存在 `titles` 里
+- 标题的来源始终是**首条**用户消息：写入（`sendMessage`）和回读（`selectThread`）两条路径都把该会话的完整消息列表交给 `deriveTitle`。少传一条就会把最新消息当成首条——在还没写进 `metadata.title` 的会话里，发一条消息就把标题顶掉
 
 **`/chat` 下首发消息有个坑**：store 里 `sendMessage` 会兜底建线程，但那时 URL 还停在 `/chat`，
 消息会渲染到一个读不到 `threadId` 的页面上，等于凭空消失。所以 `ChatPage.handleSend`

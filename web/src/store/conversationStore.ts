@@ -836,7 +836,16 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
         ...prev.messages,
         [threadId!]: [...(prev.messages[threadId!] ?? []), userMessage],
       },
-      titles: { ...prev.titles, [threadId!]: deriveTitle(prev.threads.find((t) => t.thread_id === threadId), [userMessage]) },
+      titles: {
+        ...prev.titles,
+        // 标题取的是**首条**用户消息（deriveTitle 的契约），所以这里必须带上该会话
+        // 已有的消息，不能只传 [userMessage]——否则新消息会被当成首条，在还没写进
+        // metadata.title 的旧会话里发一条消息就把标题顶掉了。
+        [threadId!]: deriveTitle(
+          prev.threads.find((t) => t.thread_id === threadId),
+          [...(prev.messages[threadId!] ?? []), userMessage],
+        ),
+      },
       pendingMessage: pending,
       pendingThreadId: threadId,
       isGenerating: true,
