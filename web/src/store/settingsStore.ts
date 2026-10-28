@@ -5,7 +5,7 @@
  * conf/config.toml 里，这里只是它的一张视图 + 增删改入口。
  *
  * 关于「选中哪个模型」：selectedId 是**真正生效**的选择。每次发消息时它随
- * configurable 一起发给后端，后端在每次模型调用前把模型换成它
+ * context 一起发给后端，后端在每次模型调用前把模型换成它
  * （见后端 `stupid_code/graph/model_switch.py`），所以切换不需要重启后端，
  * 下一条消息就用新供应商的 base_url / api_key / protocol。
  *
@@ -32,7 +32,7 @@ import type {
 } from '../api/types'
 
 const STORAGE_KEY = 'stupid-code:model'
-/** localStorage 里的键。与 lib/model.ts 的 MODEL_KEY（configurable 的键）不是一回事。 */
+/** localStorage 里的键。与 lib/model.ts 的 MODEL_KEY（context 字段）不是一回事。 */
 
 function readStoredModel(): string {
   try {
@@ -109,7 +109,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   /**
    * 选中一个模型：从下一条消息起就用它。
    *
-   * 只改本地状态，不发请求——后端每次运行都从 configurable 拿到当前选中的
+   * 只改本地状态，不发请求——后端每次运行都从 context 拿到当前选中的
    * 模型，所以这里存下就等于「下一次运行会用它」。
    */
   select: (id) => {

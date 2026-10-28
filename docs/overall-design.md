@@ -28,12 +28,13 @@
 
 ### 1.3 当前进度（与文档描述的差异）
 
-本文档 §3 描述的是**目标设计**，代码现状落后于文档。接手时先看这里：
+本文档 §3 描述的是**目标设计**；与代码有出入时，以
+`docs/backend/PROGRESS.md` 为准。接手时先看这里：
 
 | 部分 | 文档描述 | 代码现状 |
 |---|---|---|
-| 前端 `web/` | 完整实现 | ✅ 已完成 5920 行 TS/TSX，mock 与真后端两套都能跑 |
-| 后端 Agent | §3 完整设计 | ⚠️ 001–018 期均已落地（真实磁盘 + shell、长期记忆、shell 人工确认、子 agent 配置、运行期切模型、手动压缩历史、MCP、按任务生效的工作空间、用户级记忆 + 记忆面板、skill 两个作用域）。运行护栏等自研中间件仍未做 |
+| 前端 `web/` | 完整实现 | ✅ 已完成；mock 与真后端两套都能跑 |
+| 后端 Agent | §3 完整设计 | ✅ 001–022 期均已落地（真实磁盘 + shell、长期记忆、shell 人工确认、子 agent 配置、运行期切模型、手动压缩历史、MCP、按任务生效的工作空间、用户级记忆 + 记忆面板、skill 两个作用域、任务参数 `context_schema`、同参数反复失败拦截）。更多运行护栏（预算、循环上限等）仍未做 |
 | 后端依赖 | Deep Agents + LangGraph | ✅ 已装齐并锁进 `uv.lock` |
 | `langgraph.json` | §3.2 已给出 | ✅ 在 `stupid_code/` 目录（不是根目录），图注册 + http.app + checkpointer/store 都已配 |
 | 模型配置 | §4 多供应商 | ✅ `conf/config.toml` + `/admin/models` 管理接口（002 / 003 期） |
@@ -82,9 +83,9 @@
 |------|---------|
 | 前端 | React 19.2 / TypeScript 6 / Vite 8 / TailwindCSS 4 / zustand 5 / shiki |
 | 后端运行时 | Python 3.12+、Deep Agents、LangGraph、langgraph-cli |
-| 服务启动 | langgraph-cli（`langgraph dev` / `langgraph up`） |
+| 服务启动 | `uv run scode`（内部起 `langgraph dev`）；Docker Compose 全栈 |
 | 通信协议 | HTTP REST + Server-Sent Events (SSE) |
-| 状态持久化 | LangGraph Checkpointer（开发期 InMemory，生产 Postgres） |
+| 状态持久化 | SQLite（`graph/persistence.py` → `stupid_code/data/langgraph.db`）+ 平台 thread 索引 |
 | 源码目录 | `web/`（不是 `frontend/`，见 §9） |
 
 ---
@@ -157,22 +158,23 @@
 通过 `langgraph-cli` 启动 LangGraph API Server：
 
 ```bash
-# 开发模式（热重载，默认端口 2024）
-langgraph dev
+# 开发：launcher 起 langgraph dev，固定 127.0.0.1:2024
+uv run scode
 
-# 生产模式（Docker Compose + Postgres，默认端口 8123）
-langgraph up
+# 全栈容器：后端 2024 + 前端 nginx 5173（均只绑宿主 127.0.0.1）
+docker compose up --build
 ```
 
-`langgraph.json` 配置指向 Agent Graph（**该文件当前尚不存在，需创建**）：
+`langgraph.json` 已落地在 `stupid_code/`（不是仓库根），`scode` 启动时把相对路径
+改写成临时配置：
 
 ```json
 {
   "dependencies": ["."],
-  "graphs": {
-    "code_agent": "./stupid_code/graph/agent.py:graph"
-  },
-  "env": "./.env"
+  "graphs": {"code_agent": "./graph/agent.py:graph"},
+  "http": {"app": "./admin/app.py:app"},
+  "checkpointer": {"path": "./graph/persistence.py:checkpointer"},
+  "store": {"path": "./graph/persistence.py:store"}
 }
 ```
 
@@ -199,24 +201,26 @@ langgraph up
 
 ## 4. 前后端契约
 
-> 这是本文档最重要的部分。**前端已实现，后端必须照此实现**，否则返工。
+> 这是本文档最重要的部分。前端与后端都已按此实现；**改契约前先看这里**，否则两边会漂移。
 
 ### 4.1 API 端点全表
 
 | 方法 | 路径 | 用途 | 状态 |
 |---|---|---|---|
 | POST | `/threads` | 创建对话线程 | LangGraph 提供 |
-| GET | `/threads` | 列出对话线程（前端侧边栏） | LangGraph 提供 |
+| POST | `/threads/search` | 列出对话线程（前端侧边栏） | LangGraph 提供 |
+| PATCH | `/threads/{thread_id}` | 改 metadata（标题 / 任务参数回填） | LangGraph 提供 |
 | DELETE | `/threads/{thread_id}` | 删除对话线程 | LangGraph 提供 |
-| POST | `/threads/{thread_id}/runs` | 创建运行（**也用于提交确认决策**，§5.3） | LangGraph 提供 |
-| POST | `/threads/{thread_id}/runs/stream` | 流式运行（SSE） | LangGraph 提供 |
-| GET | `/threads/{thread_id}/state` | 获取线程当前状态 | LangGraph 提供 |
+| GET | `/threads/{thread_id}/state` | 获取线程当前状态 / 历史消息 | LangGraph 提供 |
+| POST | `/threads/{thread_id}/runs/stream` | 流式运行（SSE，也用于 `command.resume`） | LangGraph 提供 |
+| GET | `/threads/{thread_id}/runs/{run_id}/stream` | 重新接入已有运行的流（断线恢复，§6.4） | LangGraph 提供 |
 | POST | `/threads/{thread_id}/runs/{run_id}/cancel` | 取消运行 | LangGraph 提供 |
-| GET | `/threads/{thread_id}/runs/{run_id}/stream` | **重新接入已有运行的流**（断线恢复，§6.4） | LangGraph 提供 |
-| POST | `/workspaces/pick` | **弹系统原生目录选择框，选一个工作空间** | **自研实现**（014 期） |
-| GET | `/admin/skills` | **列可用的 skill（全局 + 项目级）** | **自研实现**（018 期） |
+| POST | `/workspaces/pick` | 弹系统原生目录选择框，选一个工作空间 | **自研实现**（014 期） |
+| GET/POST/PUT/DELETE | `/admin/models` 一族 | 模型配置管理 | **自研实现**（003 期） |
+| GET/PUT | `/admin/memory` | 读两份长期记忆 / 写一份 | **自研实现**（017 期） |
+| GET | `/admin/skills` | 列可用的 skill（全局 + 项目级） | **自研实现**（018 期） |
 
-> 端点列表已与 `web/src/api/*.ts` 的实际调用逐一核对（2026-10-16；`/admin/skills` 于 2026-10-26 补）。
+> 端点列表已与 `web/src/api/*.ts` 的实际调用逐一核对（2026-10-28）。
 
 **历史消息从哪里来**：前端不调用 `/threads/{tid}/history`，而是从 `GET /threads/{tid}/state` 返回的 `values.messages` 里自行转换（见 `web/src/api/thread.ts`）。后端无需额外处理，但要知道前端依赖这个结构——`values.messages` 必须是完整的 LangChain 消息数组。
 
@@ -333,7 +337,7 @@ interface Message {
 - **每轮运行开跑前重新校验**：存在性 / 目录类型 / 软链解析都在 `before_agent` 里重做（放线程），结果刷进缓存供热路径读取——只缓存首次结果的话，目录被删掉后校验会永远命中缓存、形同虚设。
 - **一次 run 内锁定**：`context` 是运行级参数，一轮对话中途改不了。
 - **空字符串 = 用后端默认工作空间**（`SCODE_WORKSPACE` 或启动时的 cwd），不是拒绝一切操作——原生跑法（`cd project && uv run scode`）里用户没有前端可选。
-- **刷新页面后从 thread metadata 回填**：前端把 `workspace` / `permissions` 写进 thread 的 metadata，`loadThreads` / `selectThread` 时回填本地的任务参数；审批挂起期间选择器禁用，恢复时带回的就是发起 run 时的值。
+- **刷新页面后从 thread metadata 回填**：前端把 `workspace` / `permissions` / `skills` 写进 thread 的 metadata，`loadThreads` / `selectThread` 时回填本地的任务参数；审批挂起期间选择器禁用，恢复时带回的就是发起 run 时的值。
 - **工作空间不合法 = 这一轮直接失败**（「工作空间不存在：xxx」），**不静默退回默认目录**——那等于把 agent 的写操作落到用户没选过的目录里。
 
 **没做的**：§6.1 之外没有更细的沙箱。deepagents 是 "trust the LLM" 模型，agent 有 shell 就能碰整个文件系统；工作空间是"默认在哪干活"，不是安全边界。
@@ -344,11 +348,11 @@ interface Message {
 
 前端已实现三档权限选择器，并把档位通过 `context.permissions` 传给后端：
 
-| 档位 | 前端描述 | 期望语义 |
+| 档位 | 前端描述 | 实际语义 |
 |---|---|---|
-| `manual` | 命中危险操作的，先确认再执行 | 按**固定规则**判定危险，命中即中断确认 |
-| `normal` | AI 审核这次操作是否危险，再决定要不要确认 | 由 **LLM 判断**是否危险，默认档位 |
-| `auto` | 不确认，直接执行 | 不挂起，但**仍需审计日志** |
+| `manual` | 每条执行命令、每次删文件都先确认 | 每条 `execute` / `delete` 都挂起；写记忆、非只读 MCP 工具也拦 |
+| `normal` | 命中危险命令的（`rm -rf`、强制推送等）才确认；删文件不拦，默认档 | 只有 `execute` 命中正则危险模式（`dangerous_reason()`）才挂起；写记忆也拦 |
+| `auto` | 不确认，直接执行 | 不挂起 |
 
 前端代码注释明确指出："后端需要在工具调用入口按 permissions 拦截并挂起等前端确认，否则这两项只是摆设。"
 
@@ -366,13 +370,15 @@ LangChain 提供 `HumanInTheLoopMiddleware`，通过 `interrupt_on` 声明哪些
 
 | 档位 | 实现 |
 |---|---|
-| `auto` | 不配置 `interrupt_on`，或全部置 `False` |
-| `manual` | 用**固定规则**判定危险：`interrupt_on` 中对所有写入类/命令类工具置 `True`，或用 `when` 回调按工具名/命令特征判断 |
-| `normal` | 用 **LLM 审核**：在 `interrupt_on` 的 `when` 回调里调用一个轻量模型判断本次操作是否危险 |
+| `auto` | `when` 始终返回 `False`（不挂起） |
+| `manual` | `execute` / `delete` 每次挂起；写记忆文件、非只读 MCP 工具也挂起 |
+| `normal` | `execute` 只有命中 `dangerous_reason()` 才挂起；写记忆也挂起，`delete` 和 MCP 不拦 |
 
 **⚠️ 三个必须写进实现的坑**：
 
-1. **`when` 回调必须是同步函数**，不能直接在里面调异步模型。`normal` 档的 LLM 审核需要特殊设计——推荐改为：在图里加一个审核节点，或用 `interrupt_before` 在节点粒度挂起。**这一档的实现方案需要在 P0 阶段先做技术验证**，不要假设能直接塞进 `when`。
+1. **`when` 回调必须是同步函数**。本项目 `normal` 档没有做 LLM 审核，而是用正则危险模式
+   （`dangerous_reason()`），所以没有异步问题。若将来要做 LLM 审核，必须在图里加审核节点
+   或预计算结论，**不能直接 `await` 塞进 `when`**。
 
 2. **`when` 在恢复执行时会再次运行，且必须对同一次调用返回一致结果。** 如果首次判断为"需要确认"、恢复时变成"不需要"，审批结果会被忽略、工具直接执行——**即使用户点了拒绝**。所以审核结论必须持久化，不能靠重算。
 
@@ -493,14 +499,17 @@ skill 块就会跑到记忆块后面。
 
 ### 6.4 断线恢复
 
-当前 `stream_resumable: false`，用户刷新页面会丢失进行中的运行。低成本兜底方案（P1 实现）：
+当前 `stream_resumable` 仍未打开。前端已实现低成本恢复（`conversationStore` 的
+`startRecoveryPolling`）：
 
-1. 前端记录每次运行的 `run_id`（已从 `metadata` 事件获取并存储）
-2. 页面加载时检查当前 thread 是否有未完成的 run（调 `GET /threads/{tid}/state`）
-3. 有则提示用户"检测到未完成的运行"，提供"重新接入"按钮
-4. 用户确认后调用 `GET /threads/{thread_id}/runs/{run_id}/stream` 接回
+1. 页面加载 / 断线时调 `GET /threads/{tid}/state`，看 `next` 是否非空、有没有 `interrupts`
+2. 有未完成运行则轮询 state；能拿到 `run_id` 时用
+   `GET /threads/{thread_id}/runs/{run_id}/stream` 接回后续事件
+3. 挂在人工确认上则恢复审批卡片；运行结束时用 state 里的完整消息重建会话
 
-接回的流只能拿到**接上之后**的事件。之前错过的部分，通过 `GET /threads/{tid}/state` 的 `values.messages` 补齐（这是前端已经在用的历史来源，§4.1）。需要注意补齐的是"完整消息"而非"事件序列"，因此若中断期间发生了工具调用，可能只能看到最终结果而非过程。`[待核实]` 平台是否提供更细粒度的历史事件接口。
+接回的流只能拿到**接上之后**的事件。之前错过的部分，通过 `GET /threads/{tid}/state`
+的 `values.messages` 补齐（前端已经在用的历史来源，§4.1）。补齐的是"完整消息"而非
+"事件序列"，因此中断期间发生的工具调用可能只能看到最终结果而非过程。
 
 ### 6.5 路径与命令安全
 
@@ -510,7 +519,7 @@ skill 块就会跑到记忆块后面。
 | 符号链接逃逸 | 校验前必须 `os.path.realpath()` 而非 `abspath()` |
 | 读取敏感文件（.ssh / .env / .aws） | 在工作空间约束内则天然隔离；显式黑名单 `[待核实: 具体清单需按项目实际环境确定]` |
 | 读取工作空间之外的目录 | 两条**只覆盖一个目录**的例外：`/user-memory/`（`~/.scode/`，可写——用户级记忆）和 `/user-skills/`（`~/.scode/.agents/skills/`，只读——全局 skill）。工作空间内的路径依然出不去（017/018 期） |
-| 危险 shell 命令（`rm -rf` / `curl \| sh`） | 命中危险模式的命令走 `manual` 档确认；模式规则需按项目实际需要制定 |
+| 危险 shell 命令（`rm -rf` / `curl \| sh`） | 命中正则危险模式的命令在 `normal` / `manual` 档挂起；`manual` 档每条命令都挂起。`normal` 只是过滤器，不是安全边界 |
 | 日志泄露 | 工具入参出参中的凭据、token 需脱敏后再落日志（§7） |
 
 > ⚠️ 沙箱问题：Deep Agents 的 sandbox backend 与 filesystem permissions 是**两套独立机制**，filesystem 的权限规则**不适用于 sandbox**。若使用 sandbox 执行命令，不能依赖文件 ACL 来限制 shell 能访问什么，需要额外的 backend policy hook。`[待核实: 本项目最终是否启用 sandbox backend，以及启用后的隔离强度]`
@@ -593,10 +602,10 @@ stupid_code/prompts/
 |---|---|---|---|
 | P0 | 后端 Agent 骨架跑通 | 可对话的后端服务 | ① filesystem 确认落到真实磁盘（§3.1）② `langgraph dev` 可用 ③ 前端切非 mock 模式能完成一轮对话 ④ 工具调用能渲染 |
 | P1 | 工作空间 + 危险操作确认 | 安全可控的编码能力 | ① 路径逃逸被拦截 ② `manual` 档能触发中断并被前端确认卡片处理 ③ 断线重连可用 |
-| P2 | 前端确认卡片、Diff 完善 | 完整编码交互体验 | ① 审批卡片支持 approve/reject ② 文件修改可视化 Diff ③ `normal` 档 LLM 审核可用 |
+| P2 | 前端确认卡片、Diff 完善 | 完整编码交互体验 | ① 审批卡片支持 approve/reject（已落地） ② 文件修改可视化 Diff（已落地） ③ `normal` 档危险模式过滤器（已落地，非 LLM） |
 | P3 | 评测集、可观测性、会话历史 | 接近产品级体验 | ① 评测集 ≥ 20 条且跑出基线 ② 关键指标埋点完成 |
 
-**风险提示**：P1 的 `normal` 档（LLM 审核）技术不确定性最高，建议在 P0 结束时先做技术验证，不要留到 P2 才发现走不通。
+**风险提示**：`normal` 档是正则过滤器，不是安全边界——绕得开的命令照样执行；需要确定性时用 `manual`。
 
 ---
 
@@ -623,16 +632,16 @@ stupid_code/prompts/
 
 | 风险 | 概率 | 影响 | 应对 |
 |---|---|---|---|
-| filesystem 默认是虚拟的，写文件不落盘 | 中 | 高 | P0 第一件事就验证（§3.1） |
-| `normal` 档 LLM 审核难以在 `when` 回调中实现 | 高 | 中 | P0 末提前验证，准备备选方案（§5.3） |
+| filesystem 默认是虚拟的，写文件不落盘 | 中 | 高 | 已解决：显式传真实 backend（§3.1） |
+| `normal` 档危险模式覆盖不足（可被绕过） | 中 | 中 | 文档明确 normal 不是安全边界；需要确定性时用 manual（§5.3） |
 | `when` 恢复时判定不一致导致拒绝被忽略 | 中 | 高 | 审核结论必须持久化，不重算（§5.3） |
 | 中间件顺序错误导致绕过审批 | 中 | 高 | 顺序写入代码规范并加测试（§6.3） |
 | 意外绑定 `0.0.0.0` 导致命令执行暴露 | 低 | 极高 | 配置层强制 127.0.0.1（§6.1） |
 | Agent 失控循环烧钱 | 中 | 中 | 护栏四件套（§5.4） |
 | 目录选择框把文件系统暴露给前端 | 低 | 低 | 只弹系统原生窗口（不返回目录列表），后端仍只监听 `127.0.0.1`（§4.1.1） |
-| 刷新页面丢失运行状态 | 高 | 低 | §6.4 低成本兜底；根治需开 `stream_resumable` |
+| 刷新页面丢失运行状态 | 中 | 低 | 前端已实现 state 轮询 + join 流恢复（§6.4）；根治仍需 `stream_resumable` |
 | 大文件 Diff 渲染卡顿 | 中 | 低 | 虚拟滚动或截断展示 |
-| 会话持久化 | — | — | 开发期 InMemory 重启丢失，生产换 Postgres |
+| 会话持久化 | — | — | 已用 SQLite（`graph/persistence.py`）；生产如需多实例再换 Postgres |
 
 ### 11.3 已定事项（不再讨论）
 

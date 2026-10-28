@@ -141,7 +141,7 @@ result = agent.invoke({"messages": "Research LangGraph and write a summary"})
 - **别把仓库根当工作空间** —— agent 能写工作空间里的任何文件，包括 `conf/mcp.json` 和后端源码，这些会在下次启动时执行，等于绕开 `execute` 的人工确认。工作空间默认是运行 `scode` 的目录，也可以用 `SCODE_WORKSPACE` 指定；前端选的按消息生效，会覆盖默认值。
 - **端口锁死 2024** —— 被占用时 `scode` 直接启动失败并说明是谁占着，**不会自动换端口**（自动换会让就绪检查打到旧服务上，误报"已就绪"，前端连的是旧代码）。
 - **持久状态分两处，缺一不可** —— thread 索引在工作空间的 `.langgraph_api/`，checkpoint / store 在 `stupid_code/data/langgraph.db`（已 gitignore，删掉即重置历史）。
-- **人工确认拦 `execute` 和 `delete`** —— 文件类工具（`write_file` / `edit_file`）不拦，那是 code agent 的日常；`delete` 删目录是递归的、跟 `rm -rf` 等价，所以也拦，但只在 `manual` 档拦（`normal` 档太吵）。
+- **人工确认拦 `execute` 和 `delete`** —— 普通文件类工具（`write_file` / `edit_file`）不拦，那是 code agent 的日常；**写记忆文件除外**（`normal` / `manual` 档都拦），`delete` 删目录是递归的、跟 `rm -rf` 等价，所以也拦，但只在 `manual` 档拦（`normal` 档太吵）。
 - **记忆分两级** —— 项目级在工作空间根的 `.scode-memory.md`，用户级在 `~/.scode/memory.md`。**改完要开新会话才生效**。写记忆要人工确认（`normal` / `manual` 档）——记忆写错了会一直影响后面每个会话。
 - **skill 分两个作用域** —— 全局 `~/.scode/.agents/skills/`，项目级 `<工作空间>/.agents/skills/`。输入框敲 `/` 混着命令和 skill，**选 skill 是勾选**（不发消息），勾中的全文钉进对话上下文。
 - **agent 的中间产物收在工作空间的 `.scode/` 里** —— 被压缩掉的对话历史、超大的工具结果、二进制块都在这下面，已 gitignore，agent 需要时能 `read_file` 读回来。

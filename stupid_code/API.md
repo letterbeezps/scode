@@ -8,7 +8,7 @@
 
 ## 端点总览
 
-| 调用方 | 方法 | 路径 | 用途 | 001 是否可用 |
+| 调用方 | 方法 | 路径 | 用途 | 状态 |
 |---|---|---|---|---|
 | `scode` | GET | [`/ok`](#get-ok) | 存活探测 | ✅ |
 | `scode` | POST | [`/assistants/search`](#post-assistantssearch) | 列出 assistant | ✅ |
@@ -19,6 +19,7 @@
 | 前端 | PATCH | [`/threads/{id}`](#patch-threadsid) | 改 metadata（存标题） | ✅ |
 | 前端 | GET | [`/threads/{id}/state`](#get-threadsidstate) | 历史消息 | ✅ |
 | 前端 | POST | [`/threads/{id}/runs/stream`](#post-threadsidrunsstream) | 流式运行 / 恢复挂起的运行 | ✅ |
+| 前端 | GET | `/threads/{id}/runs/{runId}/stream` | 断线后接回正在运行的事件流 | ✅ |
 | 前端 | POST | [`/threads/{id}/runs/{runId}/cancel`](#post-threadsidrunsrunidcancel) | 停止运行 | ✅ |
 | 前端 | POST | [`/workspaces/pick`](#post-workspacespick) | 弹系统文件浏览窗口选工作空间 | ✅（014 起） |
 | 管理端 | GET | [`/admin/models`](#get-adminmodels) | 列出全部模型 | ✅（003 起） |
@@ -362,6 +363,19 @@ Accept: text/event-stream
 **请求**：无 body。
 
 **响应 `200`**。
+
+### `GET /threads/{thread_id}/runs/{run_id}/stream`
+
+断线 / 刷新后接回**已经在跑**的 run（前端 `joinRunStream`）。
+
+```http
+GET /threads/{thread_id}/runs/{run_id}/stream?stream_mode=updates
+Accept: text/event-stream
+```
+
+- 只推送**接上之后**产生的事件；断线前已经产出的内容不会补发
+- 补齐历史要用 `GET /threads/{thread_id}/state` 的 `values.messages`
+- 接回的流同样可能收到 `__interrupt__`，前端据此恢复审批卡片
 
 ---
 

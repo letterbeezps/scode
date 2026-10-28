@@ -74,7 +74,7 @@
 | 011 | 手动压缩对话历史（`/compaction`） | ✅ 已落地 | `stupid_code/graph/compaction.py` + 前端斜杠命令菜单 |
 | 012 | Docker 运行（后端 + 前端） | ✅ 已落地 | `Dockerfile` + `web/Dockerfile` + `docker-compose.yml` |
 | 013 | MCP 支持（`conf/mcp.json`，http + stdio） | ✅ 已落地 | `stupid_code/config/mcp.py` + `stupid_code/graph/mcp.py` |
-| 014 | 工作空间按任务生效（`configurable.workspace`）+ 系统目录选择框 | ✅ 已落地 | `stupid_code/graph/workspace.py` + `stupid_code/admin/workspaces.py` |
+| 014 | 工作空间按任务生效（`context.workspace`）+ 系统目录选择框 | ✅ 已落地 | `stupid_code/graph/workspace.py` + `stupid_code/admin/workspaces.py` |
 | 015 | 记忆块模板 + 长度上限；HITL 档位钉进图状态 + `delete` 进关卡 | ✅ 已落地 | `stupid_code/graph/memory.py` + `stupid_code/graph/permissions.py` |
 | 016 | agent 自己的中间产物收拢到 `.scode/` | ✅ 已落地 | `stupid_code/graph/backend.py` |
 | 017 | 长期记忆分两个作用域（用户级 + 项目级）+ 前端记忆面板 + 写记忆走人工确认 | ✅ 已落地 | `stupid_code/graph/paths.py` + `stupid_code/admin/memory.py` + `graph/permissions.py` + 前端 `components/memory/` |
@@ -120,6 +120,13 @@
 
 ```
 stupid-code/
+├── README.md                   # 入口：这是什么 / 怎么跑 / 注意事项
+├── AGENTS.md                   # 编码 Agent 的硬约束清单
+├── LICENSE
+├── Dockerfile                  # 后端镜像（/app 与 /workspace 分开）
+├── docker-compose.yml          # 后端 + 前端编排
+├── pyproject.toml              # 后端依赖与 scode 入口
+├── uv.lock
 ├── docs/
 │   ├── overall-design.md      # 目标架构与前后端契约
 │   ├── frontend-design.md     # 前端交互设计
@@ -128,25 +135,33 @@ stupid-code/
 ├── conf/                       # 配置数据（代码在 stupid_code/config/，数据在这里）
 │   ├── config.toml             # 模型供应商配置 —— 不入库（gitignore）
 │   ├── config.example.toml     # 模板 —— 入库
-│   └── subagents.toml          # 子 agent 声明 —— 入库（不含密钥）
+│   ├── subagents.toml          # 子 agent 声明 —— 入库（不含密钥）
+│   ├── mcp.json                # MCP 服务器配置 —— 不入库（gitignore）
+│   └── mcp.example.json        # MCP 配置模板 —— 入库
 ├── stupid_code/               # 后端 Python 包
 │   ├── __init__.py             # scode 命令入口（start()）
 │   ├── launcher.py             # 起停 langgraph dev、就绪探测、优雅关停
 │   ├── langgraph.json          # 框架读的配置
+│   ├── API.md                  # 后端 HTTP 契约
+│   ├── README.md               # 后端模块速查
 │   ├── graph/
 │   │   ├── agent.py            # create_deep_agent()，导出 graph
 │   │   ├── backend.py          # 真实磁盘 + shell 的 backend
 │   │   ├── subagent_policy.py  # 子 agent 的权限/HITL/工具策略
+│   │   ├── run_context.py      # 任务参数的结构化 context（context_schema）
 │   │   ├── compaction.py       # /compaction 手动压缩 + 摘要用当前模型
 │   │   ├── memory.py           # 长期记忆中间件（用户级 + 项目级两个来源）
 │   │   ├── paths.py            # 记忆/skill 的路径常量（$SCODE_HOME）
 │   │   ├── model_switch.py     # 运行期切换对话模型的中间件
 │   │   ├── permissions.py      # 人工确认的档位与危险判定
 │   │   ├── skills.py           # skill 发现（全局 + 项目级）+ 运行期源 + pin
+│   │   ├── repeated_calls.py   # 拦截同参数反复失败的调用
+│   │   ├── mcp.py              # MCP 工具加载 + 长会话
 │   │   └── persistence.py      # SQLite 工厂：checkpoint/store → ../data/langgraph.db
 │   ├── config/
 │   │   ├── model.py            # conf/config.toml → 模型实例 + CRUD
 │   │   ├── subagent.py         # conf/subagents.toml → SubAgent 规格
+│   │   ├── mcp.py              # conf/mcp.json → MCP 连接参数
 │   │   └── prompts.py          # 主 agent 的系统提示词
 │   ├── admin/
 │   │   ├── app.py              # Starlette 子应用与路由表
@@ -157,7 +172,8 @@ stupid-code/
 │   │   └── workspaces.py       # POST /workspaces/pick（系统目录选择框）
 │   └── data/                   # SQLite 数据库目录（gitignore）
 ├── web/                       # 前端（独立 pnpm 项目，不参与 uv 依赖管理）
-├── pyproject.toml             # 依赖与 scode 入口
+├── assets/                    # README 用的图片
+├── examples/                  # 示例（MCP stdio 服务器）
 └── skills-lock.json           # langchain-skills 安装记录
 ```
 
@@ -179,7 +195,7 @@ stupid-code/
 
 | 模块 | 定位目标 | 写法 |
 |---|---|---|
-| `config/model.py`、`config/subagent.py` | 项目根的 `conf/` | `Path(__file__).resolve().parents[2] / "conf"` |
+| `config/model.py`、`config/subagent.py`、`config/mcp.py` | 项目根的 `conf/` | `Path(__file__).resolve().parents[2] / "conf"` |
 | `graph/persistence.py` | 包根的 `data/` | `os.path.dirname(os.path.dirname(os.path.abspath(__file__)))` |
 | `launcher.py` | 本包目录（langgraph.json 所在处） | `Path(__file__).resolve().parent` |
 
@@ -664,7 +680,7 @@ deepagents 会往 backend 里写三样东西，落点由 `CompositeBackend.artif
 | `manual` | **每一条**执行命令、每一次删文件都确认 |
 | `normal` | 只有命中「危险模式」的命令才确认（**默认档**） |
 
-档位随运行请求走 `config.configurable.permissions`，**不存全局**——和 `workspace`
+档位随运行请求走 `context.permissions`，**不存全局**——和 `workspace`
 一样是任务级参数。
 
 **危险模式清单**（`graph/permissions.py` 的 `DANGEROUS_PATTERNS`，命中就认为这条命令
@@ -2084,6 +2100,8 @@ A/B 对比脚本（`/tmp/scode_backend_ab.py`）：把 `HEAD` 版 `backend.py` �
 backend = build_backend()
 default_model = load_model()
 compaction = build_compaction_middleware(default_model, backend)
+mcp_tools = load_mcp_tools()
+interrupt_on = build_interrupt_on(mcp_tools=mcp_tools)
 
 graph = create_deep_agent(
     model=default_model,
@@ -2094,19 +2112,24 @@ graph = create_deep_agent(
         )
         for spec in load_subagents()
     ],
+    tools=mcp_tools,
     backend=backend,
     # 一次 run 的任务参数：workspace / permissions / model / skills
     context_schema=RunContext,
     # 切换中间件放最前 → 在最终栈里比 prompt-caching / memory 更外层
     middleware=[
         ChatModelSwitchMiddleware(),
+        WorkspaceMiddleware(),
+        PermissionLevelMiddleware(),
         # 名字叫 SummarizationMiddleware → 顶掉 create_deep_agent 自带的那份
         compaction,
         # compact_conversation 工具：模型自己也能压缩
         build_compaction_tool_middleware(compaction),
+        build_skills_middleware(backend),
         build_memory_middleware(),
+        RepeatedCallMiddleware(),
     ],
-    interrupt_on=build_interrupt_on(),
+    interrupt_on=interrupt_on,
 )
 ```
 
@@ -2172,7 +2195,8 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 
 平台内置（`langgraph dev` 直接提供）：`/ok`、`/assistants/search`、
 `/assistants/{id}/graph`、`/threads`、`/threads/search`、`/threads/{id}`（GET/PATCH/DELETE）、
-`/threads/{id}/state`、`/threads/{id}/runs/stream`、`/threads/{id}/runs/{runId}/cancel`。
+`/threads/{id}/state`、`/threads/{id}/runs/stream`、`/threads/{id}/runs/{runId}/stream`、
+`/threads/{id}/runs/{runId}/cancel`。
 
 自定义：`/admin/models` 五个端点 + `POST /workspaces/pick`（弹系统目录选择框，014 期）
 + `/admin/memory` 两个端点（GET 读两份记忆 / PUT 写一份，017 期）
@@ -2560,7 +2584,7 @@ pgrep -f "langgraph_cli dev"        # 应该没有输出
 - 平台把 interrupt 以 **`updates` 事件**下发，键是 `__interrupt__`，值是
   `[{value: {action_requests, review_configs}}]`。`action_requests` 里**没有工具调用 id**，
   只有名字和参数
-- `configurable.permissions` 能到达后端的 `when` 谓词：三档行为在真实服务上可区分
+- `context.permissions`（022 前为 `configurable.permissions`）能到达后端的 `when` 谓词：三档行为在真实服务上可区分
 - `command.resume` 能让图从挂起点继续：批准后命令真的执行，拒绝后命令不执行，
   模型收到 `User rejected the tool call for 'execute' with reason: ...`
 - **reject 的理由字段叫 `message`，不叫 `feedback`**（框架 `RejectDecision` 的定义）。
@@ -2610,10 +2634,10 @@ pgrep -f "langgraph_cli dev"        # 应该没有输出
 - **子 agent 的中间件也能拿到父图的 `configurable`**（子图继承父图的 config）。
   框架上做得到「子 agent 也跟着换」——**但本项目有意不用**：子 agent 的模型是
   `conf/subagents.toml` 配置出来的，切换只该影响主对话（见 010 期的取舍）
-- **`configurable.model` 能穿过 `langgraph dev` 的 run 请求体**到达图的中间件，
+- **`context.model`（022 前为 `configurable.model`）能穿过 `langgraph dev` 的 run 请求体**到达图的中间件，
   实测 `response_metadata.model_name` 从 `MiniMax-M3` 变成 `MiniMax-M3.1-Flash`，
   **后端没重启**
-- **HITL 挂起后恢复，模型也保持**：恢复请求带上同一个 `configurable.model`，
+- **HITL 挂起后恢复，模型也保持**：恢复请求带上同一个 `context.model`，
   挂起前后两条 AI 消息的 `model_name` 一致
 - **`AnthropicPromptCachingMiddleware` / `UnsupportedContentMiddleware` /
   `MemoryMiddleware(add_cache_control=True)` 都是看 `request.model` 决定行为**，
@@ -2815,7 +2839,7 @@ pgrep -f "langgraph_cli dev"        # 应该没有输出
 
 ### 8.9 工作空间（2026-10-25 对真实服务实测）
 
-- **`configurable.workspace` 真的决定文件落点**：`write_file("/hello.txt")`
+- **`context.workspace`（022 前为 `configurable.workspace`）真的决定文件落点**：`write_file("/hello.txt")`
   落在该目录；`execute` 的 `pwd` 也是该目录 ✔
 - **`.scode-memory.md` 跟着工作空间走，但不会自动创建**：agent 真的保存记忆时
   才在对应目录里出现 ✔（每个项目一份记忆——不同项目的约定不该混在一起）

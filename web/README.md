@@ -110,7 +110,7 @@ skill 清单来自 `GET /admin/skills?workspace=<当前工作空间>`，有**两
 会自己 `read_file`。
 
 勾中的显示成输入框上方的 chip（带 × 删除）。可以连着勾多个。
-`skills` 跟工作空间、权限一样是**任务级**的，随 `configurable.skills` 发给后端，
+`skills` 跟工作空间、权限一样是**任务级**的，随 `context.skills` 发给后端，
 也记进 thread 的 `metadata`。
 
 ### 权限：三级确认策略，不是能力白名单
@@ -119,8 +119,8 @@ skill 清单来自 `GET /admin/skills?workspace=<当前工作空间>`，有**两
 
 | 值 | 含义 |
 |---|---|
-| `manual` | 命中危险操作的，先确认再执行 |
-| `normal` | AI 审核这次操作是否危险，再决定要不要确认 |
+| `manual` | 每条执行命令、每次删文件都先确认 |
+| `normal` | 命中危险命令的（`rm -rf`、强制推送等）才确认；删文件不拦，默认档 |
 | `auto` | 不确认，直接执行 |
 
 默认 `normal`。`manual` 会被打断到没法用，`auto` 等于把机器完全交出去。
@@ -132,17 +132,17 @@ skill 清单来自 `GET /admin/skills?workspace=<当前工作空间>`，有**两
 ```jsonc
 // POST /threads/{id}/runs/stream
 {
-  "config": {
-    "configurable": {
-      "workspace": "/Users/1token/Desktop/project/stupid-code",  // 空字符串 = 不选
-      "permissions": "normal"
-    }
+  "context": {
+    "workspace": "/Users/1token/Desktop/project/stupid-code",  // 空字符串 = 不选
+    "permissions": "normal",
+    "model": "minimax:MiniMax-M3",                             // 空字符串 = 后端默认
+    "skills": []
   }
 }
 ```
 
 后端在工具执行前按 `permissions` 决定：直接跑、还是**挂起这次调用**等前端确认。
-挂起后前端需要一个确认入口（设计文档里还没有，这是待补的一环）。
+挂起后前端弹确认卡片，按 `action_requests` 逐条批准 / 拒绝 / 改后执行（009 / 015 期）。
 注意这是执行前的闸门，和「工具调用事后可见」是两件事。
 
 ## 目录结构
@@ -163,7 +163,7 @@ src/
 ├── lib/
 │   ├── cn.ts             # className 合并、文件扩展名 → shiki 语言名
 │   ├── permissions.ts    # 三级确认策略的取值与说明
-│   ├── skills.ts         # configurable 的 skills key
+│   ├── skills.ts         # context.skills 的 key 常量
 │   ├── commands.ts       # 斜杠菜单项：命令 + skill（skillToMenuItem）
 │   ├── tools.ts          # 工具名 → 类型分类（纯逻辑，不含 React）
 │   ├── diff.ts           # 从工具参数/结果拼出 diff 的新旧文本

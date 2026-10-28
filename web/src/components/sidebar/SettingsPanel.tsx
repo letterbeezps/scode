@@ -4,7 +4,7 @@
  * 模型列表来自后端 /admin/models（conf/config.toml），不再是写死的四项。
  *
  * **选中即生效，不用重启后端**：选中值存在 localStorage 里，每次发消息时随
- * 运行配置（configurable）一起发给后端；后端在每次模型调用前把模型换成它
+ * 运行配置（context）一起发给后端；后端在每次模型调用前把模型换成它
  * （见后端 stupid_code/graph/model_switch.py）。所以这里显示的「当前模型」
  * 就是下一条消息真正会用的模型。
  *

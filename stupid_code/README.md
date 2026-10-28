@@ -88,6 +88,7 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 | [config/prompts.py](config/prompts.py) | 主 agent 的系统提示词。框架 0.7.28 已不提供内置基础提示词，这段就是模型唯一看到的系统提示词 |
 | **管理接口**（`admin/`） | |
 | [admin/app.py](admin/app.py) | 挂在 langgraph dev 的 Starlette 子应用与路由表（`langgraph.json` 的 `http.app` 指向它） |
+| [admin/common.py](admin/common.py) | 路由共用的工作空间解析（`?workspace=`）与统一 400 响应 |
 | [admin/models.py](admin/models.py) | `/admin/models` 路由处理函数 |
 | [admin/memory.py](admin/memory.py) | `/admin/memory`：`GET` 读两份长期记忆、`PUT` 写一份（给前端的记忆面板用） |
 | [admin/skills.py](admin/skills.py) | `GET /admin/skills`：列可用的 skill（全局 + 项目级），给前端的斜杠菜单用 |
@@ -165,7 +166,8 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
   （`graph/permissions.py`，009 期）：按 `context.permissions` 的档位决定拦不拦
   （`auto` 全放行 / `manual` 每条都问 / `normal` 只问命中危险模式的），拦下时图挂起等前端决定。
   拦的是 `execute` 和 `delete`（`delete` 删目录是递归的、跟 `rm -rf` 等价，只在
-  `manual` 档拦）；**write_file / edit_file 不拦**——那是 code agent 的日常。
+  `manual` 档拦）；**普通 write_file / edit_file 不拦**——那是 code agent 的日常；
+  **写记忆文件例外**（`normal` / `manual` 档都拦，见上一条）。
 - **恢复挂起的运行建议原样带回档位**：`command.resume` 的请求体带上同一个
   `context.permissions`（015 期起后端判定读的是**图状态里记的档位**，客户端回传
   错了也不改结论；但原样带回能保证恢复这一轮跟发起那一轮看到的是同一套配置）。

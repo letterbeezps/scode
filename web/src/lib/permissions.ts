@@ -15,12 +15,12 @@
  * **normal 是过滤器，不是安全边界**：它只看命令字符串，绕得开
  * （`find -delete`、先写个脚本再 `execute` 它）。要确定性就切 manual。
  *
- * 档位随运行请求发到后端的 configurable 里，后端据此决定要不要挂起等人确认
+ * 档位随运行请求发到后端的 context 里，后端据此决定要不要挂起等人确认
  * （见后端 `stupid_code/graph/permissions.py`）。前端只负责把档位原样传下去，
  * 以及在收到后端的确认请求时把用户的决定送回去。
  */
 
-/** 与后端约定的 configurable key，见 api/run.ts 的请求体 */
+/** 与后端约定的 context 字段，见 api/run.ts 的请求体 */
 export const WORKSPACE_KEY = 'workspace'
 export const PERMISSIONS_KEY = 'permissions'
 

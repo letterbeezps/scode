@@ -15,7 +15,7 @@
  *
  * ## 勾选的语义
  *
- * 前端勾选的 skill 随 `configurable.skills` 发给后端，后端会把它们的
+ * 前端勾选的 skill 随 `context.skills` 发给后端，后端会把它们的
  * `SKILL.md` **全文钉进上下文**——不用等 agent 自己去 `read_file` 读。
  * 没勾选的只在系统提示词的 skill 列表里，agent 觉得相关时会自己读。
  */
