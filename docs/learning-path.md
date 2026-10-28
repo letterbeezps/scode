@@ -36,6 +36,27 @@ LangSmith     ← 横切，追踪与评测
 
 ---
 
+## 装 skills
+
+22 个 skill 装在 `.agents/skills/`，`.claude/skills/` 里是指过去的一串软链（给 Claude Code 用）。
+这两个目录都在 `.gitignore` 里，**clone 之后要自己装一遍**，否则编码 Agent 看不到这些参考资料：
+
+```bash
+npx skills add langchain-ai/langchain-skills --skill '*' --yes
+ls .agents/skills | head    # 看到 deep-agents-core、ecosystem-primer 等目录就成了
+```
+
+| 场景 | 命令 |
+| --- | --- |
+| 全局安装（所有项目可用） | `npx skills add langchain-ai/langchain-skills --skill '*' --yes --global` |
+| 只装给某个 Agent（如 Claude Code） | `npx skills add langchain-ai/langchain-skills --agent claude-code --skill '*' --yes` |
+| 只装单个 skill | `npx skills add langchain-ai/langchain-skills --skill deep-agents-core --yes` |
+
+`npx skills` 遵循 Agent Skills 规范，Claude Code、Cursor、Windsurf 等支持该规范的编码工具都能用。
+安装状态记录在 `skills-lock.json` 里。
+
+---
+
 ## 学习路线
 
 22 个 skill 大致可以这么用，跟着 `ecosystem-primer` 的选型表往下走：

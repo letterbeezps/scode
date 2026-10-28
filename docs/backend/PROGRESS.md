@@ -82,6 +82,7 @@
 | 019 | 全仓精简（重复逻辑归一）+ 文档收敛到单一事实源 | ✅ 已落地 | `stupid_code/graph/workspace.py` + `stupid_code/config/model.py` + `stupid_code/admin/models.py` + 本文档 §3 末节 |
 | 020 | 删掉 `/tmp/` 路由（及其守卫类 `WorkspaceCompositeBackend`） | ✅ 已落地 | `stupid_code/graph/backend.py` + 本文档 §3 末节 |
 | 021 | 拦同一个 tool 用同一组参数反复失败 | ✅ 已落地 | `stupid_code/graph/repeated_calls.py` + 本文档 §3 末节 |
+| 022 | 任务参数迁到 `context_schema`（`workspace` / `permissions` / `model` / `skills`） | ✅ 已落地 | `stupid_code/graph/run_context.py` + `graph/agent.py` + 本文档 §3 末节 |
 
 ### 1.3 前端完成度
 
