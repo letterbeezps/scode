@@ -49,7 +49,7 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
 | `stupid_code/graph/` | `agent.py` 建图 · `backend.py` 磁盘+shell · `subagent_policy.py` 子 agent 策略 · `run_context.py` 任务参数 schema · `workspace.py` 工作空间 · `memory.py`+`paths.py` 长期记忆/路径常量 · `skills.py` skill · `model_switch.py` 切模型 · `compaction.py` 压缩 · `mcp.py` MCP · `permissions.py` 人工确认 · `repeated_calls.py` 重复失败拦截 · `persistence.py` SQLite |
 | `stupid_code/config/` | 读 `conf/` 下三个配置：`model.py` / `subagent.py` / `mcp.py`；`prompts.py` 是系统提示词 |
 | `stupid_code/admin/` | `/admin` 下的接口：`models.py` / `memory.py` / `skills.py`（共用 `common.py` 的工作空间解析）；`workspaces.py` 是 `POST /workspaces/pick` |
-| `web/src/` | `api/` 通信层（`mock/` 用**与真实后端完全相同的签名**）· `store/` Zustand · `components/` `pages/` `lib/` |
+| `web/src/` | `api/` 通信层（`mock/` 在真实 API 函数内部按 `isMockMode` 分支，**同名同用途的主要接口签名**）· `store/` Zustand · `components/` `pages/` `lib/` |
 | `docs/` | `backend/backend.md` 后端现状 · `overall-design.md` 目标契约 · `frontend-design.md` 前端 · `learning-path.md` 框架背景 |
 
 ---
@@ -62,11 +62,12 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
    `npx skills add langchain-ai/langchain-skills --skill '*' --yes`，否则编码 Agent 看不到它们。
    **写 deepagents / LangGraph 代码前先查这些 skill 和线上文档，别凭记忆写**——框架还在 0.x，迭代很快。*→ README「1. 装 skills」*
 
-2. **别给 `create_deep_agent()` 传 `checkpointer`**——`langgraph dev` 会直接抛 ValueError（persistence 由平台自动处理）。
+2. **别给 `create_deep_agent()` 传 `checkpointer`**（`store` 同理，平台是同一处判定）——`langgraph dev` 会直接抛
+   ValueError（persistence 由平台自动处理）。
    持久化在 `langgraph.json` 里配（`graph/persistence.py` 的 SQLite 工厂），checkpoint 落 `stupid_code/data/langgraph.db`。
    *→ §3.1 · §2.2*
 
-3. **三个文件路径写死在 `langgraph.json` 里**（**四个 path**——`graph/persistence.py` 被引用两次）：
+3. **三个文件、四条 path 写死在 `langgraph.json` 里**（`graph/persistence.py` 被引用两次）：
    `./graph/agent.py:graph`、`./admin/app.py:app`、`./graph/persistence.py:checkpointer`、`./graph/persistence.py:store`
    ——挪了要同步改，否则启动找不到模块；`persistence.py` 那两条要一起改。另有几个模块用 `__file__` 定位目录，**层数跟包结构绑死**
    （具体哪几个、各是第几层见 §2.2）。**作者视角的路径仍相对 `stupid_code/` 写**。*→ §2.2*
@@ -87,22 +88,24 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
    不同 skill。另有 `draft` 副本，`createThread()` 时 `adoptDraft()` 固化并重置，否则两个任务的运行边界会串。**`model` 不是
    任务级**——它是全局偏好（localStorage），但每次 run 仍随请求走。四个参数都放在 run 的 **`context`** 里（后端
    `graph/run_context.py` 的 `RunContext` 是 `context_schema`），**不再塞进 `configurable`**；同一请求不能同时带
-   `context` 和 `config.configurable`，`thread_id` 仍由平台放在 `configurable` / URL 里。**恢复挂起的运行时，这些都要原样带回去。**
+   `context` 和 `config.configurable`（并存会 400）。`thread_id` 调用方放在 URL 里，**不要自己塞进 `configurable`**。
+   **恢复挂起的运行时，这些都要原样带回去。**
    *→ §4.4*
 
-9. **deepagents 0.7.x 不再提供内置系统提示词**。`create_deep_agent(system_prompt=...)` 传进去的**就是模型唯一看到的
-   系统提示词**——别以为框架会垫底，行为准则要自己写全（`stupid_code/config/prompts.py`）。*→ §4.3*
+9. **deepagents 0.7.x 不再提供内置系统提示词**。`create_deep_agent(system_prompt=...)` 传进去的**基本就是模型看到的
+   全部系统提示词**——别以为框架会垫底，行为准则要自己写全（`stupid_code/config/prompts.py`）。
+   唯一的例外是命中 harness profile 的 `system_prompt_suffix` 时末尾会追加一段（本项目配的模型不命中）。*→ §4.3*
 
-10. **长期记忆用 `middleware=` 挂 `MemoryMiddleware`，别用 `create_deep_agent(memory=...)`**（后者只能用框架默认的
-    StateBackend 虚拟文件系统，读不到磁盘上的文件）。另有四条：**文件不自动创建**；**用本项目的中文模板**；**8000 字上限**；
-    **文件名 `.scode-memory.md`**。*→ §3.6*
+10. **长期记忆用 `middleware=` 挂 `MemoryMiddleware`，别用 `create_deep_agent(memory=...)`**——`memory=` 给的是框架
+    那份默认行为：英文通用模板、**不截断**、换工作空间不重读。另有四条：**文件不自动创建**；**用本项目的中文模板**；
+    **8000 字上限**；**文件名 `.scode-memory.md`**。*→ §3.6*
 
 11. **端口锁死 2024，被占用就启动失败**——`langgraph dev` 自己会换端口，就绪检查只轮询 2024，会打到旧服务上**误报"已就绪"**
     （前端连旧代码，像"改了没生效"）。**绝不自动换端口**，前端默认就连 2024。*→ §3.8 · §9*
 
 12. **backend 是真实磁盘 + 本机 shell**（`LocalShellBackend`）。框架硬限制：backend 支持命令执行时，`FilesystemMiddleware`
     **不接受 `permissions`**（shell 能绕过任何文件权限）。所以声明了 `permissions` 的子 agent 要换成无 shell 的 backend，且
-    **不继承 MCP 工具**；改子 agent 配置时别把 `permissions` 塞回规格里。*→ §3.7 · §3.12*
+    **不继承 MCP 工具**；改子 agent 配置时别把 `permissions` 塞回规格里。*→ §3.7 · §3.13*
 
 13. **切换对话模型靠中间件，不靠重建图**。① `ModelRequest.runtime` **没有 `.config` 属性**，但**有 `.context`**——切模型直接读
     `request.runtime.context.model`；只有摘要路径（拿不到 Runtime）才用 `langgraph.config.get_config()` 读平台镜像的
@@ -137,9 +140,10 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
     ⚠️ **全局 skill 目录同样"影响未来所有会话"，但没被拦**——见 Security 一节。*→ §3.6*
 
 20. **skill 分两个作用域**（全局 `~/.scode/.agents/skills/`、项目级 `<工作空间>/.agents/skills/`——目录名是 `.agents` 不是
-    `.skills`）。① **全局静态、项目级不是**（工作空间是运行期参数，项目级源**不能**是常量）；② **别传
-    `create_deep_agent(skills=...)`**；③ **`.name` 报成框架那份的公开别名**；④ **pin 只在"选择变了"时做**；⑤ **取消勾选不移除已钉
-    内容**。*→ §3.15*
+    `.skills`）。① **全局是固定路径、项目级跟着运行期工作空间走**（两个源字符串都是常量，差别在解析出的真实目录）；
+    ② **别传 `create_deep_agent(skills=...)`**；③ **`.name` 报成框架那份的公开别名**；
+    ④ **pin 在重读时写**（同一工作空间 + 同一选择不重读，也就不重复 pin；换选择或换工作空间都会重新 pin）；
+    ⑤ **取消勾选不移除已钉内容**。*→ §3.15*
 
 ---
 
@@ -163,7 +167,7 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
 
 ## PR & commit conventions
 
-- 默认分支 `master`，暂无远端
+- 默认分支 `main`，远端 `origin` = `https://github.com/letterbeezps/scode.git`
 - Commit 用 conventional commits，英文：`feat:` / `fix:` / `docs:` / `docs(backend):`（带 scope 用括号）
 - 保持提交范围单一，一个 commit 一件事
 
@@ -180,7 +184,9 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
 - **MCP 是一个新的执行/注入面**。**只配信任的服务器**；`conf/mcp.json` 不入库，仓库只提供 `conf/mcp.example.json`
 - **文件工具有两条工作空间之外的路径**：`/user-memory/`（`~/.scode/`，**可写**）和 `/user-skills/`（`~/.scode/.agents/skills/`）。
   **两条都能写**——`/user-skills/` 本来的意图是只读入口，但 `FilesystemBackend` 没有只读开关；`/user-memory/` 又指向整个 `~/.scode/`，
-  连 `.agents/skills/` 也在内。这两条**都不在 `is_memory_path()` 的判定里**，不受 HITL 覆盖。agent 仍能读工作空间里任何文件
-  （包括 `conf/config.toml` 里的 api_key），**这块也没被 HITL 覆盖**
+  连 `.agents/skills/` 也在内。**这两条路由下只有 `/user-memory/memory.md` 这个记忆文件本身在 `is_memory_path()` 的判定里**
+  （写它会被 HITL 拦）；其余路径——`/user-skills/...`、`/user-memory/.agents/skills/...`、`/user-memory/` 下的其他文件——
+  **都不在判定里，不受 HITL 覆盖**。agent 仍能读工作空间里任何文件（包括 `conf/config.toml` 里的 api_key），
+  **这块也没被 HITL 覆盖**
 - **目录选择靠系统原生弹窗**（`POST /workspaces/pick`），后端不提供「列目录」接口。该端点会阻塞到用户选完，后端仍只监听
   `127.0.0.1`

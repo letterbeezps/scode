@@ -108,7 +108,9 @@ pnpm dev
 
 打开 <http://localhost:5173>。开发态 Vite 把 `/api/*` 代理到 `VITE_LANGGRAPH_URL`（默认 `http://localhost:2024`）。
 
-后端没跑、只想看 UI，可以 `VITE_USE_MOCK=true pnpm dev`——mock 用与真后端**完全相同的接口签名**实现假数据。
+后端没跑、只想看 UI，可以 `VITE_USE_MOCK=true pnpm dev`——mock 在真实 API 函数内部按
+`isMockMode` 分支到假数据，**同名同用途的主要接口签名**与真后端一致。
+（HITL 审批路径不覆盖；细节见 [`docs/frontend-design.md`](docs/frontend-design.md) §6.5）
 
 ### 5. 可选：子 agent / MCP / Docker
 

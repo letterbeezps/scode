@@ -22,15 +22,15 @@
 | 前端 | GET | `/threads/{id}/runs/{runId}/stream` | 断线后接回正在运行的事件流 | ✅ |
 | 前端 | POST | [`/threads/{id}/runs/{runId}/cancel`](#post-threadsthread_idrunsrun_idcancel) | 停止运行 | ✅ |
 | 前端 | GET | [`/threads/{id}/runs`](#get-threadsthread_idruns) | 列出会话的 run（刷新后找回正在跑的那个） | ✅ |
-| 前端 | POST | [`/workspaces/pick`](#post-workspacespick) | 弹系统文件浏览窗口选工作空间 | ✅（014 起） |
-| 管理端 | GET | [`/admin/models`](#get-adminmodels) | 列出全部模型 | ✅（003 起） |
-| 管理端 | GET | [`/admin/models/{id}`](#get-adminmodelsid) | 单个模型详情 | ✅（003 起） |
-| 管理端 | POST | [`/admin/models`](#post-adminmodels) | 新增模型 | ✅（003 起） |
-| 管理端 | PUT | [`/admin/models/{id}`](#put-adminmodelsid) | 改模型属性 | ✅（003 起） |
-| 管理端 | DELETE | [`/admin/models/{id}`](#delete-adminmodelsid) | 删除模型 | ✅（003 起） |
-| 前端 | GET | [`/admin/memory`](#get-adminmemory) | 读两份长期记忆 | ✅（017 起） |
-| 前端 | PUT | [`/admin/memory`](#put-adminmemory) | 写一份长期记忆 | ✅（017 起） |
-| 前端 | GET | [`/admin/skills`](#get-adminskills) | 列可用的 skill | ✅（018 起） |
+| 前端 | POST | [`/workspaces/pick`](#post-workspacespick) | 弹系统文件浏览窗口选工作空间 | ✅ |
+| 管理端 | GET | [`/admin/models`](#get-adminmodels) | 列出全部模型 | ✅ |
+| 管理端 | GET | [`/admin/models/{id}`](#get-adminmodelsid) | 单个模型详情 | ✅ |
+| 管理端 | POST | [`/admin/models`](#post-adminmodels) | 新增模型 | ✅ |
+| 管理端 | PUT | [`/admin/models/{id}`](#put-adminmodelsid) | 改模型属性 | ✅ |
+| 管理端 | DELETE | [`/admin/models/{id}`](#delete-adminmodelsid) | 删除模型 | ✅ |
+| 前端 | GET | [`/admin/memory`](#get-adminmemory) | 读两份长期记忆 | ✅ |
+| 前端 | PUT | [`/admin/memory`](#put-adminmemory) | 写一份长期记忆 | ✅ |
+| 前端 | GET | [`/admin/skills`](#get-adminskills) | 列可用的 skill | ✅ |
 
 ---
 
@@ -453,7 +453,7 @@ zenity / osascript）。前端这时把「手动输入路径」的输入框亮�
 
 ## 模型管理
 
-由 `stupid_code/admin/app.py` 提供的自定义 ASGI 路由，通过 `langgraph.json` 的 `http.app` 字段挂载到 langgraph dev 服务。操作对象是项目根 `conf/config.toml`（不入库）。**改完配置需重启 `scode` 才能让运行中的 graph 加载新模型实例**——所有响应里的 `restart_required: true` 就是这个意思。
+由 `stupid_code/admin/app.py` 提供的自定义 ASGI 路由，通过 `langgraph.json` 的 `http.app` 字段挂载到 langgraph dev 服务。操作对象是项目根 `conf/config.toml`（不入库）。**改完配置需重启 `scode` 才能让运行中的 graph 加载新模型实例**——响应里的 `restart_required: true` 就是这个意思（`list` / `create` / `update` / `delete` 四个端点带这个字段，`GET /admin/models/{id}` 不带）。
 
 > **有一条例外**：运行期切换模型那条路径（`context.model`）**每次调用都
 > 重新读 `conf/config.toml`**，所以新增模型、改 `base_url`、改 `api_key` 在**下一次运行**
@@ -808,7 +808,7 @@ agent 能用的 skill 有**两个来源**（见 `stupid_code/graph/skills.py`）
 
 ## 已验证的事实
 
-实测结论**收在** [`docs/backend/backend.md`](../docs/backend/backend.md)：§3 每个能力小节末尾有该能力的
+实测结论**收在** [`docs/backend/backend.md`](../docs/backend/backend.md)：多数能力小节末尾有该能力的
 「已验证的事实」，§8 是平台与框架层的结论，每条都注明了验证时间。
 框架在 0.x 迭代快，改行为前先去那里核。
 

@@ -1,10 +1,14 @@
 /**
  * Mock 后端适配器。
  *
- * 总体设计文档的 P0（后端 Agent 骨架）还没做，而这套 UI 的大部分逻辑
- * ——流式追加、工具卡片状态流转、todo 同步、diff 渲染、停止生成——都只在
- * 「有事件流进来」时才跑得起来。所以这里按与真实后端完全相同的接口签名，
- * 用脚本化的假事件把这些路径先点亮。
+ * 这套 UI 的大部分逻辑——流式追加、工具卡片状态流转、todo 同步、diff 渲染、
+ * 停止生成——都只在「有事件流进来」时才跑得起来。所以这里用脚本化的假事件
+ * 把这些路径先点亮。
+ *
+ * 覆盖边界：mock 在真实 API 函数内部按 `isMockMode` 分支，同名同用途的主要接口
+ * 签名一致。三处例外——`cancelRun` 没有 mock 分支（会真的发 HTTP 请求），
+ * `listRuns` 在 mock 下直接返回 `[]`；`loadThreadSnapshot` / `restoreMessages` /
+ * `pruneUpdateInput` 是纯函数、不走 HTTP，不需要 mock。
  *
  * 启用方式：`.env.local` 里设 `VITE_USE_MOCK=true`。生产构建默认关闭。
  */

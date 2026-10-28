@@ -1,8 +1,6 @@
 # 网页版 Code Agent 总体设计文档
 
-> 版本：v0.2
-> 日期：2026-10-16
-> 变更说明：v0.1 → v0.2 补齐前后端契约、安全设计、运行护栏；修正与 `web/` 实现不一致的技术选型
+> 最后核对：2026-10-28（与 `stupid_code/`、`web/` 实现逐条核对）
 
 ---
 
@@ -17,16 +15,16 @@
 - 前端为独立网页应用，通过 HTTP 与后端通信
 - 支持流式输出、工具调用可视化、文件 Diff 查看等核心体验
 
-### 1.2 非目标（本期不做）
+### 1.2 非目标
 
 - 多用户协作 / 完整权限系统（单机单用户，权限仅指"危险操作是否需确认"）
 - 云端部署与多租户
 - 移动端适配（优先桌面端）
-- 后端工具的**分布式**沙箱隔离（本期依赖操作系统权限 + 工作空间约束，见 §6）
+- 后端工具的**分布式**沙箱隔离（依赖操作系统权限 + 工作空间约束，见 §6）
 
 > 说明：工作空间（workspace）**不在**非目标内。它是前端已实现的核心功能，后端必须支持，见 §5.2。
 
-### 1.3 当前进度（与文档描述的差异）
+### 1.3 实现现状（与文档描述的差异）
 
 本文档 §3 描述的是**目标设计**；与代码有出入时，以
 `docs/backend/backend.md` 为准。接手时先看这里：
@@ -98,17 +96,22 @@
 
 使用 `create_deep_agent()` 构建代码助手。
 
-**⚠️ 版本敏感提示**：Deep Agents 的 API 在演进中，参数名与默认行为都发生过变化（例如早期版本的 `instructions` 现为 `system_prompt`；`TodoListMiddleware` 从 v0.7 起改为 opt-in）。**本文档不硬编码易变的默认值**，具体签名以本项目锁定版本的官方文档为准，核实方式：`.venv/bin/python -c "import inspect, deepagents; print(inspect.signature(deepagents.create_deep_agent))"`。
+**⚠️ 版本敏感提示**：Deep Agents 的 API 在演进中，参数名与默认行为都发生过变化（例如旧参数名 `instructions` 现为 `system_prompt`；`TodoListMiddleware` 从 v0.7 起改为 opt-in）。**本文档不硬编码易变的默认值**，具体签名以本项目锁定版本的官方文档为准，核实方式：`.venv/bin/python -c "import inspect, deepagents; print(inspect.signature(deepagents.create_deep_agent))"`。
 
 **模型**：可配置的 LLM，通过 `model` 参数传入字符串或 LangChain 模型对象。API key 从环境变量读取。
 
 **系统提示词**：`system_prompt` 参数，见 `stupid_code/config/prompts.py`。
 
-> ⚠️ **0.7.28 已无内置基础提示词**：早期版本会在作者提示词之前垫一段框架内置提示词
+> ⚠️ **0.7.28 已无内置基础提示词**：≤0.7.0 的版本会在作者提示词之前垫一段框架内置提示词
 > （承载工具使用规范），但 `BASE_AGENT_PROMPT` 在 `deepagents==0.7.0` 废弃（0.9.0 移除），
-> `HarnessProfile.base_system_prompt` 默认也是 `None`，内置的几个 profile（claude-opus-4-7 /
-> sonnet-4-6 / haiku-4-5）也都没设。**实测结论：传进去的 `system_prompt` 就是模型唯一
-> 看到的系统提示词**，没有内置提示词打底。
+> `HarnessProfile.base_system_prompt` 默认也是 `None`，内置的 5 个 profile
+> （claude-opus-4-7 / claude-sonnet-4-6 / claude-haiku-4-5 / openai-codex /
+> nvidia-nemotron-3-ultra）的 `base_system_prompt` 也都没设。**实测结论：传进去的
+> `system_prompt` 就是模型唯一看到的系统提示词**，没有内置提示词打底。
+> ⚠️ 唯一例外：`HarnessProfile` 还有第二个字段 `system_prompt_suffix`，框架会按模型规格
+> 自动选 profile，命中带后缀的 profile 时会在作者提示词**末尾追加**一段（openai-codex /
+> nvidia-nemotron-3-ultra 这两个 profile 就带）。本项目配的 minimax / deepseek 规格不命中，
+> 但裸模型名 `claude-sonnet-4-6` 会命中 claude profile。后缀不覆盖作者提示词。
 > 核实方式：用假模型把 `request.system_message` 打出来（见 `stupid_code/config/prompts.py` 的
 > docstring 里记的验证方法）。因此行为准则要自己写全，不能指望框架兜底。
 
@@ -291,7 +294,7 @@ LangGraph 的 `on_disconnect` 与 `stream_resumable` 有四种组合：
 | `cancel` | `true` | 事件被缓冲，但 Agent 被取消，无新事件 |
 | `continue` | `true` | 完整可恢复流 |
 
-**当前配置的已知缺口**：用户刷新页面后，正在进行的运行既接不回流（`stream_resumable: false`），也不知道它还在跑。补救方式见 §6.4。若要根治，需打开 `stream_resumable: true`（代价：事件被持久化缓冲，内存/存储开销增加），并由前端在重连时调用 join 接口。本期先不打开，用 §6.4 的低成本方案兜住。
+**当前配置的已知缺口**：用户刷新页面后，正在进行的运行既接不回流（`stream_resumable: false`），也不知道它还在跑。补救方式见 §6.4。若要根治，需打开 `stream_resumable: true`（代价：事件被持久化缓冲，内存/存储开销增加），并由前端在重连时调用 join 接口。当前先不打开，用 §6.4 的低成本方案兜住。
 
 ---
 
@@ -301,7 +304,7 @@ LangGraph 的 `on_disconnect` 与 `stream_resumable` 有四种组合：
 
 **以 `parts` 为主，`content` / `tool_calls` 为派生。**
 
-v0.1 的设计只有平级的 `content` + `tool_calls`，无法表达"先说一段话 → 调工具 → 再接着说"的顺序。前端实现时已改用有序片段（见 `web/src/api/types.ts`），文档同步：
+设计如果只有平级的 `content` + `tool_calls`，无法表达"先说一段话 → 调工具 → 再接着说"的顺序。前端实现时已改用有序片段（见 `web/src/api/types.ts`），文档同步：
 
 ```typescript
 type MessagePart =
@@ -415,7 +418,7 @@ LangChain 提供 `HumanInTheLoopMiddleware`，通过 `interrupt_on` 声明哪些
 - **batched 模式**（默认）：一次返回全部待审工具，`resume` 传 `{decisions: [...]}`，**顺序必须与 `action_requests` 一致**
 - **per_call 模式**：每个工具调用独立 interrupt ID，`resume` 传 `{[interrupt_id]: {...}}`
 
-官方推荐新应用使用 `per_call`（可单独审批、不会因顺序映射混淆）。但 `per_call` 对 langchain 版本有下限要求（`>=1.4.6`）。**本期先用 batched 模式跑通，per_call 作为后续优化**，核实方式：查本项目锁定版本的 langchain 版本号与官方 changelog。
+官方推荐新应用使用 `per_call`（可单独审批、不会因顺序映射混淆）。但 `per_call` 对 langchain 版本有下限要求（`>=1.4.6`）。**当前先用 batched 模式跑通，per_call 作为后续优化**，核实方式：查本项目锁定版本的 langchain 版本号与官方 changelog。
 
 **未回答的中断会保持 pending**，工具不会执行，用户可以稍后回答。这正好支持"页面刷新后再决定"的场景——但前提是能恢复连接，见 §6.4。
 

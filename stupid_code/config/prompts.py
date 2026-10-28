@@ -55,9 +55,8 @@ schema 的一部分给模型），这部分是跟着 `conf/subagents.toml` 自�
 - 提示词本身是给模型看的内容，不要写成给人看的说明文档
 - 提示词里承诺的能力必须是**真实存在的工具**：当前工具集是
   ls / read_file / write_file / edit_file / delete / glob / grep / execute / task。
-  `execute` 是 2026-10-22 换真实 backend（CompositeBackend + LocalShellBackend）
-  之后才有的——在那之前 backend 是 StateBackend，模型看到 execute 工具但调用
-  只会报错。现在它真的能在本机跑 shell，所以提示词里可以写这件事
+  `execute` 走真实 backend（CompositeBackend + LocalShellBackend），真的能
+  在本机跑 shell，所以提示词里可以写这件事
 """
 
 SYSTEM_PROMPT = """你是一个在用户工作空间里干活的编程助手。

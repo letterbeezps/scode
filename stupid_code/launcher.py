@@ -29,11 +29,12 @@
 - 用 --no-reload：reload 监视 cwd，而 cwd 现在是用户的真实项目目录，
   agent 在工作空间写文件会自我触发重启，且后端源码不在 cwd，热重载本来就没意义；
 - **端口锁死 2024**：被占用时直接启动失败，不自动换端口（见 `_resolve_port`）。
-  早期版本让 `langgraph dev` 自己换端口，而就绪检查只轮询 2024——不锁定端口
-  的话，就绪检查会打到**占着 2024 的旧服务**上误报"已就绪"，前端连的是旧
-  代码，看起来就像"改了没生效"；
+  `langgraph dev` 在端口被占时会自己换一个（日志里写
+  `Port 2024 is already in use, using port NNNNN instead`），而就绪检查
+  只轮询 2024——不锁定端口的话，就绪检查会打到**占着 2024 的旧服务**上
+  误报“已就绪”，前端连的是旧代码，看起来就像“改了没生效”；
 - Ctrl+C 时关闭整个子进程组（含 uvicorn 进程），不留孤儿进程——**启动阶段
-  同样如此**（早期版本在启动阶段按 Ctrl+C 会漏掉清理，留下占端口的孤儿）。
+  同样如此**（启动阶段按 Ctrl+C 也要走同一套清理，否则会留下占端口的孤儿）。
 
 监听地址：
 - 默认绑 127.0.0.1（本机可见，这是安全姿态）；
@@ -282,8 +283,8 @@ def main() -> None:
     proc: subprocess.Popen | None = None
 
     # 整个生命周期只有一个 finally：不管启动失败、启动途中 Ctrl+C，还是
-    # 正常运行后 Ctrl+C，子进程组都一定会被收掉（早期版本在启动阶段按
-    # Ctrl+C 会漏掉清理，留下占端口的孤儿——KeyboardInterrupt 是
+    # 正常运行后 Ctrl+C，子进程组都一定会被收掉（启动阶段按 Ctrl+C
+    # 同样要清理干净，否则会留下占端口的孤儿——KeyboardInterrupt 是
     # BaseException，except Exception 抓不住）。
     try:
         config_path = _build_runtime_config(backend_dir, runtime_dir)

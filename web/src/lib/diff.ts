@@ -2,12 +2,13 @@
  * 从工具调用参数/结果里拼出 diff 需要的「旧文本 / 新文本」。
  *
  * react-diff-viewer 只吃 oldValue / newValue 两个整篇文本，但后端给过来的形态
- * 有四种（设计文档 5.3 只规定了 ToolResult.diff 这一种）：
+ * 有五种（设计文档 5.3 只规定了 ToolResult.diff 这一种）：
  *
  *   1. 参数里直接给了完整新旧内容（write_file 的 content + 旧内容）
  *   2. 结果里给了 unified diff 字符串
  *   3. edit_file 只给了 old_string / new_string（局部替换）
- *   4. 什么都没有 → 不渲染 diff
+ *   4. 只有新内容 + 文件路径（当作「从空文件写入」）
+ *   5. 什么都没有 → 不渲染 diff
  *
  * 优先级从上到下，能拿到整篇就用整篇（行号才对得上），只拿到片段就退化成片段对比。
  */

@@ -159,7 +159,7 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 - 模型供应商配置在项目根 `conf/config.toml`（从 `conf/config.example.toml` 复制），选择顺序 `default` → `recent`，协议只支持 anthropic / openai。**改这个文件不需要重启后端**——切换对话模型那条路径每次调用都重读 `conf/config.toml`（模型实例按 `协议/模型/base_url/api_key` 缓存，改了这些就换新实例）；只有改「后端启动时带的默认模型」（`[models] default`）才要重启，因为默认模型在建图时定死。
 - 子 agent 配置在项目根 `conf/subagents.toml`，同样改完要重启服务（子 agent 在 `graph/agent.py` 导入时构建一次）。`model` 必须是 `config.toml` 里配过的供应商 + 其 `models` 白名单里的模型名。
 - MCP 配置在项目根 `conf/mcp.json`（不入库，从 `conf/mcp.example.json` 复制），**改完要重启服务**（工具在建图时静态注册，跟 `conf/subagents.toml` 一样）。连接参数里的任何字符串都可以写 `${VAR}`，从进程环境展开，别写死密钥。每个服务器一条长会话（有状态服务器不会被重置）；MCP 工具只有异步实现（本地脚本 `graph.invoke()` 调它会抛 `NotImplementedError`）；声明了 `permissions` 的只读子 agent 不继承 MCP 工具；`manual` 档下非只读的 MCP 工具也要人工确认。
-- 长期记忆用 `middleware=` 挂 `MemoryMiddleware`，**不要用 `create_deep_agent(memory=...)`**：后者只能用框架默认的 StateBackend，读不到磁盘上的 `.scode-memory.md`。
+- 长期记忆用 `middleware=` 挂 `MemoryMiddleware`，**不要用 `create_deep_agent(memory=...)`**：后者只能用框架那份默认行为——英文通用模板、不截断、换工作空间不重读。
 - **同一工作空间内记忆只在会话开始时读一次**：改了 `.scode-memory.md` 要开新会话（新建 thread）才生效；**换工作空间会重新读**（`WorkspaceMemoryMiddleware` 记着上次的工作空间）。
 - **backend 是真实磁盘 + 本机 shell**（`graph/backend.py`）。agent 能读工作空间里的任何文件
   （包括 `conf/config.toml` 里的 api_key），`execute` 能跑任意命令——所以**执行命令前有人工确认**
@@ -178,7 +178,7 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
   `NotImplementedError`。`conf/subagents.toml` 里 `reviewer` 的只读就是靠这个保证的。
 - **没声明 `permissions` 的子 agent 会继承顶层 `interrupt_on`**（deepagents 的合并规则），
   所以它们执行命令同样会挂起等人确认。
-- `langgraph.json` 的 `http.app` 字段指向 `admin/app.py:app`。本期实现的 `/admin/models` 接口改完配置后仍需重启 `scode` 才能让运行中的 graph 加载新模型实例。
+- `langgraph.json` 的 `http.app` 字段指向 `admin/app.py:app`。当前的 `/admin/models` 接口改完配置后仍需重启 `scode` 才能让运行中的 graph 加载新模型实例。
 - **端口锁死 2024，被占用就直接启动失败**：端口被占时必须立刻报错，不能误报"已就绪"
   ——`langgraph dev` 自己换了端口，而就绪检查只轮询 2024，打到的是旧服务，前端连的是
   旧代码。现在启动前先探端口，占用就报错并告诉你怎么查占用进程，**绝不自动换端口**

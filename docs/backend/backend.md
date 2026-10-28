@@ -26,7 +26,7 @@
 |---|---|---|
 | 1 | 参考资料要先装 | [`README.md`](../../README.md) 的「1. 装 skills」 |
 | 2 | 别传 `checkpointer` | §3.1 · §2.2 |
-| 3 | 三条硬编码路径 + `__file__` 层数 | §2.2（三个文件、四条 path） |
+| 3 | 三个文件、四条 path + `__file__` 层数 | §2.2 |
 | 4 | `.langgraph_api/` 要留着 | §4.2 |
 | 5 | `GET /assistants` 返回 405 | §8.1 |
 | 6 | 前端契约先行 | §4.5 |
@@ -35,7 +35,7 @@
 | 9 | 没有内置系统提示词 | §4.3 |
 | 10 | 长期记忆的挂法与边界 | §3.6 |
 | 11 | 端口锁死 2024 | §3.8 · §9 |
-| 12 | 真实 backend 与子 agent 权限 | §3.7 · §3.12 |
+| 12 | 真实 backend 与子 agent 权限 | §3.7 · §3.13 |
 | 13 | 运行期切模型 | §3.10 |
 | 14 | 手动压缩历史 | §3.11 |
 | 15 | 容器里的三个坑 | §3.12 |
@@ -101,7 +101,9 @@
   → `GET`/`PUT /admin/memory`
 - 模型管理界面（直连 `/admin/models`）、会话列表 / 建会话 / 删会话 / 标题
   （存平台的 `metadata.title`）、流式对话、工具调用可视化、Diff 渲染、Todo 同步
-- mock 模式（`VITE_USE_MOCK=true`，签名与真实后端完全一致）
+- mock 模式（`VITE_USE_MOCK=true`；mock 在真实 API 函数内部按 `isMockMode` 分支，
+  同名同用途的主要接口签名一致。例外：`cancelRun` 没有 mock 分支，`listRuns` 在
+  mock 下返回 `[]`）
 
 ### 1.4 验证方式
 
@@ -141,6 +143,7 @@ stupid-code/
 │   ├── API.md                  # 后端 HTTP 契约
 │   ├── README.md               # 后端模块速查
 │   ├── graph/
+│   │   ├── __init__.py         # 子包入口
 │   │   ├── agent.py            # create_deep_agent()，导出 graph
 │   │   ├── backend.py          # 真实磁盘 + shell 的 backend
 │   │   ├── subagent_policy.py  # 子 agent 的权限/HITL/工具策略
@@ -156,11 +159,13 @@ stupid-code/
 │   │   ├── mcp.py              # MCP 工具加载 + 长会话
 │   │   └── persistence.py      # SQLite 工厂：checkpoint/store → ../data/langgraph.db
 │   ├── config/
+│   │   ├── __init__.py         # 子包入口
 │   │   ├── model.py            # conf/config.toml → 模型实例 + CRUD
 │   │   ├── subagent.py         # conf/subagents.toml → SubAgent 规格
 │   │   ├── mcp.py              # conf/mcp.json → MCP 连接参数
 │   │   └── prompts.py          # 主 agent 的系统提示词
 │   ├── admin/
+│   │   ├── __init__.py         # 子包入口
 │   │   ├── app.py              # Starlette 子应用与路由表
 │   │   ├── common.py           # 路由共用：解析 ?workspace= + 统一 400 响应
 │   │   ├── memory.py           # /admin/memory 两个端点（记忆读写）
@@ -388,8 +393,9 @@ subagent 配置里重复写。
 
 **关键取舍**
 
-- **按"职责"分包，不按"技术类型"分包**。`config/` 里三个文件都是"读配置产出东西"的，
-  `graph/` 里都是"图怎么建、状态存哪"的——比 tools/prompts/utils 这种技术分类好找。
+- **按"职责"分包，不按"技术类型"分包**。`config/` 里 `model.py` / `subagent.py` / `mcp.py`
+  三个是「读配置产出东西」的（外加 `prompts.py` 放系统提示词），`graph/` 里都是
+  「图怎么建、状态存哪」——比 tools/prompts/utils 这种技术分类好找。
 - **`config/`（包） vs `conf/`（目录）** 是两个东西：前者是代码，后者是数据。
 - **`graph/` 而不是 `app/`**：`admin/app.py` 已经占了 app 这个名字。
 - **`data/` 留在包根**（`stupid_code/data/`），它是"整个后端的持久产物"，
@@ -409,8 +415,11 @@ subagent 配置里重复写。
 **关键取舍**
 
 - **用 `middleware=` 挂 `MemoryMiddleware`，别用 `create_deep_agent(memory=...)`**。
-  两者是同一个中间件，但 `memory=` 只能用框架默认的 backend——默认是 StateBackend
-  （虚拟文件系统），**读不到磁盘上的文件**。自己挂才能给 `FilesystemBackend`。
+  两者是同一个中间件，但 `memory=` 只能拿框架那份默认行为：英文通用模板、**不截断**、
+  **换工作空间不重读**。自己挂才能用本项目的中文模板、加 `MEMORY_MAX_CHARS` 上限、
+  并在工作空间变化时重读。
+  ⚠️ 差别**不在"读不读得到磁盘"**——`memory=` 用的是你传给 `create_deep_agent`
+  的同一个 backend（不传 backend 才回落 StateBackend），实测两者是同一实例。
 - **同一工作空间内记忆只在会话开始时读一次**。`MemoryMiddleware.before_agent` 见到
   state 里已有 `memory_contents` 就不重复读——这是框架的设计（记忆块要参与 prompt
   缓存）。代价是**改完 `.scode-memory.md` 要开新会话才生效**。
@@ -703,8 +712,8 @@ CompositeBackend(
         inherit_env=True,                 # shell 继承当前环境，否则 PATH 是空的
     ),
     routes={
-        USER_MEMORY_ROUTE:  FilesystemBackend(root_dir=user_memory_dir()),    # ~/.scode/
-        GLOBAL_SKILLS_ROUTE: FilesystemBackend(root_dir=global_skills_dir()),  # ~/.scode/.agents/skills/
+        USER_MEMORY_ROUTE:  FilesystemBackend(root_dir=user_memory_dir(), virtual_mode=True),    # ~/.scode/
+        GLOBAL_SKILLS_ROUTE: FilesystemBackend(root_dir=global_skills_dir(), virtual_mode=True),  # ~/.scode/.agents/skills/
     },
     artifacts_root=ARTIFACTS_ROOT,        # = "/.scode"，agent 自己的中间产物
 )
@@ -989,8 +998,8 @@ protocol**，不用重启后端。
 
 ```
 侧边栏下拉框（localStorage）
-  → 每次发消息时随 configurable 一起发：configurable.model = "供应商名:模型名"
-  → 后端 graph/model_switch.py 读 configurable["model"]
+  → 每次发消息时随 context 一起发：context.model = "供应商名:模型名"
+  → 后端 graph/model_switch.py 读 request.runtime.context.model
   → 重新读 conf/config.toml，按该 id 建模型实例（base_url / api_key / protocol）
   → request.override(model=那个实例) → 框架用它发请求
 ```
@@ -1042,13 +1051,14 @@ protocol**，不用重启后端。
 - **`request.override(model=...)` 真的换模型**。框架最终是拿
   `request.model.bind_tools(...)` 去发请求的（`langchain/agents/factory.py` 的
   `_get_bound_model`），不是拿建图时那个实例。换完就是真换
-- **`get_config()` 在 `wrap_model_call` / `awrap_model_call` 里能拿到 `configurable`**。
-  `ModelRequest.runtime` 是 `Runtime`，**没有 `.config` 属性**（`ToolCallRequest.runtime`
-  才有），所以别去找 `request.runtime.config`——用 `langgraph.config.get_config()`
+- **`ModelRequest.runtime` 是 `Runtime`，没有 `.config` 属性**（`ToolCallRequest.runtime`
+  才有）。切模型直接读 `request.runtime.context.model`——**别去找
+  `request.runtime.config`**，也别用 `langgraph.config.get_config()`（那条只给拿不到
+  Runtime 的摘要路径用）
 - **子 agent 的中间件也能拿到父图的 `configurable`**（子图继承父图的 config）。
   框架上做得到「子 agent 也跟着换」——**但本项目有意不用**：子 agent 的模型是
   `conf/subagents.toml` 配置出来的，切换只该影响主对话（见 §3.10 的取舍）
-- **`context.model`（022 前为 `configurable.model`）能穿过 `langgraph dev` 的 run 请求体**到达图的中间件，
+- **`context.model` 能穿过 `langgraph dev` 的 run 请求体**到达图的中间件，
   实测 `response_metadata.model_name` 从 `MiniMax-M3` 变成 `MiniMax-M3.1-Flash`，
   **后端没重启**
 - **HITL 挂起后恢复，模型也保持**：恢复请求带上同一个 `context.model`，
@@ -1238,6 +1248,7 @@ volumes:
   - "./conf:/app/conf"                    # 供应商配置（含明文 api_key）
   - "./stupid_code/data:/app/stupid_code/data"  # SQLite checkpoint / store
   - "${SCODE_WORKSPACE:-.}:/workspace"    # agent 的工作空间
+  - "${SCODE_USER_MEMORY_DIR:-./stupid_code/data/user-memory}:/root/.scode"  # 用户级记忆 + 全局 skill
 ```
 
 **踩过一次的坑：合并成一个目录会直接崩**
@@ -1761,7 +1772,9 @@ ps -axo pid,command | grep -E "server-memory|langgraph dev"
 `LocalShellBackend.execute` 的 cwd）。所以只要改这一个属性，全对。
 
 做法是把它做成 property（`graph/backend.py` 的 `_WorkspaceCwdMixin`）：取值时读当前
-运行的 `configurable.workspace`。为什么不是「运行期换 backend 实例」：
+运行的工作空间——`before_agent` 从 `runtime.context.workspace` 解析并校验，
+工具热路径 `current_workspace_paths()` 读平台镜像进 `configurable` 的那一份。
+为什么不是「运行期换 backend 实例」：
 
 - backend 实例在建图时就注册进框架的工具里了，运行期换不了
 - 同一时刻可能有多个对话在跑（不同 thread、不同工作空间）。property 背后是
@@ -1873,7 +1886,7 @@ During task with name 'WorkspaceMiddleware.before_agent'
 
 **已验证的事实**
 
-- **`context.workspace`（022 前为 `configurable.workspace`）真的决定文件落点**：`write_file("/hello.txt")`
+- **`context.workspace` 真的决定文件落点**：`write_file("/hello.txt")`
   落在该目录；`execute` 的 `pwd` 也是该目录 ✔
 - **`.scode-memory.md` 跟着工作空间走，但不会自动创建**：agent 真的保存记忆时
   才在对应目录里出现 ✔（每个项目一份记忆——不同项目的约定不该混在一起）
@@ -1939,8 +1952,11 @@ During task with name 'WorkspaceMiddleware.before_agent'
 - 勾选的全局 skill 同样能钉 ✔（路径是虚拟的 `/user-skills/<name>/SKILL.md`）
 - **没勾选的不会进** ✔
 - **第二轮不重复 pin**：同一个 thread 里正文只出现 1 次 ✔
-  **pin 只在"选择变了"时做**——pin 的消息会进对话历史、之后每轮都跟着重发，
-  每轮都 pin 会把上下文撑爆
+  框架的 `pinned_skills` reducer 是**累加**，消费时用 `Overwrite([])` 清空；
+  本项目只在**重读**时写它，而重读只有三种情况：首次运行、换选择、换工作空间。
+  所以「同一工作空间 + 同一选择」不会重复 pin ✔——但**换工作空间（选择没变）
+  也会重新 pin 一遍**。
+  pin 的消息会进对话历史、之后每轮都跟着重发，每轮都 pin 会把上下文撑爆
 - **取消勾选不会把已钉进去的内容拿掉**（框架语义是追加，见已知缺口）
 
 **agent 自主读取（渐进式披露）**
@@ -2220,11 +2236,18 @@ graph = create_deep_agent(
 `.langgraph_api/` 由 inmem 运行时硬编码生成在 cwd 下，**无法配置改位**。
 **别删它**——scode 已经不再清理它。
 
-### 4.3 提示词是模型唯一看到的系统提示词
+### 4.3 提示词基本就是模型看到的全部（harness profile 后缀除外）
 
 deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT` 在 0.7.0 废弃
-（0.9.0 移除），`HarnessProfile.base_system_prompt` 默认 `None`，内置的几个 claude profile
-也没设。所以 `create_deep_agent(system_prompt=...)` 传进去的**就是全部**。
+（0.9.0 移除，框架源码里的 `deprecated(..., removal="0.9.0")`），
+`HarnessProfile.base_system_prompt` 默认 `None`，内置的几个 claude profile
+也没设。所以 `create_deep_agent(system_prompt=...)` 传进去的**基本就是全部**。
+
+⚠️ **唯一的例外是 harness profile 的 `system_prompt_suffix`**：框架会按**模型规格**自动
+选 profile，命中带后缀的 profile 时会在作者提示词**后面**再追加一段。实测本项目配的
+minimax / deepseek 规格都不命中（最终提示词 == 作者提示词）；但裸模型名
+`claude-sonnet-4-6` 这类会命中 claude profile，末尾多一段 `<use_parallel_tool_calls>`。
+后缀不覆盖作者提示词，所以"行为准则要自己写全"这条结论不变。
 
 提示词里**不写子 agent 名单**——名单由 deepagents 自动写进 `task` 工具的 description，
 再抄一份就是两份真相。想提高委派率，去改 `conf/subagents.toml` 里的 `description`。
@@ -2268,8 +2291,8 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 
 平台内置（`langgraph dev` 直接提供）：`/ok`、`/assistants/search`、
 `/assistants/{id}/graph`、`/threads`、`/threads/search`、`/threads/{id}`（GET/PATCH/DELETE）、
-`/threads/{id}/state`、`/threads/{id}/runs/stream`、`/threads/{id}/runs/{runId}/stream`、
-`/threads/{id}/runs/{runId}/cancel`。
+`/threads/{id}/state`、`/threads/{id}/runs/stream`、`/threads/{id}/runs`（列 run）、
+`/threads/{id}/runs/{runId}/stream`、`/threads/{id}/runs/{runId}/cancel`。
 
 自定义：`/admin/models` 五个端点 + `POST /workspaces/pick`（弹系统目录选择框）
 + `/admin/memory` 两个端点（GET 读两份记忆 / PUT 写一份）
@@ -2285,13 +2308,12 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 |---|---|
 | 监听地址 | **只监听 `127.0.0.1`**。绝不要绑 `0.0.0.0` |
 | API key | 只走 `conf/config.toml`（gitignore），不进 `.env`、不入库 |
-| shell 执行 | 有人工确认关卡（009），`normal` 档只拦命中危险模式的命令 |
-| 删文件 | 有人工确认关卡（015），但只有 `manual` 档拦；`normal` 档不拦 |
+| shell 执行 | 有人工确认关卡，`normal` 档只拦命中危险模式的命令 |
+| 删文件 | 有人工确认关卡，但只有 `manual` 档拦；`normal` 档不拦 |
 | 文件写入 | **不拦**（`write_file`/`edit_file`）——那是 code agent 的日常。**例外：写记忆文件要拦**，`normal` 和 `manual` 档都拦 |
 | 文件路径 | 文件工具锁在工作空间内（`virtual_mode=True`），**shell 不受此限** |
-| 工作空间之外的写路径 | **有一条**：`/user-memory/` 路由指向 `~/.scode/`，agent 能用 `write_file` 在那个目录里建/改文件。范围限于这一个目录——**跟"文件工具锁在工作空间内"不矛盾**，工作空间内的路径依然出不去 |
-| 工作空间之外的读路径 | **有一条**：`/user-skills/` 路由指向 `~/.scode/.agents/skills/`，agent 能用 `read_file` 读全局 skill 的全文。同样只覆盖这一个目录 |
-| 工作空间之外的写路径（补充） | `/user-skills/` **没有只读保护**——deepagents 的 `FilesystemBackend` 不提供这个开关，`write_file("/user-skills/...")` 直接落盘；而且 `/user-memory/` 指向的是**整个** `~/.scode/`，`write_file("/user-memory/.agents/skills/...")` 同样能写到全局 skill 目录。这两条**都不在 `is_memory_path()` 的判定里**，所以不受 HITL 覆盖 |
+| 工作空间之外的读路径 | **一条**：`/user-skills/` 路由指向 `~/.scode/.agents/skills/`，agent 能用 `read_file` 读全局 skill 的全文 |
+| 工作空间之外的写路径 | **两条，都可写**：`/user-memory/` 路由指向整个 `~/.scode/`，`/user-skills/` 路由指向 `~/.scode/.agents/skills/`。deepagents 的 `FilesystemBackend` **没有只读开关**，所以 `write_file("/user-skills/...")` 直接落盘；`/user-memory/` 指向的是整个 `~/.scode/`，`write_file("/user-memory/.agents/skills/...")` 同样能写到全局 skill 目录。这两条路由下**只有 `/user-memory/memory.md` 在 `is_memory_path()` 的判定里**（会被 HITL 拦），其余路径**都不受 HITL 覆盖**。范围限于这两个目录——**跟"文件工具锁在工作空间内"不矛盾**，工作空间内的路径依然出不去 |
 | 读取范围 | agent 能读工作空间里的任何文件，**包括 `conf/config.toml` 里的 api_key**——这块没被 HITL 覆盖 |
 | 子 agent 权限 | 只有声明了 `permissions` 的子 agent 才是硬约束；没声明的拿的是主 agent 那套带 shell 的 backend |
 | 危险判定 | 正则匹配，不是语义分析。**宁可漏拦也不误拦** |
@@ -2309,7 +2331,7 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 | HITL 判据记在图状态里，**不读客户端回传的值** | 框架的 `when` 谓词在恢复时会再跑一次；只从运行配置读档位的话，恢复那轮会绕过上次的拒绝 |
 | 工作空间不要包含后端仓库 | agent 能改 `conf/mcp.json`（里面可以写 stdio `command`）和后端源码，下次启动时执行，等于绕开 `execute` 的人工确认 |
 | MCP 是新的执行/注入面 | stdio 服务器会在建图时和首次调用时拉起命令，服务器给的工具有副作用、工具描述会进模型上下文 |
-| 两条工作空间之外的路径 | `/user-memory/`（`~/.scode/`，**可写**）和 `/user-skills/`（`~/.scode/.agents/skills/`）各覆盖一个目录。**两条都可写**——`/user-skills/` 本来的意图是只读入口，但 `FilesystemBackend` 没有只读开关；`/user-memory/` 又指向整个 `~/.scode/`，连 `.agents/skills/` 也在内。agent 仍能读工作空间里任何文件（包括 `conf/config.toml` 里的 api_key），**这块没被 HITL 覆盖** |
+| 两条工作空间之外的路径 | `/user-memory/`（`~/.scode/`，**可写**）和 `/user-skills/`（`~/.scode/.agents/skills/`）各覆盖一个目录。**两条都可写**——`/user-skills/` 本来的意图是只读入口，但 `FilesystemBackend` 没有只读开关；`/user-memory/` 又指向整个 `~/.scode/`，连 `.agents/skills/` 也在内。其中只有 `/user-memory/memory.md` 受 HITL 覆盖，其余路径不受。agent 仍能读工作空间里任何文件（包括 `conf/config.toml` 里的 api_key），**这块没被 HITL 覆盖** |
 | 目录选择靠系统原生弹窗 | 后端不提供「列目录」接口——那等于把文件系统目录树开放成 HTTP 接口。该端点会阻塞到用户选完，后端仍只监听 `127.0.0.1` |
 
 **恢复挂起的运行还有两个硬约束**：请求体要带同一个 `context.permissions`；`command.resume.decisions` 的个数必须和挂起时的
@@ -2533,12 +2555,14 @@ print(json.dumps(load_connections(), indent=2, ensure_ascii=False))
 }
 ```
 
-配置写错时这一步直接抛 `ConfigError`（字段名、拼错的 `type` 都会被指出来）：
+**单个**服务器配置写错时这一步**不抛异常**——它只跳过那一个，其余照常返回，
+错误信息进日志：
 
 ```
-mcp.json 的服务器 'x' 配置不合法：typo：不认识的字段
-mcp.json 的服务器 'x' 的 type 'stio' 不支持，只支持 http / sse / stdio / ...
+WARNING MCP 服务器 'x' 配置不合法，跳过它：mcp.json 的服务器 'x' 的 type 'stio' 不支持，只支持 http / sse / stdio / streamable-http / streamable_http / websocket
 ```
+
+只有**顶层**配置坏了才真的抛 `ConfigError`（`conf/mcp.json` 不是对象、或缺 `mcpServers` 段）。
 
 ```bash
 # 2. 起服务后看工具挂上没有（后端日志）
@@ -2573,7 +2597,7 @@ curl -s -N -X POST "http://127.0.0.1:2024/threads/$TID/runs/stream" \
 ```
 
 **改配置要重启**：改完 `conf/mcp.json` 重启 `scode`，新服务器的工具才出现
-（工具是建图时静态注册的，见「013 · 关键取舍一」）。
+（工具是建图时静态注册的，见 §3.13「关键取舍一」）。
 
 ### 步骤 8：关停
 
@@ -2620,7 +2644,7 @@ TID=$(curl -s -X POST http://127.0.0.1:5173/api/threads \
   | python3 -c "import json,sys; print(json.load(sys.stdin)['thread_id'])")
 curl -sN -X POST "http://127.0.0.1:5173/api/threads/$TID/runs/stream" \
   -H 'Content-Type: application/json' -H 'Accept: text/event-stream' \
-  -d '{"assistant_id":"code_agent","input":{"messages":[{"role":"user","content":"只回复两个字：你好"}]},"stream_mode":["updates"],"on_disconnect":"continue","config":{"configurable":{"permissions":"auto","model":"minimax:MiniMax-M3"}}}'
+  -d '{"assistant_id":"code_agent","input":{"messages":[{"role":"user","content":"只回复两个字：你好"}]},"stream_mode":["updates"],"on_disconnect":"continue","context":{"permissions":"auto","model":"minimax:MiniMax-M3"}}'
 
 # 7. 持久化：重启后历史还在
 docker compose restart backend
@@ -2673,7 +2697,7 @@ curl -sN -X POST "http://127.0.0.1:2024/threads/$TID/runs/stream" \
   -d "{\"assistant_id\":\"code_agent\",
        \"input\":{\"messages\":[{\"role\":\"user\",\"content\":\"在工作空间里创建 hello.txt，内容写 hello world。\"}]},
        \"stream_mode\":[\"updates\"],\"on_disconnect\":\"continue\",
-       \"config\":{\"configurable\":{\"workspace\":\"$WS\",\"permissions\":\"auto\"}}}"
+       \"context\":{\"workspace\":\"$WS\",\"permissions\":\"auto\"}}"
 
 #    预期：SSE 里有 write_file 调用；然后
 ls -la "$WS"

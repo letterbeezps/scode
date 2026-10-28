@@ -26,8 +26,8 @@ PROJECT_SKILLS_LABEL = "项目"
 PROJECT_SKILLS_SOURCE = "/.agents/skills/"
 """项目级 skill 的虚拟路径。
 
-相对工作空间根解析——工作空间是运行期参数，所以这个源**不是静态的**，
-它每一轮指向的真实目录都由主 backend 的运行期根目录决定。
+相对工作空间根解析。**源字符串本身是常量**——「项目级」跟着工作空间走靠的不是这个字符串，
+而是主 backend 那个运行期根目录：每一轮解析出的真实目录都跟着当前工作空间变。
 
 跟 langchain-skills 的约定一致：`<工作空间>/.agents/skills/<名字>/SKILL.md`。
 """
@@ -156,8 +156,8 @@ class WorkspaceSkillsMiddleware(SkillsMiddleware):
 
     框架那份的三件事在这里被改掉了：
 
-    1. **项目级 skill 不是静态的**：框架的 `self.sources` 是建图时定死的，
-       这里每轮现算——项目级源指向当前工作空间（`skill_sources()`）。
+    1. **项目级 skill 指向运行期工作空间**：框架的 `self.sources` 是建图时定死的，
+       这里每轮现算一遍（`skill_sources()`）——源字符串是常量，变的是它解析出的真实目录。
     2. **换工作空间会重读**：框架一个 thread 只读一次，摘掉
        `skills_metadata` 逼它重来（跟记忆中间件同一套路）。
     3. **用户勾选的会钉进上下文**：写进 `pinned_skills`，框架的
@@ -277,8 +277,10 @@ class WorkspaceSkillsMiddleware(SkillsMiddleware):
         if selected:
             # `pinned_skills` 的 reducer 是**累加**（框架的 `_append_skill_names`），
             # 消费时框架会用 `Overwrite([])` 清空，所以正常情况下不会重复。
-            # 这里只在「选择变了」时写——写一次就够，钉进去的消息会在对话
-            # 历史里一直留着，每轮自动重发。
+            # 这里只在**重读**时写——重读只有三种情况：首次运行、换选择、
+            # 换工作空间。同一工作空间 + 同一选择不重读，也就不重复写；
+            # 换工作空间（选择没变）会把勾选的那批重新 pin 一遍。
+            # 钉进去的消息会在对话历史里一直留着，每轮自动重发。
             result["pinned_skills"] = list(selected)
             result["scode_pinned_skills"] = list(selected)
 

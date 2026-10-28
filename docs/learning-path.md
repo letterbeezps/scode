@@ -63,7 +63,7 @@ ls .agents/skills | head    # 看到 deep-agents-core、ecosystem-primer 等目�
 
 **第一步 · 搞清楚选型** — 动手前先读 `ecosystem-primer`，它决定了你该用 Deep Agents 还是 LangChain 还是 LangGraph，以及下一步该加载哪个 skill。
 
-**第二步 · 搭出最小 agent** — `deepagents-python-quickstart` + `deep-agents-core`。跑通官方 quickstart，然后逐个摸中间件：TodoList、Filesystem、SubAgent、HumanInTheLoop、Skills、Memory。
+**第二步 · 搭出最小 agent** — `deepagents-python-quickstart` + `deep-agents-core`。跑通官方 quickstart，然后逐个摸中间件：TodoList、Filesystem、SubAgent、HumanInTheLoop、Skills、Memory。其中 Filesystem / SubAgent / Skills / Memory 来自 `deepagents.middleware`，TodoList 和 HumanInTheLoop 来自 `langchain.agents.middleware`（Deep Agents 在 0.7 起把它们改成按需引入）。
 
 **第三步 · 做深 code agent 的能力** — 这是本项目的正题：
 
