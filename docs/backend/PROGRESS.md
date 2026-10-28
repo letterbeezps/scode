@@ -1,11 +1,11 @@
-# 后端进度快照（001–020 合并版）
+# 后端进度快照（001–022 合并版）
 
-> **这份文档是什么**：项目后端从第 001 期到第 020 期的**进度快照**。
+> **这份文档是什么**：项目后端从第 001 期到第 022 期的**进度快照**。
 > 它把原先散在 `001_*.md` ~ `009_*.md` 九份阶段文档里的内容合并成一份，
 > 回答三个问题：**现在做到了哪一步 / 为什么这么做 / 接下来还欠什么**。
 >
-> - 快照时间：2026-10-27，代码基线 `335a890` + 019 / 020 期改动
-> - 后端：`stupid_code/`（Python 5879 行）　前端：`web/src/`（TS/TSX 7775 行）
+> - 快照时间：2026-10-28，代码基线 `45f17ed`
+> - 后端：`stupid_code/`（Python 5807 行）　前端：`web/src/`（TS/TSX 7773 行）
 > - 依赖版本：`deepagents 0.7.28` / `langchain 1.4.6` / `langgraph 1.2.16` /
 >   `langgraph-cli 0.4.36` / `langchain-anthropic 1.7.6` / `langchain-openai 1.7.2` /
 >   `langchain-mcp-adapters 0.3.2`
@@ -443,8 +443,8 @@ subagent 配置里重复写。
 **还不报错**（014 期只修了一半：软链形态一致时是好的）。
 
 现在 `graph/workspace.py` 的 `WorkspacePaths` 同时记两种形态，解析时一起算好缓存
-（热路径只读缓存，不碰文件系统）；`graph/backend.py` 的 `_workspace_relative()`
-对两种形态各试一次。实测（工作空间 `/tmp/scode-sym-xxx`）：
+（热路径只读缓存，不碰文件系统）；`graph/backend.py` 的
+`_WorkspaceCwdMixin._resolve_path()` 对两种形态各试一次。实测（工作空间 `/tmp/scode-sym-xxx`）：
 
 | 模型传的路径 | 落点 |
 |---|---|
@@ -1120,8 +1120,9 @@ docker compose ps backend   # 期望 healthy，而不是 CrashLoopBackOff
 **已验证的事实**（2026-10-25 实测，Docker 29.9.2 / Compose v5.6.1）
 
 - 两个容器都起来且 `healthy`；`/ok` 200、`/` 200、`/api/ok` 200
-- `code_agent` 图注册成功，8 个节点：`__start__` / `model` / `tools` /
-  `MemoryMiddleware.before_agent` / `HumanInTheLoopMiddleware.after_model` 等
+- `code_agent` 图注册成功（节点名形如 `__start__` / `model` / `tools` /
+  各中间件的 `before_agent` / `after_model` 钩子 / `__end__`；
+  **节点数随框架迭代变化，以启动时 launcher 打印的「N 个节点」为准**）
 - SSE 端到端跑通，模型真实返回内容（`你好`）
 - agent 的 `write_file` 在**宿主**仓库里落地（容器写 → volume → 宿主可见），
   `execute` 也能跑
@@ -1651,7 +1652,7 @@ During task with name 'WorkspaceMiddleware.before_agent'
 ```bash
 # 1. 起服务
 cd /path/to/repo && uv run scode
-#    预期：Agent Server 已就绪；图 code_agent 已注册并可加载（9 个节点）
+#    预期：Agent Server 已就绪；图 code_agent 已注册并可加载（节点数以实际打印为准）
 
 # 2. 弹系统目录选择框（会阻塞到你在窗口里选完）
 curl -s -X POST http://127.0.0.1:2024/workspaces/pick -H 'Content-Type: application/json' -d '{}'
@@ -1747,6 +1748,18 @@ ls -la "$WS"
   磁盘上的文件不动 ✔（015 期实测：20 万字符的记忆文件 → 系统提示词 9212 字符）
 
 ---
+
+### 015–018 · 这四期没有独立小节
+
+015–018 的机制细节按**能力**而不是按期组织，写在 §8 里（下表给出落点），
+期号和一句话摘要见 §1.2 的期号表。
+
+| 期 | 能力 | 详见 |
+|---|---|---|
+| 015 | 记忆块用本项目的中文模板 + 8000 字上限；HITL 档位钉进图状态 + `delete` 进关卡 | §8.4 · §8.11 |
+| 016 | agent 自己的中间产物收拢到 `<工作空间>/.scode/` | §8.10 |
+| 017 | 长期记忆分两个作用域（用户级 + 项目级）+ 前端记忆面板 + 写记忆走人工确认 | §8.11 |
+| 018 | skill（全局 `~/.scode/.agents/skills/` + 项目级 `<工作空间>/.agents/skills/`）+ 前端斜杠菜单勾选 | §8.12 |
 
 ### 019 · 全仓精简 + 文档收敛
 
@@ -2220,6 +2233,7 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 | 文件路径 | 文件工具锁在工作空间内（`virtual_mode=True`），**shell 不受此限** |
 | 工作空间之外的写路径 | **有一条**（017 期）：`/user-memory/` 路由指向 `~/.scode/`，agent 能用 `write_file` 在那个目录里建/改文件。范围限于这一个目录——**跟"文件工具锁在工作空间内"不矛盾**，工作空间内的路径依然出不去 |
 | 工作空间之外的读路径 | **有一条**（018 期）：`/user-skills/` 路由指向 `~/.scode/.agents/skills/`，agent 能用 `read_file` 读全局 skill 的全文。同样只覆盖这一个目录 |
+| 工作空间之外的写路径（补充） | `/user-skills/` **没有只读保护**——deepagents 的 `FilesystemBackend` 不提供这个开关，`write_file("/user-skills/...")` 直接落盘；而且 `/user-memory/` 指向的是**整个** `~/.scode/`，`write_file("/user-memory/.agents/skills/...")` 同样能写到全局 skill 目录。这两条**都不在 `is_memory_path()` 的判定里**，所以不受 HITL 覆盖 |
 | 读取范围 | agent 能读工作空间里的任何文件，**包括 `conf/config.toml` 里的 api_key**——这块没被 HITL 覆盖 |
 | 子 agent 权限 | 只有声明了 `permissions` 的子 agent 才是硬约束；没声明的拿的是主 agent 那套带 shell 的 backend |
 | 危险判定 | 正则匹配，不是语义分析。**宁可漏拦也不误拦** |
@@ -2237,7 +2251,7 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 | HITL 判据记在图状态里，**不读客户端回传的值** | 框架的 `when` 谓词在恢复时会再跑一次；只从运行配置读档位的话，恢复那轮会绕过上次的拒绝 |
 | 工作空间不要包含后端仓库 | agent 能改 `conf/mcp.json`（里面可以写 stdio `command`）和后端源码，下次启动时执行，等于绕开 `execute` 的人工确认 |
 | MCP 是新的执行/注入面 | stdio 服务器会在建图时和首次调用时拉起命令，服务器给的工具有副作用、工具描述会进模型上下文 |
-| 两条工作空间之外的路径 | `/user-memory/`（`~/.scode/`，**可写**）和 `/user-skills/`（`~/.scode/.agents/skills/`，**只读**）各覆盖一个目录。agent 仍能读工作空间里任何文件（包括 `conf/config.toml` 里的 api_key），**这块没被 HITL 覆盖** |
+| 两条工作空间之外的路径 | `/user-memory/`（`~/.scode/`，**可写**）和 `/user-skills/`（`~/.scode/.agents/skills/`）各覆盖一个目录。**两条都可写**——`/user-skills/` 本来的意图是只读入口，但 `FilesystemBackend` 没有只读开关；`/user-memory/` 又指向整个 `~/.scode/`，连 `.agents/skills/` 也在内。agent 仍能读工作空间里任何文件（包括 `conf/config.toml` 里的 api_key），**这块没被 HITL 覆盖** |
 | 目录选择靠系统原生弹窗 | 后端不提供「列目录」接口——那等于把文件系统目录树开放成 HTTP 接口。该端点会阻塞到用户选完，后端仍只监听 `127.0.0.1` |
 
 **恢复挂起的运行还有两个硬约束**：请求体要带同一个 `context.permissions`；`command.resume.decisions` 的个数必须和挂起时的
@@ -2343,7 +2357,7 @@ curl -N -X POST "http://127.0.0.1:2024/threads/$TID/runs/stream" \
 {"__interrupt__": [{"value": {"action_requests": [{"name": "execute",
   "args": {"command": "echo hello"}, "description": "..."}],
   "review_configs": [{"action_name": "execute",
-                       "allowed_decisions": ["approve", "reject"]}]}}]}
+                       "allowed_decisions": ["approve", "edit", "reject"]}]}}]}
 ```
 
 恢复：
@@ -2908,7 +2922,7 @@ pgrep -f "langgraph_cli dev"        # 应该没有输出
 - `artifacts_root` **必须留在工作空间里**：工具消息让 agent `read_file` 那个路径，
   出了 `virtual_mode` 的边界就读不回来，eviction 会退化成「存了但读不到」。
 - 产物路径是**虚拟路径**（以 `/` 开头，相对工作空间根），不是宿主绝对路径。
-  宿主绝对路径会走 `graph/backend.py` 的 `_workspace_relative()` 剥前缀。
+  宿主绝对路径会走 `graph/backend.py` 的 `_WorkspaceCwdMixin._resolve_path()` 剥前缀。
 
 ### 8.11 用户级记忆与记忆面板（017 期）
 
@@ -3195,7 +3209,8 @@ permissions with backends that provide command execution`**
 `description` 写得不够具体。主 agent 是靠 `description` 判断该派给谁的。
 
 **子 agent 写文件没落磁盘**
-如果该子 agent 声明了 `permissions`，它用的是 `FilesystemBackend(root_dir=工作空间)`，
+如果该子 agent 声明了 `permissions`，它用的是
+`CompositeBackend(default=WorkspaceFilesBackend(root_dir=工作空间))`（无路由、无 shell），
 文件操作**仍然落真实磁盘**；只是没有 `execute` 工具。没声明 permissions 的子 agent
 拿的是主 agent 那套带 shell 的 backend。
 

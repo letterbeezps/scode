@@ -132,9 +132,9 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
     backend 要包一层无路由的 CompositeBackend，**别改回裸 `FilesystemBackend`**；② **产物路径必须留在工作空间里**。*→ §8.10*
 
 19. **长期记忆分两个作用域**（项目级 `<工作空间>/.scode-memory.md`、用户级 `~/.scode/memory.md`）。**写记忆要走人工确认**
-    （`normal` 和 `manual` 档）——**写记忆是唯一一条"影响未来所有会话"的写路径**，代码写错当场能改，记忆写错会一直影响后面每个
-    会话，且没人知道它什么时候写错的；判据只看路径、**纯字符串不碰 FS**（`graph/permissions.py` 的 `is_memory_path()`）。
-    *→ §8.11*
+    （`normal` 和 `manual` 档）——**写记忆是唯一被 HITL 拦下的"影响未来所有会话"的写路径**，代码写错当场能改，记忆写错会一直影响
+    后面每个会话，且没人知道它什么时候写错的；判据只看路径、**纯字符串不碰 FS**（`graph/permissions.py` 的 `is_memory_path()`）。
+    ⚠️ **全局 skill 目录同样"影响未来所有会话"，但没被拦**——见 Security 一节。*→ §8.11*
 
 20. **skill 分两个作用域**（全局 `~/.scode/.agents/skills/`、项目级 `<工作空间>/.agents/skills/`——目录名是 `.agents` 不是
     `.skills`）。① **全局静态、项目级不是**（工作空间是运行期参数，项目级源**不能**是常量）；② **别传
@@ -179,7 +179,9 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
   `message`，不叫 `feedback`**
 - **工作空间不要包含后端仓库**。推荐 `SCODE_WORKSPACE=/path/to/project` 指向单独目录
 - **MCP 是一个新的执行/注入面**。**只配信任的服务器**；`conf/mcp.json` 不入库，仓库只提供 `conf/mcp.example.json`
-- **文件工具有两条工作空间之外的路径**：`/user-memory/`（`~/.scode/`，**可写**）和 `/user-skills/`（`~/.scode/.agents/skills/`，
-  **只读**）。agent 仍能读工作空间里任何文件（包括 `conf/config.toml` 里的 api_key），**这块没被 HITL 覆盖**
+- **文件工具有两条工作空间之外的路径**：`/user-memory/`（`~/.scode/`，**可写**）和 `/user-skills/`（`~/.scode/.agents/skills/`）。
+  **两条都能写**——`/user-skills/` 本来的意图是只读入口，但 `FilesystemBackend` 没有只读开关；`/user-memory/` 又指向整个 `~/.scode/`，
+  连 `.agents/skills/` 也在内。这两条**都不在 `is_memory_path()` 的判定里**，不受 HITL 覆盖。agent 仍能读工作空间里任何文件
+  （包括 `conf/config.toml` 里的 api_key），**这块也没被 HITL 覆盖**
 - **目录选择靠系统原生弹窗**（`POST /workspaces/pick`），后端不提供「列目录」接口。该端点会阻塞到用户选完，后端仍只监听
   `127.0.0.1`

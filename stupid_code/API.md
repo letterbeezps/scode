@@ -21,6 +21,7 @@
 | 前端 | POST | [`/threads/{id}/runs/stream`](#post-threadsthread_idrunsstream) | 流式运行 / 恢复挂起的运行 | ✅ |
 | 前端 | GET | `/threads/{id}/runs/{runId}/stream` | 断线后接回正在运行的事件流 | ✅ |
 | 前端 | POST | [`/threads/{id}/runs/{runId}/cancel`](#post-threadsthread_idrunsrun_idcancel) | 停止运行 | ✅ |
+| 前端 | GET | [`/threads/{id}/runs`](#get-threadsthread_idruns) | 列出会话的 run（刷新后找回正在跑的那个） | ✅ |
 | 前端 | POST | [`/workspaces/pick`](#post-workspacespick) | 弹系统文件浏览窗口选工作空间 | ✅（014 起） |
 | 管理端 | GET | [`/admin/models`](#get-adminmodels) | 列出全部模型 | ✅（003 起） |
 | 管理端 | GET | [`/admin/models/{id}`](#get-adminmodelsid) | 单个模型详情 | ✅（003 起） |
@@ -302,7 +303,7 @@ Accept: text/event-stream
 | `error` | `{"message": "..."}` | 运行出错 |
 | `end` | — | 运行结束 |
 
-> 前端的 [events.ts](file:///Users/1token/Desktop/project/stupid-code/web/src/api/events.ts) 同时兼容 LangGraph 原生事件（`updates`/`values`）和自定义语义事件（`messages`/`tool_call`/`tool_result`/`todos`），001 期只依赖原生 `updates`。
+> 前端的 [events.ts](../web/src/api/events.ts) 同时兼容 LangGraph 原生事件（`updates`/`values`）和自定义语义事件（`messages`/`tool_call`/`tool_result`/`todos`），001 期只依赖原生 `updates`。
 
 ### 恢复一次挂起的运行（009 期）
 
@@ -376,6 +377,24 @@ Accept: text/event-stream
 - 只推送**接上之后**产生的事件；断线前已经产出的内容不会补发
 - 补齐历史要用 `GET /threads/{thread_id}/state` 的 `values.messages`
 - 接回的流同样可能收到 `__interrupt__`，前端据此恢复审批卡片
+
+### `GET /threads/{thread_id}/runs`
+
+列出某个会话的 run（前端 `listRuns`）。
+
+```http
+GET /threads/{thread_id}/runs?limit=20
+```
+
+**响应 `200`**：run 数组。
+
+- **用途**：页面刷新后本地没有 `run_id`，只能从这里找**还在跑**的那个 run，
+  再决定是接回事件流还是提示用户——前端 `recovering` 状态的来源。
+- 前端取 `limit=20`，按 `created_at` 倒序，然后取第一个 `status` 是
+  `pending` / `running` 的。
+- 认得的 `status`：`pending` / `running` / `error` / `success` / `timeout` /
+  `interrupted`；其余值直接丢弃，不进列表。
+- **mock 模式不覆盖这个端点**（`listRuns` 在 mock 下直接返回空数组）。
 
 ---
 
@@ -783,7 +802,7 @@ agent 能用的 skill 有**两个来源**（见 `stupid_code/graph/skills.py`）
 ## 备注
 
 - 本文档仅列**已被代码调用**的端点，完整 LangGraph Platform API 见官方文档。
-- 端点参数与响应以 [web/src/api](file:///Users/1token/Desktop/project/stupid-code/web/src/api) 和 [admin/models.py](file:///Users/1token/Desktop/project/stupid-code/stupid_code/admin/models.py) 中的实际调用为准。
+- 端点参数与响应以 [web/src/api](../web/src/api) 和 [admin/models.py](admin/models.py) 中的实际调用为准。
 
 ---
 

@@ -68,7 +68,7 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 | [launcher.py](launcher.py) | 工作空间（`SCODE_WORKSPACE` 或当前目录，工作空间在仓库根时警告）、生成临时派生配置、就绪探测、生命周期管理（`.langgraph_api` 保留不清理） |
 | **图与持久化**（`graph/`） | |
 | [graph/agent.py](graph/agent.py) | `code_agent` 图：`create_deep_agent()`，导出 `graph` |
-| [graph/backend.py](graph/backend.py) | 真实 backend：`CompositeBackend(default=LocalShellBackend)`（真实磁盘 + 本机 shell；两条虚拟路由 `/user-memory/`（可写）和 `/user-skills/`（只读）指向工作空间之外，其余路径都落在工作空间内；`artifacts_root="/.scode"` 把 agent 自己的产物收进一个隐藏目录）；只负责构建 backend，不处理子 agent 策略 |
+| [graph/backend.py](graph/backend.py) | 真实 backend：`CompositeBackend(default=LocalShellBackend)`（真实磁盘 + 本机 shell；两条虚拟路由 `/user-memory/` 和 `/user-skills/` 指向工作空间之外——**两条都可写，没有只读保护**；其余路径都落在工作空间内；`artifacts_root="/.scode"` 把 agent 自己的产物收进一个隐藏目录）；只负责构建 backend，不处理子 agent 策略 |
 | [graph/subagent_policy.py](graph/subagent_policy.py) | 子 agent 策略：合并父级 `interrupt_on`、给声明了 `permissions` 的子 agent 换无 shell backend、不继承 MCP 工具、把 `mode="interrupt"` 翻译成 `interrupt_on` |
 | [graph/workspace.py](graph/workspace.py) | 工作空间：解析 `context.workspace`；每轮开跑前校验（线程里）并刷新缓存；`WorkspaceMiddleware` 把绝对路径写进系统提示词 |
 | [graph/run_context.py](graph/run_context.py) | 一次 run 的结构化上下文：`workspace` / `permissions` / `model` / `skills`（`context_schema`）；平台按它过滤 context，中间件读 `runtime.context` |

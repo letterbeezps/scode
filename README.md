@@ -157,7 +157,7 @@ result = agent.invoke({"messages": "Research LangGraph and write a summary"})
 `deepagents` 是 **"trust the LLM"** 模型：agent 的能力上限就是你给它的工具权限，它**不会自我约束**。一个 code agent 天然带着 shell 执行和文件写入权限，所以边界要在**工具层 / 沙箱层**强制执行。跑在真实仓库里之前，先在容器或一次性沙箱里试。
 
 - **只监听 `127.0.0.1`** —— 别改成 `0.0.0.0`
-- **工作空间之外只有两条路径** —— `/user-memory/`（`~/.scode/`，可写）和 `/user-skills/`（`~/.scode/.agents/skills/`，只读）
+- **工作空间之外只有两条路径** —— `/user-memory/`（`~/.scode/`，可写）和 `/user-skills/`（`~/.scode/.agents/skills/`，设计上只读、实际没有写保护）
 
 完整的安全姿态和已知缺口 → [`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md) §5
 
