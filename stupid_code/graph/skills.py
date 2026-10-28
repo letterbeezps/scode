@@ -2,7 +2,7 @@
 `<工作空间>/.agents/skills/`。
 
 项目级源用虚拟路径 `/.agents/skills/`，跟着运行期工作空间走；用户勾选的
-skill 由 `configurable.skills` 送来，正文钉进上下文。换工作空间或换勾选时
+skill 由 `context.skills` 送来，正文钉进上下文。换工作空间或换勾选时
 摘掉 `skills_metadata` 强制重读。
 
 细节见 `docs/backend/PROGRESS.md` 018 期、AGENTS.md 第 20 条。
@@ -17,13 +17,8 @@ from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.runnables import RunnableConfig
 
 from stupid_code.graph.paths import GLOBAL_SKILLS_ROUTE
-from stupid_code.graph.workspace import configurable_of, workspace_of
-
-SKILLS_KEY = "skills"
-"""`configurable` 里的 key：本次对话勾选的 skill 名字列表。
-
-跟 `web/src/store/taskStore.ts` 的 `TaskSettings.skills` 对应。
-"""
+from stupid_code.graph.run_context import run_context_of
+from stupid_code.graph.workspace import workspace_of
 
 GLOBAL_SKILLS_LABEL = "全局"
 PROJECT_SKILLS_LABEL = "项目"
@@ -71,14 +66,13 @@ def skill_sources() -> tuple[tuple[str, str], ...]:
     return (*GLOBAL_SKILL_SOURCES, (PROJECT_SKILLS_SOURCE, PROJECT_SKILLS_LABEL))
 
 
-def selected_skills(config: RunnableConfig | None) -> list[str]:
-    """本次对话勾选了哪些 skill（`configurable["skills"]`）。
+def selected_skills(runtime: Any) -> list[str]:
+    """本次 run 勾选了哪些 skill（`context.skills`）。
 
     去重、去掉空串、保持前端给的顺序。名字对不上已加载的 skill 时，框架
     的 pin 逻辑会跳过它（不报错）。
     """
-    configurable = configurable_of(config)
-    raw = configurable.get(SKILLS_KEY) if configurable else None
+    raw = run_context_of(runtime).skills
     if not isinstance(raw, list):
         return []
     out: list[str] = []
@@ -208,7 +202,7 @@ class WorkspaceSkillsMiddleware(SkillsMiddleware):
         config: RunnableConfig,
     ) -> dict[str, Any] | None:
         """同步路径：读 skill（换工作空间或换选择就重读），并钉住勾选的。"""
-        prepared, workspace, selected = self._prepare_before(state, config)
+        prepared, workspace, selected = self._prepare_before(state, runtime)
         update = super().before_agent(prepared, runtime, config)
         return self._finish(update, workspace, selected)
 
@@ -219,18 +213,18 @@ class WorkspaceSkillsMiddleware(SkillsMiddleware):
         config: RunnableConfig,
     ) -> dict[str, Any] | None:
         """异步路径：同上；框架自己的目录扫描走 backend 的异步接口。"""
-        prepared, workspace, selected = self._prepare_before(state, config)
+        prepared, workspace, selected = self._prepare_before(state, runtime)
         update = await super().abefore_agent(prepared, runtime, config)
         return self._finish(update, workspace, selected)
 
     def _prepare_before(
         self,
         state: Any,
-        config: RunnableConfig,
+        runtime: Any,
     ) -> tuple[Any, str, list[str]]:
         """算出本轮工作空间和勾选，并在需要时摘掉旧 skill 列表。"""
-        workspace = str(workspace_of(config))
-        selected = selected_skills(config)
+        workspace = str(workspace_of(runtime))
+        selected = selected_skills(runtime)
         return self._state_for_reload(state, workspace, selected), workspace, selected
 
     # ---------------------------------------------------------------- 内部

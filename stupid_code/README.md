@@ -21,8 +21,8 @@ uv run --project /path/to/stupid-code scode
 
 1. **工作空间默认 = 当前目录**：langgraph 子进程的 cwd 就是你运行 scode 的目录，
    agent 的 shell / 文件工具以它为根（backend 是真实磁盘 + 本机 shell，见
-   [graph/backend.py](graph/backend.py)）。前端选的工作空间通过
-   `configurable.workspace` 按消息生效，会覆盖这个默认值（见
+   [graph/backend.py](graph/backend.py)）。前端选的工作空间通过 run 的
+   `context.workspace` 按消息生效，会覆盖这个默认值（见
    [graph/workspace.py](graph/workspace.py)）；
 2. **`.langgraph_api/` 保留不动**：langgraph inmem 运行时必然在 cwd 下生成它
    （路径硬编码，无法配置改位）。里面的 `.langgraph_ops.pckl` 是 **thread 索引**——
@@ -70,10 +70,11 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 | [graph/agent.py](graph/agent.py) | `code_agent` 图：`create_deep_agent()`，导出 `graph` |
 | [graph/backend.py](graph/backend.py) | 真实 backend：`CompositeBackend(default=LocalShellBackend)`（真实磁盘 + 本机 shell；两条虚拟路由 `/user-memory/`（可写）和 `/user-skills/`（只读）指向工作空间之外，其余路径都落在工作空间内；`artifacts_root="/.scode"` 把 agent 自己的产物收进一个隐藏目录）；只负责构建 backend，不处理子 agent 策略 |
 | [graph/subagent_policy.py](graph/subagent_policy.py) | 子 agent 策略：合并父级 `interrupt_on`、给声明了 `permissions` 的子 agent 换无 shell backend、不继承 MCP 工具、把 `mode="interrupt"` 翻译成 `interrupt_on` |
-| [graph/workspace.py](graph/workspace.py) | 工作空间：解析 `configurable.workspace`；每轮开跑前校验（线程里）并刷新缓存；`WorkspaceMiddleware` 把绝对路径写进系统提示词 |
+| [graph/workspace.py](graph/workspace.py) | 工作空间：解析 `context.workspace`；每轮开跑前校验（线程里）并刷新缓存；`WorkspaceMiddleware` 把绝对路径写进系统提示词 |
+| [graph/run_context.py](graph/run_context.py) | 一次 run 的结构化上下文：`workspace` / `permissions` / `model` / `skills`（`context_schema`）；平台按它过滤 context，中间件读 `runtime.context` |
 | [graph/memory.py](graph/memory.py) | 长期记忆：读**项目级**（工作空间根的 `.scode-memory.md`）和**用户级**（`~/.scode/memory.md`）两份，**不自动创建**（没记忆就当空的），装成 `MemoryMiddleware` 挂进 `middleware=` |
 | [graph/paths.py](graph/paths.py) | 路径落点的单一事实源：用户级目录（`$SCODE_HOME`）、记忆文件名与虚拟路径、`/user-memory/` 和 `/user-skills/` 路由前缀 |
-| [graph/skills.py](graph/skills.py) | skill：两个来源（**全局** `~/.scode/.agents/skills/` 是静态常量、**项目级** `<工作空间>/.agents/skills/` 走运行期虚拟路径）；用户勾选的 skill 由 `configurable.skills` 送来，正文钉进上下文；换工作空间或换勾选都重读 |
+| [graph/skills.py](graph/skills.py) | skill：两个来源（**全局** `~/.scode/.agents/skills/` 是静态常量、**项目级** `<工作空间>/.agents/skills/` 走运行期虚拟路径）；用户勾选的 skill 由 `context.skills` 送来，正文钉进上下文；换工作空间或换勾选都重读 |
 | [graph/compaction.py](graph/compaction.py) | `/compaction` 手动压缩历史 + 摘要用当前选中的模型；`.name` 报成框架自带那份的公开别名，顶掉而不是叠加 |
 | [graph/model_switch.py](graph/model_switch.py) | 运行期切换对话模型：中间件在每次模型调用前把 `request.model` 换成用户选中的那个 |
 | [graph/mcp.py](graph/mcp.py) | MCP 工具加载：按 `conf/mcp.json` 连服务器取工具（并行 + 总预算限时）、加 `mcp__{服务器}__{工具}` 前缀、检测重名；**每个服务器一条长会话**（专用 MCP 线程 + worker 队列，同服务器调用串行，失败自动重连）；用 adapter 的 `tool_interceptors` 兜传输层失败并在调用期重试一次。协议本身交给 `langchain-mcp-adapters` / 官方 `mcp` SDK |
@@ -133,7 +134,7 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 > 的**（不依赖工作空间，可以写死成常量），**项目级不是**（工作空间是运行期参数，
 > 每轮现算——它用虚拟路径 `/.agents/skills/` 实现，由主 backend 的运行期根目录
 > 解析）。用户在输入框敲 `/` 勾选的 skill，正文会被**钉进对话上下文**
-> （`configurable.skills` 传过来）；没勾的也在系统提示词的列表里，agent 觉得相关
+> （`context.skills` 传过来）；没勾的也在系统提示词的列表里，agent 觉得相关
 > 会自己 `read_file` 加载。全局 skill 走主 backend 的 `/user-skills/` 路由，
 > agent 能用 `read_file("/user-skills/<名字>/SKILL.md", ...)` 读全文。
 > 前端用 `GET /admin/skills` 拿清单。详见
@@ -161,12 +162,12 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 - **同一工作空间内记忆只在会话开始时读一次**：改了 `.scode-memory.md` 要开新会话（新建 thread）才生效；**换工作空间会重新读**（`WorkspaceMemoryMiddleware` 记着上次的工作空间）。
 - **backend 是真实磁盘 + 本机 shell**（`graph/backend.py`）。agent 能读工作空间里的任何文件
   （包括 `conf/config.toml` 里的 api_key），`execute` 能跑任意命令——所以**执行命令前有人工确认**
-  （`graph/permissions.py`，009 期）：按 `configurable.permissions` 的档位决定拦不拦
+  （`graph/permissions.py`，009 期）：按 `context.permissions` 的档位决定拦不拦
   （`auto` 全放行 / `manual` 每条都问 / `normal` 只问命中危险模式的），拦下时图挂起等前端决定。
   拦的是 `execute` 和 `delete`（`delete` 删目录是递归的、跟 `rm -rf` 等价，只在
   `manual` 档拦）；**write_file / edit_file 不拦**——那是 code agent 的日常。
 - **恢复挂起的运行建议原样带回档位**：`command.resume` 的请求体带上同一个
-  `configurable.permissions`（015 期起后端判定读的是**图状态里记的档位**，客户端回传
+  `context.permissions`（015 期起后端判定读的是**图状态里记的档位**，客户端回传
   错了也不改结论；但原样带回能保证恢复这一轮跟发起那一轮看到的是同一套配置）。
   `decisions` 的个数必须和挂起时的 `action_requests` 一样多，
   否则框架直接抛 `Number of human decisions (N) does not match number of hanging tool calls (M)`。

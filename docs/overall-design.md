@@ -180,19 +180,20 @@ langgraph up
 
 ### 3.3 前端调用约定的参数传递
 
-前端通过 `config.configurable` 传递任务参数，后端在图入口处读取：
+前端通过 run 的 `context` 传递任务参数（后端用 `context_schema=RunContext` 声明结构），在图入口处读取：
 
-| configurable key | 取值 | 含义 |
+| context 字段 | 取值 | 含义 |
 |---|---|---|
 | `workspace` | 绝对路径字符串，空字符串表示未选择 | 工作空间根路径（§5.2） |
 | `permissions` | `'manual'` \| `'normal'` \| `'auto'` | 危险操作确认档位（§5.3） |
 | `model` | `'供应商名:模型名'`，空字符串表示未选择 | 运行期切换对话模型（010 期） |
 | `skills` | 字符串数组 | 本次对话勾选的 skill 名字（018 期） |
 
-> ⚠️ **命名冲突警告**：前端传的 `permissions`（确认档位）与 Deep Agents `create_deep_agent(permissions=...)` 参数（文件读写的路径 ACL 规则）**是两个完全不同的东西**，只是重名。后端代码里建议把档位变量命名为 `permission_level` 以免混淆，但对前端暴露的 configurable key 保持 `permissions` 不变（前端已硬编码）。
+> ⚠️ **命名冲突警告**：前端传的 `permissions`（确认档位）与 Deep Agents `create_deep_agent(permissions=...)` 参数（文件读写的路径 ACL 规则）**是两个完全不同的东西**，只是重名。后端代码里建议把档位变量命名为 `permission_level` 以免混淆，但对前端暴露的 context key 保持 `permissions` 不变（前端已硬编码）。
 
 > **`workspace` / `permissions` / `skills` 是任务级参数**（按 thread 存），`model` 是全局偏好。
 > **恢复挂起的运行时，这几个都要原样带回去**——后端在恢复时会重新读它们。
+> **`context` 和 `config.configurable` 不能同时非空**：同一请求两者并存会被 Agent Server 拒绝（400）。
 
 ---
 
@@ -321,16 +322,16 @@ interface Message {
 
 ### 5.2 工作空间隔离
 
-前端已实现工作空间选择器，并把绝对路径通过 `configurable.workspace` 传给后端。**014 期已落地**（见 `stupid_code/graph/workspace.py`）。
+前端已实现工作空间选择器，并把绝对路径通过 `context.workspace` 传给后端。**014 期已落地**（见 `stupid_code/graph/workspace.py`）。
 
 **实际做法**：
 
-- **根目录是运行期属性**：框架把 backend 的根目录存在 `self.cwd` 里，所有路径解析都从它出发。本项目把它做成 property，每次取值读当前运行的 `configurable.workspace`——同一张图能服务不同项目目录的对话（contextvar 天然按运行隔离）。
+- **根目录是运行期属性**：框架把 backend 的根目录存在 `self.cwd` 里，所有路径解析都从它出发。本项目把它做成 property，每次取值读当前运行的工作空间（工具热路径读平台镜像的 `configurable.workspace`）——同一张图能服务不同项目目录的对话。
 - **文件工具的路径由框架自己兜住**：`virtual_mode=True` 时 `FilesystemBackend._resolve_path` 会 `resolve()` 展开软链再校验是否落在根目录内，`..` / `~` / 越界绝对路径都进不来。
 - **workspace 自己也 realpath**：否则软链目录会失效（macOS 上 `/tmp` → `/private/tmp`，不解析的话框架的越界检查会误判）。
 - **工作空间路径不会被路由吃掉**：路由按虚拟前缀匹配，`/user-memory/` 和 `/user-skills/` 在磁盘上并不存在，宿主绝对路径不会撞上它们；工作空间自己的绝对路径由 `_resolve_path` 剥掉前缀后按虚拟路径处理。
 - **每轮运行开跑前重新校验**：存在性 / 目录类型 / 软链解析都在 `before_agent` 里重做（放线程），结果刷进缓存供热路径读取——只缓存首次结果的话，目录被删掉后校验会永远命中缓存、形同虚设。
-- **一次 run 内锁定**：`configurable` 是运行级参数，一轮对话中途改不了。
+- **一次 run 内锁定**：`context` 是运行级参数，一轮对话中途改不了。
 - **空字符串 = 用后端默认工作空间**（`SCODE_WORKSPACE` 或启动时的 cwd），不是拒绝一切操作——原生跑法（`cd project && uv run scode`）里用户没有前端可选。
 - **刷新页面后从 thread metadata 回填**：前端把 `workspace` / `permissions` 写进 thread 的 metadata，`loadThreads` / `selectThread` 时回填本地的任务参数；审批挂起期间选择器禁用，恢复时带回的就是发起 run 时的值。
 - **工作空间不合法 = 这一轮直接失败**（「工作空间不存在：xxx」），**不静默退回默认目录**——那等于把 agent 的写操作落到用户没选过的目录里。
@@ -341,7 +342,7 @@ interface Message {
 
 ### 5.3 危险操作确认机制
 
-前端已实现三档权限选择器，并把档位通过 `configurable.permissions` 传给后端：
+前端已实现三档权限选择器，并把档位通过 `context.permissions` 传给后端：
 
 | 档位 | 前端描述 | 期望语义 |
 |---|---|---|
@@ -611,7 +612,7 @@ stupid_code/prompts/
 - `[待核实]` `TodoListMiddleware` 是否在本项目锁定版本中仍为 opt-in —— 核实方式：查官方 changelog
 - `[待核实]` `per_call` 中断模式所需的 langchain 版本下限是否满足 —— 核实方式：查本项目锁定的 langchain 版本号
 - ~~`[待核实]` **shell 的人工确认**~~ —— **已核实并落地**（009 期）：后端按
-  `configurable.permissions` 的档位决定拦不拦，图挂起等前端批准/拒绝。
+  `context.permissions` 的档位决定拦不拦，图挂起等前端批准/拒绝。
   见 `docs/backend/PROGRESS.md` 的「009 · shell 的人工确认（HITL）」一节
 - `[待核实]` 重连 join 接口能否补齐错过的历史事件 —— 核实方式：P1 联调实测
 - `[待核实]` 各模型官方定价（用于 token → 成本换算）

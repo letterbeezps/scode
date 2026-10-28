@@ -16,6 +16,7 @@ from stupid_code.graph.model_switch import (
 )
 from stupid_code.graph.permissions import PermissionLevelMiddleware, build_interrupt_on
 from stupid_code.graph.repeated_calls import RepeatedCallMiddleware
+from stupid_code.graph.run_context import RunContext
 from stupid_code.graph.skills import build_skills_middleware
 from stupid_code.graph.subagent_policy import apply_subagent_policies
 from stupid_code.graph.workspace import WorkspaceMiddleware
@@ -24,7 +25,7 @@ from stupid_code.graph.workspace import WorkspaceMiddleware
 backend = build_backend()
 
 # 启动时带的默认模型。运行期切换见 graph/model_switch.py：
-# 前端把选中的模型 id 放进 configurable，中间件在每次模型调用前换掉
+# 前端把选中的模型 id 放进 run 的 context，中间件在每次模型调用前换掉
 # request.model —— 不需要重启后端。
 default_model = load_model()
 
@@ -60,6 +61,9 @@ graph = create_deep_agent(
     # 服务器连不上只少它那几个工具，不会让后端起不来。见 graph/mcp.py
     tools=mcp_tools,
     backend=backend,
+    # 每次 run 的任务参数（workspace / permissions / model / skills）走结构化
+    # context，不再从 configurable 字典里按字符串键取。见 graph/run_context.py
+    context_schema=RunContext,
     # skill 源：**全局**的那份是静态的（`GLOBAL_SKILL_SOURCES`）——它不依赖
     # 工作空间，可以写死。项目级的那份不行（工作空间是运行期参数），由
     # 下面的 build_skills_middleware() 每轮现算。

@@ -1,6 +1,6 @@
 """危险操作的人工确认（HITL）。
 
-`configurable.permissions` 三档：`auto` 全放行、`normal` 只拦危险模式、
+`context.permissions` 三档：`auto` 全放行、`normal` 只拦危险模式、
 `manual` 每条 `execute` / `delete` 都问；写记忆文件和非只读 MCP 工具在
 `manual` 下也拦。档位在开跑前记进图状态，恢复时 `when` 谓词重跑也不会被
 客户端改值带偏。
@@ -30,10 +30,8 @@ from stupid_code.graph.paths import (
     USER_MEMORY_SOURCE,
     user_memory_path,
 )
-from stupid_code.graph.workspace import WorkspaceError, configurable_of, current_workspace
-
-PERMISSIONS_KEY = "permissions"
-"""`configurable` 里的 key，与前端 `web/src/lib/permissions.ts` 的 PERMISSIONS_KEY 一致。"""
+from stupid_code.graph.run_context import run_context_of
+from stupid_code.graph.workspace import WorkspaceError, current_workspace
 
 DEFAULT_PERMISSION_LEVEL = "normal"
 """前端没传（或传了不认识的值）时的默认档位。"""
@@ -96,7 +94,8 @@ class PermissionLevelMiddleware(AgentMiddleware[Any, Any, Any]):
         config: RunnableConfig,
     ) -> dict[str, Any] | None:
         """同步路径：记下这一轮的档位。"""
-        return {PERMISSION_LEVEL_STATE_KEY: permission_level(configurable_of(config))}
+        level = permission_level(run_context_of(runtime).permissions)
+        return {PERMISSION_LEVEL_STATE_KEY: level}
 
     async def abefore_agent(
         self,
@@ -108,11 +107,8 @@ class PermissionLevelMiddleware(AgentMiddleware[Any, Any, Any]):
         return self.before_agent(state, runtime, config)
 
 
-def permission_level(configurable: dict[str, Any] | None) -> str:
-    """从运行的 configurable 里取权限档位，取不到就按默认档走。"""
-    if not isinstance(configurable, dict):
-        return DEFAULT_PERMISSION_LEVEL
-    raw = configurable.get(PERMISSIONS_KEY)
+def permission_level(raw: str | None) -> str:
+    """把 context 里的档位归一成合法值，不认识就按默认档走。"""
     if isinstance(raw, str) and raw in VALID_LEVELS:
         return raw
     return DEFAULT_PERMISSION_LEVEL
@@ -152,7 +148,7 @@ def _level_of(request: ToolCallRequest) -> str:
     recorded = state.get(PERMISSION_LEVEL_STATE_KEY)
     if isinstance(recorded, str) and recorded in VALID_LEVELS:
         return recorded
-    return permission_level(request.runtime.config.get("configurable"))
+    return permission_level(run_context_of(request.runtime).permissions)
 
 
 def should_interrupt(request: ToolCallRequest) -> bool:

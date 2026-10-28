@@ -94,13 +94,13 @@
 - **工作空间选择器**（点按钮弹系统原生目录选择框；下拉里还有「最近用过的项目」
   和手动输入路径——014 期）→ `POST /workspaces/pick`
 - **权限档位选择器**（`manual` / `normal` / `auto`）+ **人工确认卡片**
-  （显示命令 + 为什么被拦，批准 / 拒绝 / 改后执行）→ `configurable.permissions`
+  （显示命令 + 为什么被拦，批准 / 拒绝 / 改后执行）→ `context.permissions`
   + `interrupt_on`（009/015 期）
 - **对话模型切换**（侧边栏下拉框，选中即生效，不用重启后端——010 期）
-  → `configurable.model`
+  → `context.model`
 - **斜杠命令菜单**（输入 `/` 弹列表，`/compaction` 手动压缩对话历史——011 期）
 - **skill 勾选**（同一个斜杠菜单里混排 skill，勾中的 `SKILL.md` 全文钉进上下文——018 期）
-  → `configurable.skills`
+  → `context.skills`
 - **记忆面板**（输入区「记忆」按钮，查看/编辑用户级 + 项目级两份记忆——017 期）
   → `GET`/`PUT /admin/memory`
 - 模型管理界面（直连 `/admin/models`）、会话列表 / 建会话 / 删会话 / 标题
@@ -1343,7 +1343,7 @@ curl -s -N -X POST "http://127.0.0.1:2024/threads/$TID/runs/stream" \
   -d '{"assistant_id":"code_agent",
        "input":{"messages":[{"role":"user","content":"用 MCP 的文档搜索工具查一下 create_deep_agent 是什么，一句话总结。"}]},
        "stream_mode":["updates"],"on_disconnect":"continue",
-       "config":{"configurable":{"workspace":"/abs/path","permissions":"auto"}}}'
+       "context":{"workspace":"/abs/path","permissions":"auto"}}}'
 ```
 
 在 SSE 的 `updates` 事件里应能看到 `mcp__docs-langchain__search_docs_by_lang_chain`
@@ -1985,6 +1985,96 @@ A/B 对比脚本（`/tmp/scode_backend_ab.py`）：把 `HEAD` 版 `backend.py` �
 - **`wrap_tool_call` 不生成图节点**：`get_graph().nodes` 里看不到它——它在 `tools` 节点内部
   生效。想确认它挂上了，要么看源码，要么跑一次真实调用看是否触发
 
+### 022 · 任务参数迁到 context_schema（2026-10-28）
+
+**目标**：`workspace` / `permissions` / `model` / `skills` 原来是无类型的
+`config.configurable` 字典；改成 `create_deep_agent(context_schema=RunContext)`，
+中间件直接读 `runtime.context` 的结构化字段。**行为不变**，收益是明确结构 +
+平台可见的 schema + 服务端按 schema 过滤。
+
+**改了这些**
+
+| 改了什么 | 在哪 |
+|---|---|
+| 新增 `RunContext`（dataclass）+ `run_context_of(runtime)`（兼容主 agent 的实例和 fork 子 agent 的 dict） | `graph/run_context.py` |
+| `create_deep_agent(..., context_schema=RunContext)` | `graph/agent.py` |
+| 前端普通运行 / HITL 恢复两处 payload：`config.configurable` → `context` | `web/src/api/run.ts` |
+| 工作空间从 `runtime.context` 读；校验、缓存兜底都不再依赖 `config` 参数 | `graph/workspace.py` |
+| 权限档位从 `runtime.context.permissions` 读；`permission_level()` 改成接收原始字符串 | `graph/permissions.py` |
+| skill 勾选从 `runtime.context.skills` 读 | `graph/skills.py` |
+| 记忆中间件的工作空间从 `runtime.context` 读 | `graph/memory.py` |
+| 模型切换读 `request.runtime.context.model`；摘要仍走 `configurable` 镜像 | `graph/model_switch.py` |
+
+**关键取舍**
+
+- **工具热路径仍读 `configurable`**：`current_workspace_paths()` 没有 Runtime 参数，
+  而 Agent Server 会把 run 的 `context` 复制进 `configurable`（`langgraph_api/models/run.py`）。
+  这份镜像让 backend 的 `cwd`、路径前缀剥离、HITL 的危险模式判定都能继续工作。
+  要彻底去掉镜像依赖，需要再加一层 ContextVar，本期不做。
+- **摘要模型也走镜像**：`CompactionMiddleware` 的 summarizer 拿不到 Runtime，
+  继续用 `selected_model_spec()` 从 `configurable` 取——平台镜像里有同一个值。
+- **用 dataclass，不用 pydantic**：平台只按 JSON Schema 过滤 key，不校验值；
+  `_coerce_context` 会把 dict 构造成 dataclass。字段类型由各模块自己兜底
+  （`isinstance` 检查），跟迁移前一致。
+- **schema 要列全**：context 里未声明的 key 会被平台丢掉，连镜像进 `configurable`
+  的对应值也会被移除。新增任务参数时必须同步改 `RunContext`。
+- **`context` 和 `config.configurable` 不能同时非空**：同一请求两者并存会 400。
+  `thread_id` 不在 context 里，仍由平台放在 `configurable` / URL 中。
+
+**请求进入 Agent Server 后发生了什么**
+
+这条链路解释了「为什么调用方不能同时传 `configurable` 和 `context`，但运行时两个都有」：
+
+1. **取调用方输入**：`config = payload.get("config") or {}`，
+   `context = payload.get("context") or {}`，
+   `configurable = config.setdefault("configurable", {})`。
+2. **校验**：`configurable` 和 `context` **都非空**就返回 400
+   （`Cannot specify both configurable and context...`）。这一步只看调用方传的
+   内容，平台自己的 key 还没写进去。
+3. **内部统一**（`langgraph_api/models/run.py`）：
+   - 只传 `context` → `configurable = context.copy()`，
+     `config["configurable"] = configurable`，并标记 `__context_provided__`；
+   - 只传 `configurable` → 沿用调用方的；
+   - 都没传 → 建一个空 `configurable`。
+4. **平台追加内部键**：`thread_id`（来自 URL）、鉴权用户、`run_id`、请求 id、
+   checkpoint 坐标等都会写进 `configurable`。这些内部键不会触发第 2 步的 400，
+   因为校验已经过了。
+5. **执行前处理**（`langgraph_api/stream.py`）：worker 摘掉 `__context_provided__`，
+   按 `context_schema` 过滤 `context`；如果调用方传的是 `context`，被过滤掉的
+   key 也会从镜像的 `configurable` 里删掉。
+6. **调图**：`graph.astream(input, config, context=context)`。所以图运行时
+   `config["configurable"]` 和 `Runtime.context` **同时存在**——前者是平台配置 +
+   镜像值，后者是 `RunContext` 实例。
+
+**验证（2026-10-28 对真实服务）**
+
+| 验证项 | 结果 |
+|---|---|
+| `GET /assistants/{id}/schemas` | 返回 `context_schema`，含 workspace / permissions / model / skills 四个属性 ✔ |
+| `context.workspace=/tmp/scode-ctx-ws` + 让 agent `read_file hello.txt` | 读到 `hello-from-workspace` ✔ |
+| `context.permissions=manual` + 让 agent `execute echo hi` | `__interrupt__` 出现，`action_requests` 里的工作目录是 `/private/tmp/scode-ctx-ws` ✔ |
+| 用 `context` 恢复并 approve | `echo hi` 真的执行，模型收到 `hi` ✔ |
+| `context.skills=["ctx-check"]` | 线程状态里出现该 `SKILL.md` 的固定标记 ✔ |
+| 同一请求带 `context` + `config.configurable` | `400 Cannot specify both configurable and context...` ✔ |
+| 单测：`run_context_of` 的 dict fallback、`selected_skills` 去重、`raw_workspace_of`、`permission_level`、`_select_model` | 全部通过 ✔ |
+
+`uv run langgraph validate --config stupid_code/langgraph.json` → `1 graph found`；
+`uv run python -c "import stupid_code.graph.agent"` → 图建起来；
+`pnpm build`（web）→ 通过；`git diff --check` → 无问题。
+
+**已验证的事实 / 踩坑**
+
+- **`GET /assistants/{id}` 里的 `context_schema` 是 `null` 不代表图没声明**：
+  那个字段是 assistant 自己的静态 context；图的 schema 要看
+  `GET /assistants/{id}/schemas`（`langgraph_api/api/assistants.py` 的 `get_schemas`）。
+- **平台会镜像 context → configurable**：run 创建时 `configurable = context.copy()`
+  （`models/run.py`）。旧读取路径能继续工作，但这是内部兼容逻辑；新代码优先
+  `runtime.context`。
+- **fork 子 agent 的图没有 context_schema**：`runtime.context` 可能是普通 dict，
+  所以 `run_context_of()` 同时兼容 `RunContext` 和 dict，拿不到就用全默认值。
+- **恢复不经过 `before_agent`**：`WorkspaceMiddleware.wrap_model_call` /
+  `awrap_model_call` 仍要从 `request.runtime` 读 context，补一次缓存兜底。
+
 ## 4. 关键机制速查
 
 ### 4.1 图的构建（`graph/agent.py`）
@@ -2004,6 +2094,8 @@ graph = create_deep_agent(
         for spec in load_subagents()
     ],
     backend=backend,
+    # 一次 run 的任务参数：workspace / permissions / model / skills
+    context_schema=RunContext,
     # 切换中间件放最前 → 在最终栈里比 prompt-caching / memory 更外层
     middleware=[
         ChatModelSwitchMiddleware(),
@@ -2036,9 +2128,17 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 提示词里**不写子 agent 名单**——名单由 deepagents 自动写进 `task` 工具的 description，
 再抄一份就是两份真相。想提高委派率，去改 `conf/subagents.toml` 里的 `description`。
 
-### 4.4 运行参数（`config.configurable`）
+### 4.4 运行参数（run 的 `context`）
 
-| key | 前端常量 | 语义 | 后端读取情况 |
+> **022 期起四个任务参数从 `config.configurable` 迁到 `context`。** 本文档更早的
+> 期数里写的 `configurable.workspace` / `.permissions` / `.model` / `.skills` 是当时的
+> 历史记录；当前契约以本节和 022 期为准。
+
+后端用 `create_deep_agent(context_schema=RunContext)` 声明结构
+（`stupid_code/graph/run_context.py`），Agent Server 按 schema 过滤 context，
+中间件通过 `runtime.context` 读字段。
+
+| 字段 | 前端常量 | 语义 | 后端读取情况 |
 |---|---|---|---|
 | `workspace` | `WORKSPACE_KEY` | 工作空间绝对路径 | ✅ 已实现（014 期，`graph/workspace.py`）：文件工具和 `execute` 的 cwd 都跟着它走 |
 | `permissions` | `PERMISSIONS_KEY` | 确认档位 manual/normal/auto | ✅ 已实现（`graph/permissions.py`） |
@@ -2051,10 +2151,21 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 `skills` 之所以也是任务级：项目级 skill 在**工作空间里**（`<工作空间>/.agents/skills/`），
 而工作空间是运行期参数——skill 选择不能建图时定死，只能每次运行带过去。
 
-`model` 是**全局偏好**（localStorage），每次运行都随请求带过去，所以刷新页面、
+`model` 是**全局偏好**（localStorage），但每次运行都随 context 带过去，所以刷新页面、
 后端重启都还在。**恢复挂起的运行时也要原样带回去**：恢复时后端同样按
-`configurable.model` 换模型，带空了就退回默认模型，跟批准前用的不是同一个模型。
+`context.model` 换模型，带空了就退回默认模型，跟批准前用的不是同一个模型。
 `skills` 同理——恢复那一轮不该跟批准前不是同一组 skill。
+
+**两条平台硬约束**：
+
+1. 同一请求里 `context` 和 `config.configurable` **不能同时非空**——两者并存会 400。
+   `thread_id` 不在 context 里，仍由平台放在 `configurable` / URL 中。
+2. context 会被 schema 过滤：schema 之外的 key 会被丢掉，连镜像进 `configurable`
+   的对应值也会被移除。新增任务参数时要同步改 `RunContext`。
+
+**工具热路径仍读 `configurable`**：`current_workspace_paths()` 没有 Runtime 参数，
+依赖平台把 context 镜像进 configurable（`langgraph_api/models/run.py`）。摘要模型
+（`compaction.py`）也走同一份镜像，见 `model_switch.py` 的 `selected_model_spec()`。
 
 ### 4.5 端点速查
 
@@ -2102,7 +2213,7 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 | 两条工作空间之外的路径 | `/user-memory/`（`~/.scode/`，**可写**）和 `/user-skills/`（`~/.scode/.agents/skills/`，**只读**）各覆盖一个目录。agent 仍能读工作空间里任何文件（包括 `conf/config.toml` 里的 api_key），**这块没被 HITL 覆盖** |
 | 目录选择靠系统原生弹窗 | 后端不提供「列目录」接口——那等于把文件系统目录树开放成 HTTP 接口。该端点会阻塞到用户选完，后端仍只监听 `127.0.0.1` |
 
-**恢复挂起的运行还有两个硬约束**：请求体要带同一个 `configurable.permissions`；`command.resume.decisions` 的个数必须和挂起时的
+**恢复挂起的运行还有两个硬约束**：请求体要带同一个 `context.permissions`；`command.resume.decisions` 的个数必须和挂起时的
 `action_requests` 一样多。**框架的 reject 理由字段叫 `message`，不叫 `feedback`**。
 
 ---
@@ -2127,7 +2238,7 @@ deepagents 0.7.28 **不再提供内置的基础提示词**：`BASE_AGENT_PROMPT`
 | 目录不存在时框架会打一条 warning 日志 | 后端日志里有 `Cannot load skills from '/.agents/skills/': path_not_found` | **提示词里已过滤掉**（不留噪音），但**日志里仍会出现**——框架自己打的，控制不了 |
 | skill 的 `SKILL.md` 正文没有长度上限 | 一个巨大的 `SKILL.md` 会整篇进上下文 | 框架只限制文件大小（10MB），不限注入长度；记忆那块有 8000 字上限，skill 这边没有 |
 | langgraph store 配了但没用上 | `langgraph.json` 里的 `store` 至今零调用，`data/langgraph.db` 的 `store` 表是空的 | 有意为之：记忆走文件（人能看、人能手改）；留着的 store 以后给别的用途 |
-| general-purpose 子 agent 的档位来自 `configurable` | 它是框架自动加的，我们没机会给它挂 `PermissionLevelMiddleware`（它的中间件继承靠 `.name` 匹配，我们那个名字不在它的默认栈里）。所以它 state 里没有档位记录，谓词退回读客户端回传的值 | 真实使用中没问题：前端恢复时原样带回发起那轮的档位（审批挂起期间选择器禁用）。客户端**不**原样带回就会翻转 |
+| general-purpose 子 agent 的档位来自 `runtime.context` | 它是框架自动加的，我们没机会给它挂 `PermissionLevelMiddleware`（它的中间件继承靠 `.name` 匹配，我们那个名字不在它的默认栈里）。所以它 state 里没有档位记录，谓词退回读 `runtime.context.permissions`（子图继承父图 context） | 真实使用中没问题：前端恢复时原样带回发起那轮的档位（审批挂起期间选择器禁用）。客户端**不**原样带回就会翻转 |
 | 记忆文件只增不减 | `edit_file` 追加，老的、错的条目一直躺在文件里（8000 字上限只管**注入**，不管磁盘上的文件） | 靠前端记忆面板手动清理 |
 | 切模型不换 harness profile | 系统提示词附加内容、工具描述改写、排除的工具都按启动时的模型定死 | 建图时决定的，跑起来改不了 |
 | 切模型不换摘要阈值 | 压缩历史的触发阈值按启动时模型的上下文窗口算 | 切到窗口更小的模型可能触发偏晚 |
@@ -2196,7 +2307,7 @@ curl -N -X POST "http://127.0.0.1:2024/threads/$TID/runs/stream" \
   -d '{"assistant_id":"code_agent",
        "input":{"messages":[{"role":"user","content":"请执行命令：echo hello"}]},
        "stream_mode":["updates"],
-       "config":{"configurable":{"permissions":"manual"}}}'
+       "context":{"permissions":"manual"}}'
 ```
 
 期望 SSE 里出现：
@@ -2216,14 +2327,14 @@ curl -N -X POST "http://127.0.0.1:2024/threads/$TID/runs/stream" \
   -d '{"assistant_id":"code_agent",
        "command":{"resume":{"decisions":[{"type":"approve"}]}},
        "stream_mode":["updates"],
-       "config":{"configurable":{"permissions":"manual"}}}'
+       "context":{"permissions":"manual"}}'
 ```
 
 ⚠️ 两个硬约束：
 
 - `decisions` 的个数**必须**和挂起时的 `action_requests` 一样多，否则框架抛
   `Number of human decisions (N) does not match number of hanging tool calls (M)`。
-- `configurable.permissions` **必须原样带回同一个档位**。
+- `configurable.permissions` **必须原样带回同一个档位**（022 期起是 `context.permissions`）。
 
 ### 步骤 5：切换对话模型
 
@@ -2234,21 +2345,21 @@ TID=$(curl -s -X POST http://127.0.0.1:2024/threads \
   -H 'Content-Type: application/json' -d '{}' \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["thread_id"])')
 
-# 不带 configurable.model → 用启动时的默认模型
+# 不带 context.model → 用启动时的默认模型
 curl -N -X POST "http://127.0.0.1:2024/threads/$TID/runs/stream" \
   -H 'Content-Type: application/json' \
   -d '{"assistant_id":"code_agent",
        "input":{"messages":[{"role":"user","content":"只回复两个字：收到"}]},
        "stream_mode":["updates"],
-       "config":{"configurable":{"permissions":"auto"}}}'
+       "context":{"permissions":"auto"}}'
 
-# 带 configurable.model → 换成选中的那个（id 格式 "供应商名:模型名"）
+# 带 context.model → 换成选中的那个（id 格式 "供应商名:模型名"）
 curl -N -X POST "http://127.0.0.1:2024/threads/$TID/runs/stream" \
   -H 'Content-Type: application/json' \
   -d '{"assistant_id":"code_agent",
        "input":{"messages":[{"role":"user","content":"只回复两个字：收到"}]},
        "stream_mode":["updates"],
-       "config":{"configurable":{"permissions":"auto","model":"minimax:MiniMax-M3.1-Flash"}}}'
+       "context":{"permissions":"auto","model":"minimax:MiniMax-M3.1-Flash"}}'
 ```
 
 看两次分别用了哪个模型——**不用猜**，消息里的 `response_metadata.model_name` 就是
@@ -2345,7 +2456,7 @@ curl -s -N -X POST "http://127.0.0.1:2024/threads/$TID/runs/stream" \
   -d '{"assistant_id":"code_agent",
        "input":{"messages":[{"role":"user","content":"用 MCP 的文档搜索工具查一下 create_deep_agent 是什么，一句话总结。"}]},
        "stream_mode":["updates"],"on_disconnect":"continue",
-       "config":{"configurable":{"workspace":"/abs/path","permissions":"auto"}}}'
+       "context":{"workspace":"/abs/path","permissions":"auto"}}}'
 ```
 
 在 SSE 的 `updates` 事件里应能看到 `mcp__docs-langchain__search_docs_by_lang_chain`
@@ -2843,7 +2954,7 @@ pgrep -f "langgraph_cli dev"        # 应该没有输出
 - **framework 自带的 general-purpose 子 agent 也继承顶层 `interrupt_on`**
   （deepagents `graph.py` 里 `_merge_fs_interrupt_on(fs, interrupt_on)`）✔
   ——但它**没有**我们的 `PermissionLevelMiddleware`（继承靠 `.name` 匹配，
-  我们那个名字不在它的默认栈里），所以它的档位来自 `configurable`，见已知缺口
+  我们那个名字不在它的默认栈里），所以它的档位来自 `runtime.context`，见已知缺口
 
 ### 8.12 skill（018 期）
 
@@ -2941,7 +3052,7 @@ pkill -f "langgraph_cli dev"
 
 **agent 的写操作落在别的目录**
 工作空间是**按消息**生效的：改选择器不影响已经跑完的那一轮，下一条消息才用
-新的。另外确认前端确实把 `configurable.workspace` 发过去了（工作空间为空 =
+新的。另外确认前端确实把 `context.workspace` 发过去了（工作空间为空 =
 用后端默认工作空间）。后端日志里可以看这一轮解析到的工作空间。
 
 刷新页面后前端会从 thread 的 `metadata.workspace` 回填；审批卡片挂着时两个

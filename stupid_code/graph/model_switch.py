@@ -1,6 +1,6 @@
 """运行期切换对话模型：不重启后端也能换供应商。
 
-前端每次运行在 `configurable["model"]` 里送 `供应商名:模型名`；中间件在每次模型
+前端每次运行在 `context.model` 里送 `供应商名:模型名`；中间件在每次模型
 调用前重新读 `conf/config.toml`，用 `request.override(model=...)` 换掉
 `request.model`。框架最终拿 `request.model.bind_tools(...)` 发请求，所以换的是
 真的。取不到就记 warning、退回启动时的默认模型；模型调用本身的错误不兜底。
@@ -25,19 +25,21 @@ from langchain_core.language_models import BaseChatModel
 from langgraph.config import get_config
 
 from stupid_code.config.model import build_model_by_spec, load_config
+from stupid_code.graph.run_context import run_context_of
 from stupid_code.graph.workspace import configurable_of
 
 logger = logging.getLogger(__name__)
 
 MODEL_KEY = "model"
-"""`configurable` 里的 key，与前端 web/src/lib/model.ts 的 MODEL_KEY 一致。"""
+"""`configurable` 里的 key；摘要路径拿不到 Runtime 时仍从这里读镜像值。"""
 
 
 def selected_model_spec() -> str | None:
     """取当前运行里用户选中的模型 id（`供应商名:模型名`）。
 
-    没选、取值不是字符串、或者不在 runnable 上下文里，都返回 None
-    （None 的意思是「不切换，按后端默认模型来」）。
+    只给**摘要**用：`CompactionMiddleware` 的 summarizer 拿不到 Runtime，
+    所以退回 `configurable`——Agent Server 会把 run 的 `context` 镜像进去。
+    中间件本身直接读 `request.runtime.context.model`，走 `_select_model()`。
     """
     try:
         configurable = configurable_of(get_config())
@@ -53,13 +55,13 @@ def selected_model_spec() -> str | None:
     return None
 
 
-def _select_model() -> BaseChatModel | None:
-    """按 `configurable["model"]` 建模型；没选或建不出来返回 None。
+def _select_model(spec: str | None) -> BaseChatModel | None:
+    """按模型 id 建模型；没选或建不出来返回 None。
 
     这是中间件与摘要共用的唯一解析入口。返回 None 的两种情况调用方处理不同：
     中间件据此决定「不覆盖 request.model」，摘要则退回默认模型。
     """
-    spec = selected_model_spec()
+    spec = spec.strip() if isinstance(spec, str) else ""
     if not spec:
         return None
     try:
@@ -77,7 +79,7 @@ def resolve_selected_model(default_model: BaseChatModel) -> BaseChatModel:
     一次模型调用**，走这里才能保证压缩历史时用的也是用户选中的供应商
     （见 graph/compaction.py）。
     """
-    model = _select_model()
+    model = _select_model(selected_model_spec())
     return default_model if model is None else model
 
 
@@ -116,10 +118,10 @@ class ChatModelSwitchMiddleware(AgentMiddleware[Any, Any, Any]):
 
     def _request_with_selected_model(self, request: ModelRequest[Any]) -> ModelRequest[Any]:
         """选中了可用模型就替换 request.model，否则原样返回。"""
-        model = self._model_for_request()
+        model = self._model_for_request(request.runtime)
         return request if model is None else request.override(model=model)
 
-    def _model_for_request(self) -> BaseChatModel | None:
+    def _model_for_request(self, runtime: Any) -> BaseChatModel | None:
         """这次模型调用该不该换模型。
 
         返回 None 表示「不切换」：禁用实例（fork 子 agent）、没选模型、或者选了
@@ -128,7 +130,7 @@ class ChatModelSwitchMiddleware(AgentMiddleware[Any, Any, Any]):
         """
         if not self._enabled:
             return None
-        return _select_model()
+        return _select_model(run_context_of(runtime).model)
 
 
 def apply_model_switch_policy(spec: dict[str, Any]) -> dict[str, Any]:

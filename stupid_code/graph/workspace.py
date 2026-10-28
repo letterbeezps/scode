@@ -1,10 +1,10 @@
 """工作空间：这一轮运行，agent 在哪个目录里干活。
 
-前端通过 `configurable["workspace"]` 传绝对路径；没传就用 `SCODE_WORKSPACE`
+前端通过 run 的 `context.workspace` 传绝对路径；没传就用 `SCODE_WORKSPACE`
 或后端启动目录。文件工具和 shell 的 cwd 都跟着它走。
 
 根目录不能在建图时定死：同一张图要服务不同项目的 thread，所以 backend 的
-`cwd` 是 property，背后是 contextvar。解析/校验要读文件系统，必须在线程里做；
+`cwd` 是 property。解析/校验要读文件系统，必须在线程里做；
 每轮 `before_agent` 重新校验并刷新缓存，HITL 恢复不经过 `before_agent`，
 所以模型调用前还要补一次缓存。
 
@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -25,10 +24,10 @@ from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_config
 
-logger = logging.getLogger(__name__)
+from stupid_code.graph.run_context import run_context_of
 
 WORKSPACE_KEY = "workspace"
-"""`configurable` 里的 key，与前端 web/src/lib/permissions.ts 的 WORKSPACE_KEY 一致。"""
+"""平台镜像进 `configurable` 的 key；工具热路径从那里读工作空间。"""
 
 
 class WorkspaceError(ValueError):  # noqa: N818 —— 名字是历史原因，别改，文档和前端都按它来
@@ -159,10 +158,11 @@ def resolve_workspace_path(raw: str) -> Path:
 
 
 def configurable_of(config: RunnableConfig | None) -> dict[str, Any] | None:
-    """从一份 runnable config 里取 `configurable` 字典（运行期任务级参数）。
+    """从一份 runnable config 里取 `configurable` 字典。
 
-    中间件的钩子拿得到 `config` 参数（框架按签名注入），比 `get_config()`
-    可靠——同步路径下钩子可能不在 runnable 上下文里，所以**优先用它**。
+    Agent Server 会把 run 的 `context` 镜像进这里（见 `current_workspace_paths`），
+    所以工具热路径和本地脚本仍能从 config 拿到任务参数。中间件优先读
+    `runtime.context`，只有拿不到 Runtime 的地方才用这个。
     拿不到（建图阶段、本地脚本）返回 None。
     """
     if not isinstance(config, dict):
@@ -184,13 +184,21 @@ def workspace_from_configurable(configurable: Any) -> str | None:
     return None
 
 
-def workspace_of(config: RunnableConfig | None) -> Path:
-    """从一份 runnable config 里解析工作空间。
+def raw_workspace_of(runtime: Any) -> str | None:
+    """`context.workspace` 的原始值；空串/非字符串表示前端没选。"""
+    raw = run_context_of(runtime).workspace
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
+def workspace_of(runtime: Any) -> Path:
+    """从一次 run 的 context 里解析工作空间。
 
     前端选了就用它（校验不通过就抛 WorkspaceError，不静默改道）；
     没选就用默认工作空间。
     """
-    raw = workspace_from_configurable(configurable_of(config))
+    raw = raw_workspace_of(runtime)
     if raw is None:
         return default_workspace()
     return resolve_workspace_path(raw)
@@ -220,6 +228,11 @@ def current_workspace_paths() -> WorkspacePaths:
     热路径用：每次工具调用都要拿根目录来剥绝对路径前缀。
     跟 `current_workspace()` 一样不读文件系统——解析结果由中间件在每轮开跑前
     校验并缓存好（见 `_validate_workspace`）。
+
+    **这里读 `configurable` 是平台的镜像**：Agent Server 会把 run 的 `context`
+    复制进 `configurable`（`langgraph_api/models/run.py`），所以工具热路径不用
+    拿 Runtime 也能看到同一个工作空间。本地直接调工具时没有 context，就按
+    默认工作空间走。
     """
     try:
         config = get_config()
@@ -239,14 +252,6 @@ def current_workspace_paths() -> WorkspacePaths:
     return root
 
 
-def _config_or_none() -> RunnableConfig | None:
-    """当前 runnable config；取不到（建图阶段 / 本地脚本）返回 None。"""
-    try:
-        return get_config()
-    except RuntimeError:
-        return None
-
-
 _WORKSPACE_PROMPT_TEMPLATE = """## 当前工作空间
 
 这一轮的工作空间是 `{workspace}`。
@@ -261,11 +266,6 @@ _WORKSPACE_PROMPT_TEMPLATE = """## 当前工作空间
 """写进系统提示词的工作空间说明。"""
 
 
-def _raw_workspace(config: RunnableConfig | None) -> str | None:
-    """从一份 runnable config 里取前端传的工作空间原始值。"""
-    return workspace_from_configurable(configurable_of(config))
-
-
 def _refresh_workspace(raw: str) -> Path:
     """重新校验一个工作空间并刷新缓存。**会读文件系统。**"""
     try:
@@ -278,23 +278,26 @@ def _refresh_workspace(raw: str) -> Path:
     return root.resolved
 
 
-def _validate_workspace(config: RunnableConfig | None) -> Path:
+def _validate_workspace(runtime: Any) -> Path:
     """开跑前校验工作空间（同步版）。**每轮都真的读文件系统。**
 
     前端没选就没什么好校验的，直接用默认工作空间。
     """
-    raw = _raw_workspace(config)
+    raw = raw_workspace_of(runtime)
     if raw is None:
         return default_workspace()
     return _refresh_workspace(raw)
 
 
-async def _avalidate_workspace(config: RunnableConfig | None) -> Path:
+async def _avalidate_workspace(runtime: Any) -> Path:
     """开跑前校验工作空间（异步版：文件系统操作走线程）。"""
-    return await asyncio.to_thread(_validate_workspace, config)
+    raw = raw_workspace_of(runtime)
+    if raw is None:
+        return default_workspace()
+    return await asyncio.to_thread(_refresh_workspace, raw)
 
 
-def ensure_workspace_cached(config: RunnableConfig | None) -> None:
+def ensure_workspace_cached(runtime: Any) -> None:
     """缓存未命中时解析一次；命中时什么都不做。
 
     正常运行的缓存由 `before_agent` 每轮刷新，这条兜底是给 **HITL 恢复**
@@ -302,7 +305,7 @@ def ensure_workspace_cached(config: RunnableConfig | None) -> None:
     第一次解析不能放在事件循环里（`Path.resolve()` 展开软链会触发
     blockbuster 的 BlockingError）。
     """
-    raw = _raw_workspace(config)
+    raw = raw_workspace_of(runtime)
     if raw is None or raw in _resolved_cache:
         return
     _refresh_workspace(raw)
@@ -323,8 +326,8 @@ class WorkspaceMiddleware(AgentMiddleware[Any, Any, Any]):
 
     **同步和异步两个钩子都要实现**：框架按「类有没有覆写 before_agent /
     abefore_agent」决定是否建这个节点，异步路径（langgraph dev 走的就是它）
-    只实现同步版会退化成在事件循环里跑同步函数。能拿到 `config` 参数时
-    优先用它——比 `get_config()` 可靠。
+    只实现同步版会退化成在事件循环里跑同步函数。工作空间从 `runtime.context`
+    读（结构化字段），不再从 `configurable` 字典里取。
 
     **异步路径必须把文件系统操作丢到线程里**：langgraph dev 装了 blockbuster，
     事件循环里直接读文件系统（`os.readlink` / `os.stat`）会抛 BlockingError，
@@ -342,7 +345,7 @@ class WorkspaceMiddleware(AgentMiddleware[Any, Any, Any]):
         config: RunnableConfig,
     ) -> dict[str, Any] | None:
         """开跑前校验工作空间。不合法就抛 WorkspaceError（面向用户）。"""
-        _validate_workspace(config)
+        _validate_workspace(runtime)
         return None
 
     async def abefore_agent(
@@ -352,7 +355,7 @@ class WorkspaceMiddleware(AgentMiddleware[Any, Any, Any]):
         config: RunnableConfig,
     ) -> dict[str, Any] | None:
         """异步路径：校验丢线程里（blockbuster 会拦事件循环里的同步 FS 调用）。"""
-        await _avalidate_workspace(config)
+        await _avalidate_workspace(runtime)
         return None
 
     def wrap_model_call(
@@ -361,7 +364,7 @@ class WorkspaceMiddleware(AgentMiddleware[Any, Any, Any]):
         handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
     ) -> ModelResponse[Any]:
         """同步路径：补齐缓存，把工作空间写进系统提示词再交给 handler。"""
-        ensure_workspace_cached(_config_or_none())
+        ensure_workspace_cached(request.runtime)
         return handler(self._with_workspace(request))
 
     async def awrap_model_call(
@@ -370,16 +373,15 @@ class WorkspaceMiddleware(AgentMiddleware[Any, Any, Any]):
         handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
     ) -> ModelResponse[Any]:
         """异步路径：缓存未命中时在线程里解析，再注入提示词。"""
-        config = _config_or_none()
-        raw = _raw_workspace(config)
+        raw = raw_workspace_of(request.runtime)
         if raw is not None and raw not in _resolved_cache:
-            await asyncio.to_thread(ensure_workspace_cached, config)
+            await asyncio.to_thread(_refresh_workspace, raw)
         return await handler(self._with_workspace(request))
 
     def _with_workspace(self, request: ModelRequest[Any]) -> ModelRequest[Any]:
         """在系统提示词后面追加一段工作空间说明。"""
         try:
-            workspace = current_workspace()
+            workspace = workspace_of(request.runtime)
         except WorkspaceError:
             # 工作空间不合法：校验钩子会报错，这里不重复制造异常
             return request

@@ -84,7 +84,10 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
 
 8. **`workspace` / `permissions` / `skills` 是任务级参数**，按 `threadId` 存而非全局：同任务内前后两条消息可能针对不同目录、
    不同 skill。另有 `draft` 副本，`createThread()` 时 `adoptDraft()` 固化并重置，否则两个任务的运行边界会串。**`model` 不是
-   任务级**——它是全局偏好（localStorage）。**恢复挂起的运行时，这些都要原样带回去。** *→ §4.4*
+   任务级**——它是全局偏好（localStorage），但每次 run 仍随请求走。四个参数都放在 run 的 **`context`** 里（后端
+   `graph/run_context.py` 的 `RunContext` 是 `context_schema`），**不再塞进 `configurable`**；同一请求不能同时带
+   `context` 和 `config.configurable`，`thread_id` 仍由平台放在 `configurable` / URL 里。**恢复挂起的运行时，这些都要原样带回去。**
+   *→ §4.4*
 
 9. **deepagents 0.7.x 不再提供内置系统提示词**。`create_deep_agent(system_prompt=...)` 传进去的**就是模型唯一看到的
    系统提示词**——别以为框架会垫底，行为准则要自己写全（`stupid_code/config/prompts.py`）。*→ §4.3*
@@ -100,8 +103,9 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
     **不接受 `permissions`**（shell 能绕过任何文件权限）。所以声明了 `permissions` 的子 agent 要换成无 shell 的 backend，且
     **不继承 MCP 工具**；改子 agent 配置时别把 `permissions` 塞回规格里。*→ 007 / 012*
 
-13. **切换对话模型靠中间件，不靠重建图**。① `ModelRequest.runtime` **没有 `.config` 属性**，取 `configurable` 用
-    `langgraph.config.get_config()`；② `middleware=` 里**越靠前越外层**，切换中间件要排在 prompt-caching / memory 之前；
+13. **切换对话模型靠中间件，不靠重建图**。① `ModelRequest.runtime` **没有 `.config` 属性**，但**有 `.context`**——切模型直接读
+    `request.runtime.context.model`；只有摘要路径（拿不到 Runtime）才用 `langgraph.config.get_config()` 读平台镜像的
+    `configurable`；② `middleware=` 里**越靠前越外层**，切换中间件要排在 prompt-caching / memory 之前；
     ③ 切换**只作用于主 agent**，`isolated` / `general-purpose` 子 agent 用各自配置里的模型——**别让子 agent 跟着切**。
     `mode="fork"` 的子 agent 会继承父级**全部 middleware**，所以 `agent.py` 用 `apply_model_switch_policy()` 往它的规格里塞一个同名但
     `enabled=False` 的切换中间件，顶掉继承来的那个；新增 fork 入口时别漏掉这一步。*→ 010 / §8.5*
@@ -170,7 +174,7 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
 - deepagents 是 "trust the LLM" 模型：agent **不会自我约束**，边界必须在工具层/沙箱层强制执行
 - 危险操作走人工确认（`HumanInTheLoopMiddleware` + checkpointer），**边界条件必须落盘持久化，不能重算**
 - **HITL 的判定判据记在图状态里，不读客户端回传的值**。**恢复挂起的运行有两个硬约束**：请求体带同一个
-  `configurable.permissions`；`command.resume.decisions` 个数必须和挂起时的 `action_requests` 一样多。**框架的 reject 理由字段叫
+  `context.permissions`；`command.resume.decisions` 个数必须和挂起时的 `action_requests` 一样多。**框架的 reject 理由字段叫
   `message`，不叫 `feedback`**
 - **工作空间不要包含后端仓库**。推荐 `SCODE_WORKSPACE=/path/to/project` 指向单独目录
 - **MCP 是一个新的执行/注入面**。**只配信任的服务器**；`conf/mcp.json` 不入库，仓库只提供 `conf/mcp.example.json`

@@ -293,7 +293,7 @@ thread 的 `metadata`（`PATCH /threads/{id}` 是合并语义，不会覆盖平�
 增删改走 `/admin/models` 一族端点，不再是写死的本地列表。
 
 下拉框里的「选中」**会真正生效**（010 期）：选中值写 `localStorage`，每次发消息时
-随 `configurable.model` 发给后端，后端在每次模型调用前把模型换成它——
+随 `context.model` 发给后端，后端在每次模型调用前把模型换成它——
 **不用重启后端**。模型是全局偏好，不按任务存（`workspace` / `permissions` 才是任务级）。
 
 选中值存在 `localStorage`，刷新页面、后端重启都还在。`defaultId` 是后端启动时带的
@@ -342,7 +342,7 @@ interface Message {
 | | 选中后发生什么 | 后端怎么认 |
 |---|---|---|
 | **命令**（`/compaction`） | 当普通消息发出去 | 按消息内容认（`/compaction` 的识别在后端 `stupid_code/graph/compaction.py` 的 `COMPACTION_COMMAND`，两边的字面量要一致） |
-| **skill**（`/<skill 名>`） | **不发送**，勾进本次对话 | 不走消息；勾选的名字随 `configurable.skills` 发过去 |
+| **skill**（`/<skill 名>`） | **不发送**，勾进本次对话 | 不走消息；勾选的名字随 `context.skills` 发过去 |
 
 命令表在 `web/src/lib/commands.ts`；skill 来自 `GET /admin/skills`，由
 `skillToMenuItem()` 转成同一种菜单项（`kind: 'skill'`，多带一个 `scope`）。
@@ -392,13 +392,11 @@ POST /threads/{thread_id}/runs/stream
   "input": { "messages": [{ "role": "user", "content": "..." }] },
   "stream_mode": ["updates"],
   "on_disconnect": "continue",
-  "config": {
-    "configurable": {
-      "workspace": "",              // 空字符串 = 不选工作空间
-      "permissions": "normal",
-      "model": "",                  // 空字符串 = 用后端默认模型
-      "skills": []                  // 本次对话勾选的 skill 名字（018 期）
-    }
+  "context": {
+    "workspace": "",              // 空字符串 = 不选工作空间
+    "permissions": "normal",
+    "model": "",                  // 空字符串 = 用后端默认模型
+    "skills": []                  // 本次对话勾选的 skill 名字（018 期）
   }
 }
 ```
@@ -406,9 +404,11 @@ POST /threads/{thread_id}/runs/stream
 `stream_mode` 只请求 `["updates"]` —— `values` 每次都回传全量状态，噪音大且没必要。
 `on_disconnect: "continue"` 让浏览器断开后后端继续跑完，避免半途中断留下脏状态。
 
-`config.configurable` 是任务参数的落点。后端在图入口读 `workspace` / `permissions` /
+`context` 是任务参数的落点，结构由后端 `graph/run_context.py` 的 `RunContext`
+（`context_schema`）声明。后端在图入口读 `workspace` / `permissions` /
 `model` / `skills`。**恢复挂起的运行时也要原样带回去**（`resumeRun` 同样带这几个值）——
-带空了就跟批准前用的不是同一套配置。
+带空了就跟批准前用的不是同一套配置。**不能和 `config.configurable` 同时出现**：
+同一请求里两者都非空会被 Agent Server 拒绝（400）。
 
 ### 6.3 SSE 解析
 

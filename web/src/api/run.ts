@@ -70,7 +70,7 @@ export function streamRun(
     // 浏览器断开后让后端继续跑完，避免半途中断留下脏状态
     on_disconnect: 'continue',
     /*
-     * 任务参数走 configurable，后端在图入口处读取：
+     * 任务参数走 context，后端用 context_schema（RunContext）声明结构：
      *   workspace   → 工作空间绝对路径；空字符串表示不限定，由后端决定
      *   permissions → 确认档位 manual / normal / auto
      *   model       → 选中的对话模型 id（`供应商名:模型名`）
@@ -85,13 +85,11 @@ export function streamRun(
      * 所以 skill 选择不能建图时定死，只能每次运行带过去
      * （见后端 graph/skills.py）。
      */
-    config: {
-      configurable: {
-        [WORKSPACE_KEY]: options.workspace,
-        [PERMISSIONS_KEY]: options.permissions,
-        [MODEL_KEY]: options.model,
-        [SKILLS_KEY]: options.skills,
-      },
+    context: {
+      [WORKSPACE_KEY]: options.workspace,
+      [PERMISSIONS_KEY]: options.permissions,
+      [MODEL_KEY]: options.model,
+      [SKILLS_KEY]: options.skills,
     },
   })
 
@@ -115,7 +113,7 @@ export function streamRun(
  * **档位必须原样带回去**：后端的拦截判定在恢复时会再跑一次，档位变了结论就
  * 可能变（批准后变成"这条命令要拦"，就永远批不掉了）。
  *
- * **模型也要原样带回去**：恢复时后端同样按 configurable 里的 model 换模型，
+ * **模型也要原样带回去**：恢复时后端同样按 context 里的 model 换模型，
  * 带空了就换成默认模型，跟批准前用的不是同一个模型。
  *
  * **勾选的 skill 也要原样带回去**：skill 是任务级参数，任务参数变了就等于
@@ -142,13 +140,11 @@ export function resumeRun(
     },
     stream_mode: ['updates'],
     on_disconnect: 'continue',
-    config: {
-      configurable: {
-        [WORKSPACE_KEY]: options.workspace,
-        [PERMISSIONS_KEY]: options.permissions,
-        [MODEL_KEY]: options.model,
-        [SKILLS_KEY]: options.skills,
-      },
+    context: {
+      [WORKSPACE_KEY]: options.workspace,
+      [PERMISSIONS_KEY]: options.permissions,
+      [MODEL_KEY]: options.model,
+      [SKILLS_KEY]: options.skills,
     },
   })
 
