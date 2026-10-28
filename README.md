@@ -347,6 +347,12 @@ docker compose up --build
 
 ---
 
+## 许可证
+
+[MIT](LICENSE) © 2026 letterbee
+
+---
+
 ## 安全
 
 `deepagents` 明确采用 **"trust the LLM"** 模型：agent 的能力上限就是你给它的工具权限，它**不会自我约束**。

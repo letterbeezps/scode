@@ -1,9 +1,11 @@
 [project]
 name = "stupid-code"
 version = "0.1.0"
-description = "Add your description here"
+description = "A learning-project code agent built on LangChain Deep Agents + LangGraph"
 readme = "README.md"
 requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     # server
     "deepagents>=0.7.28",
