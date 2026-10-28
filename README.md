@@ -1,4 +1,7 @@
-# stupid-code
+<h1 align="left">
+  <img src="assets/scode-logo.png" alt="scode logo" width="64" align="middle">
+  stupid-code
+</h1>
 
 一个基于 [LangChain Deep Agents](https://docs.langchain.com/oss/python/deepagents/overview) 的 **code agent** 学习项目。
 
