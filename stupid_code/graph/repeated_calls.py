@@ -7,7 +7,7 @@ HITL 拒绝和本中间件自己的拦截消息不计入。
 判定扫消息历史，不写图状态。`execute` 的非零退出码是 `status="success"`，
 不会被拦；它拦的是工具本身用不了（路径不存在、edit_file 对不上等）。
 
-细节和边界见 `docs/backend/PROGRESS.md` 021 期。
+细节和边界见 `docs/backend/backend.md` §3.16。
 """
 
 from __future__ import annotations

@@ -113,9 +113,9 @@ v0.1 把两者都叫"任务"，侧边栏同时出现两个同名区域，用户�
 - **下方一行两个选择器**（详见 7.7 / 7.8）：
   - `工作空间` —— 弹系统原生目录框选择，默认未选择
   - `权限` —— `manual` / `normal` / `auto` 三选一
-- **旁边还有一个「记忆」按钮**（017 期）：点开是记忆面板，查看/编辑 agent 的
+- **旁边还有一个「记忆」按钮**：点开是记忆面板，查看/编辑 agent 的
   两份长期记忆（详见 7.9）
-- **斜杠菜单里混排命令和 skill**（018 期）：输入框敲 `/` 弹列表，
+- **斜杠菜单里混排命令和 skill**：输入框敲 `/` 弹列表，
   里面既有 `/compaction` 这种命令，也有 `/<skill 名>`。选中 skill 是**勾选**
   （不发送消息），勾中的显示成输入框上方的 chip，带 × 删除（详见 7.10）
 - 右侧常驻提示「Enter 发送 · Shift+Enter 换行 · `/` 命令与技能」
@@ -147,7 +147,7 @@ App  (BrowserRouter)
 │   └── InputBar
 │       ├── WorkspacePicker
 │       ├── PermissionPicker
-│       └── MemoryPanel                  记忆面板（模态，017 期）
+│       └── MemoryPanel                  记忆面板（模态）
 └── SettingsPage            /settings
 ```
 
@@ -210,7 +210,7 @@ interface ConversationState {
   loading: boolean
   error: string | null
   cancelRequested: boolean                   // 用户点过停止：onEnd 落位时据此标记 interrupted
-  pendingApproval: PendingApproval | null    // HITL 待确认的动作组（009/015 期）
+  pendingApproval: PendingApproval | null    // HITL 待确认的动作组
 
   loadThreads: () => Promise<void>
   createThread: () => Promise<string | null>
@@ -255,14 +255,14 @@ interface TodoState {
 工作空间和权限是**任务级参数**，不是全局设置：同一个任务里前后两条消息可能针对不同目录、
 不同确认策略。但新任务在创建 thread 之前就要能配，所以额外留一份 `draft`。
 
-018 期起**勾选的 skill 也是任务级参数**——项目级 skill 在工作空间里，工作空间是
+**勾选的 skill 也是任务级参数**——项目级 skill 在工作空间里，工作空间是
 运行期参数，skill 选择不能是全局的。
 
 ```typescript
 interface TaskSettings {
   workspace: string            // 绝对路径；空字符串 = 本次任务不选工作空间
   permissions: PermissionLevel // 'manual' | 'normal' | 'auto'
-  skills: string[]             // 勾选的 skill 名字（018 期）
+  skills: string[]             // 勾选的 skill 名字
 }
 
 interface TaskStore {
@@ -295,7 +295,7 @@ thread 的 `metadata`（`PATCH /threads/{id}` 是合并语义，不会覆盖平�
 模型配置。数据源是后端 `GET /admin/models`（即 `conf/config.toml` 的视图），
 增删改走 `/admin/models` 一族端点，不再是写死的本地列表。
 
-下拉框里的「选中」**会真正生效**（010 期）：选中值写 `localStorage`，每次发消息时
+下拉框里的「选中」**会真正生效**：选中值写 `localStorage`，每次发消息时
 随 `context.model` 发给后端，后端在每次模型调用前把模型换成它——
 **不用重启后端**。模型是全局偏好，不按任务存（`workspace` / `permissions` / `skills` 才是任务级）。
 
@@ -403,7 +403,7 @@ POST /threads/{thread_id}/runs/stream
     "workspace": "",              // 空字符串 = 不选工作空间
     "permissions": "normal",
     "model": "",                  // 空字符串 = 用后端默认模型
-    "skills": []                  // 本次对话勾选的 skill 名字（018 期）
+    "skills": []                  // 本次对话勾选的 skill 名字
   }
 }
 ```
@@ -447,7 +447,7 @@ type NormalizedEvent =
   | { type: 'end' }
 ```
 
-### 6.4 工作空间选择（014 期改）
+### 6.4 工作空间选择
 
 工作空间用**系统原生目录选择框**选：点按钮 → 后端弹系统的文件浏览窗口 →
 用户选一个文件夹 → 拿到绝对路径。
@@ -565,7 +565,7 @@ Deep Agents 的内置工具名固定，但自定义工具（终端、git 等）�
   同时 `setActiveToolCall` 把它展开，再 `scrollIntoView({ behavior: 'smooth', block: 'center' })`
   滚到视口中间。没有 `toolCallId` 的待办不可点击
 
-### 7.7 工作空间（014 期改）
+### 7.7 工作空间
 
 **是「弹系统原生目录框 + 下拉兜底」，不是文件夹浏览器。** 手打项目路径是危险动作 ——
 打错一个字符就是授权给了错误的目录，所以主路径走系统弹窗（6.4）；下拉里的手动输入只是
@@ -601,12 +601,12 @@ Deep Agents 的内置工具名固定，但自定义工具（终端、git 等）�
 **这是执行前的确认，不是事后可见性。** 前端只负责把档位原样传下去（6.2），
 真正的拦截点在**后端的工具调用入口**：按 `permissions` 决定直接跑，还是**挂起这次调用**
 等前端确认。挂起后前端弹出确认卡片，按 `action_requests` 逐条批准 / 拒绝 / 改后执行
-（009 / 015 期，见 11.2）。
+（见 11.2）。
 
 > 早先的一版设计是 `read` / `write` / `execute` / `network` 四个能力开关 + 预设 + 自定义组合。
 > 已废弃：那是能力白名单，解决不了"同一种能力内部风险不同量级"的问题。
 
-### 7.9 记忆面板（017 期）
+### 7.9 记忆面板
 
 **入口在输入区那一行**，工作空间/权限选择器旁边，一个 `Brain` 图标 + 「记忆」。
 
@@ -638,7 +638,7 @@ Deep Agents 的内置工具名固定，但自定义工具（终端、git 等）�
 - **取数放在 effect 里的 async IIFE**，所有 `setState` 都在 `await` 之后：oxlint
   不做控制流分析，只看到「effect 里调了一个会 setState 的函数」就会报
 
-### 7.10 skill 勾选（018 期）
+### 7.10 skill 勾选
 
 **入口是输入框敲 `/`**——和通用 code agent 的习惯一致。没有独立按钮。
 
@@ -821,11 +821,11 @@ refractor 的语言包，属于按需加载，不在首屏关键路径上。
 - [x] 代码块主题与高亮库：Shiki
 - [x] 包管理：pnpm
 - [x] 任务运行参数：工作空间 + 三级权限（`manual` / `normal` / `auto`）
-- [x] 对话模型切换（010 期）：选中即生效，不用重启后端
-- [x] 斜杠命令菜单（011 期）：`/compaction` 手动压缩对话历史
-- [x] 工作空间按任务生效（014 期）：弹系统目录框选目录，agent 的写操作落在那个目录里
-- [x] 记忆面板（017 期）：查看/编辑用户级 + 项目级两份长期记忆
-- [x] skill 勾选（018 期）：斜杠菜单里混排 skill，勾中的 `SKILL.md` 全文钉进上下文
+- [x] 对话模型切换：选中即生效，不用重启后端
+- [x] 斜杠命令菜单：`/compaction` 手动压缩对话历史
+- [x] 工作空间按任务生效：弹系统目录框选目录，agent 的写操作落在那个目录里
+- [x] 记忆面板：查看/编辑用户级 + 项目级两份长期记忆
+- [x] skill 勾选：斜杠菜单里混排 skill，勾中的 `SKILL.md` 全文钉进上下文
 
 ### 11.2 待定的
 
@@ -836,10 +836,10 @@ refractor 的语言包，属于按需加载，不在首屏关键路径上。
 - [ ] **虚拟滚动**：`index.css` 里的 `.cv-auto` 已定义但尚未挂到消息项上，目前是全量渲染。
       等消息量真的上来了，把这个类加到 `MessageList` 的消息容器即可
 
-> 原先这里挂着「危险操作确认的前端入口 —— 协议还没设计」，009 期已经落地：
-> 后端 HITL 挂起 → 前端弹确认卡片 → `command.resume` 送回决定。015 期又加了
+> 原先这里挂着「危险操作确认的前端入口 —— 协议还没设计」，现在已经落地：
+> 后端 HITL 挂起 → 前端弹确认卡片 → `command.resume` 送回决定。后来又加了
 > **逐条选择**（批准 / 拒绝 / 改后执行）和**拒绝理由**，详见
-> `docs/backend/PROGRESS.md` 的 009 期。2026-10-26 起 **`manual` 档下非只读的
+> `docs/backend/backend.md` 的 §3.9。2026-10-26 起 **`manual` 档下非只读的
 > MCP 工具也会走同一张卡片**（工具名是 `mcp__{服务器}__{工具}`，描述里带服务器名
 > 和参数；这种卡片只给批准 / 拒绝，不给改后执行）。
 
@@ -858,17 +858,17 @@ refractor 的语言包，属于按需加载，不在首屏关键路径上。
 | Shiki 代码高亮 + 复制 | ✅ |
 | 待办实时同步 + 点击跳转到对应工具调用 | ✅ |
 | 亮/暗主题 | ✅ |
-| 工作空间选择器（系统原生目录框，014 期） | ✅ |
-| 权限三级下拉 + 参数传递 | ✅（后端拦截点 009 期已落地） |
-| 人工确认卡片（批准 / 拒绝 / 改后执行 + 拒绝理由，009/015 期） | ✅ |
-| 记忆面板（用户级 + 项目级，017 期） | ✅ |
-| skill 勾选（斜杠菜单 + chip + 随请求下发，018 期） | ✅ |
+| 工作空间选择器（系统原生目录框） | ✅ |
+| 权限三级下拉 + 参数传递 | ✅（后端拦截点已落地） |
+| 人工确认卡片（批准 / 拒绝 / 改后执行 + 拒绝理由） | ✅ |
+| 记忆面板（用户级 + 项目级） | ✅ |
+| skill 勾选（斜杠菜单 + chip + 随请求下发） | ✅ |
 | 模型管理界面（直连 `/admin/models`） | ✅ |
 | Mock 模式 | ✅ |
 | 自动滚动（ResizeObserver）+ 回到底部 | ✅ |
 | 虚拟滚动 | ❌ `.cv-auto` 已定义但未挂载（见 11.2） |
-| 与真实后端联调 | ✅（后端已到 022 期，见 `docs/backend/PROGRESS.md`） |
+| 与真实后端联调 | ✅（见 `docs/backend/backend.md`） |
 
 > 这张表是**前端能力清单的单一事实源**。后端进度快照
-> （[`docs/backend/PROGRESS.md`](backend/PROGRESS.md) §1.3）只留与后端耦合的条目，
+> （[`docs/backend/backend.md`](backend/backend.md) §1.3）只留与后端耦合的条目，
 > 不再复刻这张表——复刻就多一个会漂移的地方。

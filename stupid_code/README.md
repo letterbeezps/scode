@@ -58,7 +58,7 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 
 顶层只放「进程入口」和「配置」两类东西，实现细节按职责进子包。
 
-完整的目录树见 [`docs/backend/PROGRESS.md`](../docs/backend/PROGRESS.md) §2.1（活文档，随代码演进），
+完整的目录树见 [`docs/backend/backend.md`](../docs/backend/backend.md) §2.1（活文档，随代码演进），
 下面这张表逐个文件说明它负责什么。
 
 | 文件 | 作用 |
@@ -108,7 +108,7 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 > 子 agent 声明在项目根 `conf/subagents.toml`（入库，无密钥）：每个 `[[subagents]]` 至少要有
 > `name` / `description` / `model` 三项，`model` 写 `供应商名:模型名`，复用 `config.toml` 里
 > 该供应商的连接信息。文件不存在 = 不配置子 agent。字段说明见
-> `../docs/backend/PROGRESS.md` 的「004 · 子 agent 配置」一节。
+> `../docs/backend/backend.md` 的 §3.4。
 >
 > 长期记忆有**两个作用域**：项目级在工作空间根的 `.scode-memory.md`（跟着项目走），
 > 用户级在 `~/.scode/memory.md`（跟着用户走，跨所有工作空间共用，目录由
@@ -118,17 +118,17 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 > （用户级走 `/user-memory/memory.md` 这条虚拟路径）——**写记忆要人工确认**
 > （`normal` 和 `manual` 档，判据只看路径，写普通文件不受影响）。前端有个记忆
 > 面板能看和改它们（`GET/PUT /admin/memory`）。细节见
-> `../docs/backend/PROGRESS.md` 的「006 · agent 长期记忆」一节。
+> `../docs/backend/backend.md` 的 §3.6。
 >
 > agent 的文件操作落在工作空间的**真实磁盘**上，`execute` 直接在本机跑 shell：
 > backend 是 `CompositeBackend(default=LocalShellBackend)`，见
-> `../docs/backend/PROGRESS.md` 的「007 · 真实 backend」一节。
+> `../docs/backend/backend.md` 的 §3.7。
 >
 > agent 自己的**中间产物**（被压缩掉的对话历史、超大的工具结果、二进制块）落在
 > 工作空间的 `.scode/` 下（`.scode/conversation_history/`、`.scode/large_tool_results/`、
 > `.scode/blobs/`），落点由 backend 的 `artifacts_root` 决定。这些目录已 gitignore，
 > 用户项目里不会冒出未忽略的临时文件；agent 需要时可以用 `read_file` 读回来，
-> 所以**不能挪出工作空间**。详见 `../docs/backend/PROGRESS.md` 的「8.10 agent 自己的中间产物」。
+> 所以**不能挪出工作空间**。详见 `../docs/backend/backend.md` 的 §3.7。
 >
 > skill 也分**两个作用域**：全局在 `~/.scode/.agents/skills/`（跟着用户走，跨所有
 > 工作空间共用），项目级在 `<工作空间>/.agents/skills/`（跟着项目走）。**全局是静态
@@ -139,19 +139,19 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 > 会自己 `read_file` 加载。全局 skill 走主 backend 的 `/user-skills/` 路由，
 > agent 能用 `read_file("/user-skills/<名字>/SKILL.md", ...)` 读全文。
 > 前端用 `GET /admin/skills` 拿清单。详见
-> `../docs/backend/PROGRESS.md` 的「8.12 skill（018 期）」一节。
+> `../docs/backend/backend.md` 的 §3.15。
 >
-> `execute` 有**人工确认**（009 期）：按运行期传来的权限档位决定拦不拦，拦下时图挂起，
+> `execute` 有**人工确认**：按运行期传来的权限档位决定拦不拦，拦下时图挂起，
 > 前端弹确认卡片，批准/拒绝后用 `command.resume` 让图继续。见
-> `../docs/backend/PROGRESS.md` 的「009 · shell 的人工确认（HITL）」一节。
+> `../docs/backend/backend.md` 的 §3.9。
 >
-> MCP 服务器配在项目根 `conf/mcp.json`（013 期，格式跟 Claude Code 一致，**不入库**——
+> MCP 服务器配在项目根 `conf/mcp.json`（格式跟 Claude Code 一致，**不入库**——
 > 仓库只提供 `conf/mcp.example.json`，按需复制）：
 > `http` 和 `stdio` 都支持，工具在建图时静态注册（名字是 `mcp__{服务器}__{工具}`）。
 > **改完要重启后端**（跟 `conf/subagents.toml` 一样）；某个服务器连不上只少它那几个工具。
 > stdio 服务器会在启动时执行命令，只配信任的服务器。
 > 仓库根的 `examples/mcp_stdio_server.py` 是一个能直接跑的 stdio 服务器（零新依赖），
-> 拿来验 stdio 传输。字段说明见 `../docs/backend/PROGRESS.md` 的「013 · MCP 支持」一节。
+> 拿来验 stdio 传输。字段说明见 `../docs/backend/backend.md` 的 §3.13。
 
 ## 注意
 
@@ -163,13 +163,13 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 - **同一工作空间内记忆只在会话开始时读一次**：改了 `.scode-memory.md` 要开新会话（新建 thread）才生效；**换工作空间会重新读**（`WorkspaceMemoryMiddleware` 记着上次的工作空间）。
 - **backend 是真实磁盘 + 本机 shell**（`graph/backend.py`）。agent 能读工作空间里的任何文件
   （包括 `conf/config.toml` 里的 api_key），`execute` 能跑任意命令——所以**执行命令前有人工确认**
-  （`graph/permissions.py`，009 期）：按 `context.permissions` 的档位决定拦不拦
+  （`graph/permissions.py`）：按 `context.permissions` 的档位决定拦不拦
   （`auto` 全放行 / `manual` 每条都问 / `normal` 只问命中危险模式的），拦下时图挂起等前端决定。
   拦的是 `execute` 和 `delete`（`delete` 删目录是递归的、跟 `rm -rf` 等价，只在
   `manual` 档拦）；**普通 write_file / edit_file 不拦**——那是 code agent 的日常；
   **写记忆文件例外**（`normal` / `manual` 档都拦，见上一条）。
 - **恢复挂起的运行建议原样带回档位**：`command.resume` 的请求体带上同一个
-  `context.permissions`（015 期起后端判定读的是**图状态里记的档位**，客户端回传
+  `context.permissions`（后端判定读的是**图状态里记的档位**，客户端回传
   错了也不改结论；但原样带回能保证恢复这一轮跟发起那一轮看到的是同一套配置）。
   `decisions` 的个数必须和挂起时的 `action_requests` 一样多，
   否则框架直接抛 `Number of human decisions (N) does not match number of hanging tool calls (M)`。
@@ -179,8 +179,8 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 - **没声明 `permissions` 的子 agent 会继承顶层 `interrupt_on`**（deepagents 的合并规则），
   所以它们执行命令同样会挂起等人确认。
 - `langgraph.json` 的 `http.app` 字段指向 `admin/app.py:app`。本期实现的 `/admin/models` 接口改完配置后仍需重启 `scode` 才能让运行中的 graph 加载新模型实例。
-- **端口锁死 2024，被占用就直接启动失败**（008 期）：早期版本端口被占时会误报"已就绪"
+- **端口锁死 2024，被占用就直接启动失败**：端口被占时必须立刻报错，不能误报"已就绪"
   ——`langgraph dev` 自己换了端口，而就绪检查只轮询 2024，打到的是旧服务，前端连的是
   旧代码。现在启动前先探端口，占用就报错并告诉你怎么查占用进程，**绝不自动换端口**
   （前端默认就连 2024）。
-- 详细的阶段目标与验证步骤见 `../docs/backend/PROGRESS.md`（001–022 期合并成一份进度快照）。
+- 每个能力的机制、取舍、踩过的坑和实测结论见 `../docs/backend/backend.md`。

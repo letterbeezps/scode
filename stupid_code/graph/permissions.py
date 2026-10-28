@@ -8,7 +8,7 @@
 `normal` 只是正则过滤器，不是安全边界；要确定性就切 `manual`。shell 本身
 仍能绕过文件工具的权限。
 
-细节见 AGENTS.md 的安全姿态、`docs/backend/PROGRESS.md` 009/015/017 期。
+细节见 AGENTS.md 的安全姿态、`docs/backend/backend.md` §3.9 / §3.6。
 """
 
 from __future__ import annotations
@@ -241,7 +241,7 @@ def should_interrupt_memory(request: ToolCallRequest) -> bool:
     **为什么记忆写入也要拦**：它是唯一一条「影响未来所有会话」的写路径。
     代码写错了改掉就行；记忆写错了会一直影响后面每一个会话——用户级的那条
     还会跟着你到每一个项目——而且没人会知道它是什么时候、为什么写错的。
-    详见 `docs/backend/PROGRESS.md` 的「006 · agent 长期记忆」。
+    详见 `docs/backend/backend.md` 的 §3.6。
 
     **档位**：`normal` 和 `manual` 都拦，`auto` 不拦（`auto` 的语义就是
     「不要打断我」）。记忆写入不像 `execute` 那样频繁，代价可以接受。

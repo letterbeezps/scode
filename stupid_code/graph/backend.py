@@ -9,7 +9,7 @@
 相对路径。声明了 `permissions` 的子 agent 用 `build_restricted_backend()`
 （无 shell），策略组装在 `graph/subagent_policy.py`。
 
-细节见 AGENTS.md 第 12/17/18 条、`docs/backend/PROGRESS.md` 007/016/020 期。
+细节见 AGENTS.md 第 12/17/18 条、`docs/backend/backend.md` §3.7。
 """
 
 from __future__ import annotations

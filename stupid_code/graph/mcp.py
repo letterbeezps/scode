@@ -8,7 +8,7 @@
 状态。这里列原始 MCP Tool 定义，再用 `_SessionProxy` 绑到长会话上。
 `conf/mcp.json` 改了要重启；MCP 工具只有异步实现。
 
-细节、生命周期、重试分类见 AGENTS.md 第 16 条、PROGRESS 013 期。
+细节、生命周期、重试分类见 AGENTS.md 第 16 条、后端文档 §3.13。
 """
 
 from __future__ import annotations

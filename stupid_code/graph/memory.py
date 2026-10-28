@@ -5,7 +5,7 @@
 空间时摘掉 `memory_contents` 强制重读。没有记忆时系统提示词会提示模型用
 `write_file` 创建，而不是让 `edit_file` 打在空文件上。
 
-细节见 AGENTS.md 第 10/19 条、`docs/backend/PROGRESS.md` 006/015/017 期。
+细节见 AGENTS.md 第 10/19 条、`docs/backend/backend.md` §3.6。
 """
 
 from __future__ import annotations

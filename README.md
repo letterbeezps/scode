@@ -18,7 +18,7 @@
 
 agent 能读写工作空间里的文件、跑 shell、多轮对话、流式输出、子 agent 委派、跨会话长期记忆、危险命令人工确认、运行期切模型、手动压缩历史、加载 skill。
 
-**当前状态**：后端 001–022 期已落地，前端已连真后端完成整轮对话。
+**当前状态**：后端能力均已落地，前端已连真后端完成整轮对话。
 
 ### 技术栈
 
@@ -112,9 +112,9 @@ pnpm dev
 
 ### 5. 可选：子 agent / MCP / Docker
 
-- **子 agent** —— 建 `conf/subagents.toml`（可提交），每条至少 `name` / `description` / `model`。[字段表 → PROGRESS.md「004 · 子 agent 配置」](docs/backend/PROGRESS.md)
-- **MCP** —— 建 `conf/mcp.json`（从 `conf/mcp.example.json` 复制，**不入库**），`http` 和 `stdio` 都支持。**改完要重启后端**。[字段表 → PROGRESS.md「013 · MCP 支持」](docs/backend/PROGRESS.md)
-- **Docker** —— `docker compose up --build`（全栈）或 `docker compose up -d backend`（只起后端）。**启动前必须先有 `conf/config.toml`**，它不进镜像、靠 volume 挂进去，忘了容器起不来。[细节 → PROGRESS.md「012 · Docker 运行」](docs/backend/PROGRESS.md)
+- **子 agent** —— 建 `conf/subagents.toml`（可提交），每条至少 `name` / `description` / `model`。[字段表 → backend.md §3.4](docs/backend/backend.md)
+- **MCP** —— 建 `conf/mcp.json`（从 `conf/mcp.example.json` 复制，**不入库**），`http` 和 `stdio` 都支持。**改完要重启后端**。[字段表 → backend.md §3.13](docs/backend/backend.md)
+- **Docker** —— `docker compose up --build`（全栈）或 `docker compose up -d backend`（只起后端）。**启动前必须先有 `conf/config.toml`**，它不进镜像、靠 volume 挂进去，忘了容器起不来。[细节 → backend.md §3.12](docs/backend/backend.md)
 
 ### 6. 摸清 `create_deep_agent` 的形状
 
@@ -159,7 +159,7 @@ result = agent.invoke({"messages": "Research LangGraph and write a summary"})
 - **只监听 `127.0.0.1`** —— 别改成 `0.0.0.0`
 - **工作空间之外只有两条路径** —— `/user-memory/`（`~/.scode/`，可写）和 `/user-skills/`（`~/.scode/.agents/skills/`，设计上只读、实际没有写保护）
 
-完整的安全姿态和已知缺口 → [`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md) §5
+完整的安全姿态和已知缺口 → [`docs/backend/backend.md`](docs/backend/backend.md) §5
 
 ---
 
@@ -167,7 +167,7 @@ result = agent.invoke({"messages": "Research LangGraph and write a summary"})
 
 | 文档 | 内容 |
 | --- | --- |
-| [`docs/backend/PROGRESS.md`](docs/backend/PROGRESS.md) | 后端进度快照：每期的目标 / 取舍 / 验证步骤 / 已验证的事实 |
+| [`docs/backend/backend.md`](docs/backend/backend.md) | 后端现状：每个能力的机制 / 取舍 / 踩过的坑 / 实测结论 |
 | [`docs/learning-path.md`](docs/learning-path.md) | Deep Agents 给了什么、三层关系、按 skill 的学习路线 |
 | [`docs/overall-design.md`](docs/overall-design.md) | 目标架构、前后端接口契约、安全设计 |
 | [`docs/frontend-design.md`](docs/frontend-design.md) | 前端界面与交互设计 |

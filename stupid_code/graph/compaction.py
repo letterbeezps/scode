@@ -7,7 +7,7 @@
 被压缩的旧消息落到工作空间的 `.scode/conversation_history/`，agent 可以
 `read_file` 读回来。
 
-细节见 AGENTS.md 第 14 条、`docs/backend/PROGRESS.md` 011 期。
+细节见 AGENTS.md 第 14 条、`docs/backend/backend.md` §3.11。
 """
 
 from __future__ import annotations

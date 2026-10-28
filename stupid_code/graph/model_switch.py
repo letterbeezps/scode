@@ -10,8 +10,8 @@
 `enabled=False` 实例顶掉切换中间件。
 
 摘要模型也跟着切（`graph/compaction.py` 的 `summarizer=`），但 harness profile
-和压缩阈值仍按启动模型算。完整机制与已知边界见 `docs/backend/PROGRESS.md`
-010 期、AGENTS.md 第 13 条。
+和压缩阈值仍按启动模型算。完整机制与已知边界见 `docs/backend/backend.md`
+§3.10、AGENTS.md 第 13 条。
 """
 
 from __future__ import annotations

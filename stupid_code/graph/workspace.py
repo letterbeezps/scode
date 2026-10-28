@@ -8,7 +8,7 @@
 每轮 `before_agent` 重新校验并刷新缓存，HITL 恢复不经过 `before_agent`，
 所以模型调用前还要补一次缓存。
 
-细节见 AGENTS.md 第 17 条、`docs/backend/PROGRESS.md` 014 期。
+细节见 AGENTS.md 第 17 条、`docs/backend/backend.md` §3.14。
 """
 
 from __future__ import annotations

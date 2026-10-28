@@ -29,19 +29,19 @@
 ### 1.3 当前进度（与文档描述的差异）
 
 本文档 §3 描述的是**目标设计**；与代码有出入时，以
-`docs/backend/PROGRESS.md` 为准。接手时先看这里：
+`docs/backend/backend.md` 为准。接手时先看这里：
 
 | 部分 | 文档描述 | 代码现状 |
 |---|---|---|
 | 前端 `web/` | 完整实现 | ✅ 已完成；mock 与真后端两套都能跑 |
-| 后端 Agent | §3 完整设计 | ✅ 001–022 期均已落地（真实磁盘 + shell、长期记忆、shell 人工确认、子 agent 配置、运行期切模型、手动压缩历史、MCP、按任务生效的工作空间、用户级记忆 + 记忆面板、skill 两个作用域、任务参数 `context_schema`、同参数反复失败拦截）。更多运行护栏（预算、循环上限等）仍未做 |
+| 后端 Agent | §3 完整设计 | ✅ 均已落地（真实磁盘 + shell、长期记忆、shell 人工确认、子 agent 配置、运行期切模型、手动压缩历史、MCP、按任务生效的工作空间、用户级记忆 + 记忆面板、skill 两个作用域、任务参数 `context_schema`、同参数反复失败拦截）。更多运行护栏（预算、循环上限等）仍未做 |
 | 后端依赖 | Deep Agents + LangGraph | ✅ 已装齐并锁进 `uv.lock` |
 | `langgraph.json` | §3.2 已给出 | ✅ 在 `stupid_code/` 目录（不是根目录），图注册 + http.app + checkpointer/store 都已配 |
-| 模型配置 | §4 多供应商 | ✅ `conf/config.toml` + `/admin/models` 管理接口（002 / 003 期） |
-| 子 agent | §3 委派机制 | ✅ `conf/subagents.toml` 声明，`task` 工具可调（004 期） |
-| MCP 工具 | —（013 期新增） | ✅ `conf/mcp.json` 声明，http / stdio 都支持；建图时静态注册（改配置需重启），每个服务器一条长会话；`manual` 档下非只读工具走人工确认 |
-| 目录浏览端点 | §4.1 已定义 | ✅ 已实现（014 期）：`POST /workspaces/pick` 弹系统原生目录选择框 |
-| skill | —（018 期新增） | ✅ 全局 `~/.scode/.agents/skills/` + 项目级 `<工作空间>/.agents/skills/`；`GET /admin/skills` 列清单；用户勾选的 `SKILL.md` 全文钉进上下文 |
+| 模型配置 | §4 多供应商 | ✅ `conf/config.toml` + `/admin/models` 管理接口 |
+| 子 agent | §3 委派机制 | ✅ `conf/subagents.toml` 声明，`task` 工具可调 |
+| MCP 工具 | — | ✅ `conf/mcp.json` 声明，http / stdio 都支持；建图时静态注册（改配置需重启），每个服务器一条长会话；`manual` 档下非只读工具走人工确认 |
+| 目录浏览端点 | §4.1 已定义 | ✅ 已实现：`POST /workspaces/pick` 弹系统原生目录选择框 |
+| skill | — | ✅ 全局 `~/.scode/.agents/skills/` + 项目级 `<工作空间>/.agents/skills/`；`GET /admin/skills` 列清单；用户勾选的 `SKILL.md` 全文钉进上下文 |
 
 **这意味着：写后端时不需要"对齐已有实现"，而是要"实现前端已经假定的契约"。** 契约清单见 §4。
 
@@ -130,28 +130,28 @@
 > ⚠️ **默认配置不满足本项目需求**。必须显式配置为真实本地磁盘后端，否则模型读写的是状态里的虚拟文件，改动不落盘，编码场景直接失效。这是 P0 阶段的第一个坑。
 > 核实方式：配置完成后跑一个最小用例——让 Agent 写一个临时文件，检查磁盘上是否真的出现该文件。
 >
-> 📌 **007 期落地**：`stupid_code/graph/backend.py` 构造 `CompositeBackend(default=LocalShellBackend)`
+> 📌 **现状**：`stupid_code/graph/backend.py` 构造 `CompositeBackend(default=LocalShellBackend)`
 > ——真实磁盘 + 本机 shell（`execute` 由此而来）。
 > 框架的硬限制：**backend 支持命令执行时不能同时用 `permissions`**（shell 能绕过任何权限），
 > 所以声明了 `permissions` 的子 agent 会被换成无 shell 的 backend。
-> 详见 `docs/backend/PROGRESS.md` 的「007 · 真实 backend」一节。
+> 详见 `docs/backend/backend.md` 的 §3.7。
 >
-> 📌 **020 期调整**：原先还有一条 `/tmp/` → `StateBackend` 的虚拟路由（会话内临时区），已删除——
-> 它是唯一可能跟宿主绝对路径撞上的路由，为它单独养了一层守卫类，而它提供的临时区跟项目自己的
-> 产物策略（收在 `<工作空间>/.scode/`）重复。现状见 PROGRESS 的「020 · 删掉 `/tmp/` 路由」。
+> 📌 **为什么只有两条虚拟路由**：`/user-memory/` 和 `/user-skills/` 是虚拟名，磁盘上不存在，
+> 真实路径里不会出现这两个前缀。而真实目录（比如 `/tmp`）不能拿来当路由名——它可能跟工作空间
+> 自己的绝对路径撞车。现状见后端文档 §3.7。
 >
-> 📌 **016 期补充**：`CompositeBackend` 的 `artifacts_root` 决定 agent 自己的中间产物落在哪
+> 📌 **产物落点**：`CompositeBackend` 的 `artifacts_root` 决定 agent 自己的中间产物落在哪
 > （对话历史 / 超大工具结果 / 二进制块，默认 `/` = 工作空间根目录）。本项目设成 `/.scode`，
-> 收成一个隐藏目录，详见 `docs/backend/PROGRESS.md` 的「8.10 agent 自己的中间产物」。
+> 收成一个隐藏目录，详见 `docs/backend/backend.md` 的 §3.7。
 
 **子 Agent**：框架内置 `task` 工具与 general-purpose 子 Agent，可通过 `subagents` 参数扩展。子 Agent 会继承父 Agent 的工具限制（§5.2 的 allowlist），但**不自动继承权限档位**——见 §5.3 的注意事项。
 
-> 📌 **004 期落地**：子 agent 的声明放 `conf/subagents.toml`（`stupid_code/config/subagent.py` 解析），
+> 📌 **现状**：子 agent 的声明放 `conf/subagents.toml`（`stupid_code/config/subagent.py` 解析），
 > `model` 字段复用 `config.toml` 的供应商连接信息。**框架不会把子 agent 名单写进系统提示词**，
 > 名单只出现在 `task` 工具的 description 里（跟着配置自动更新）。
 > 实测（MiniMax-M3）：光靠工具描述，主 agent 基本不会主动委派，倾向自己干；把名单点名写进
 > 提示词也**没有**明显改变。起决定作用的是用户请求里明确要求委派。详见
-> `docs/backend/PROGRESS.md` 的「004 · 子 agent 配置」一节。
+> `docs/backend/backend.md` 的 §3.4。
 
 ### 3.2 服务启动
 
@@ -188,8 +188,8 @@ docker compose up --build
 |---|---|---|
 | `workspace` | 绝对路径字符串，空字符串表示未选择 | 工作空间根路径（§5.2） |
 | `permissions` | `'manual'` \| `'normal'` \| `'auto'` | 危险操作确认档位（§5.3） |
-| `model` | `'供应商名:模型名'`，空字符串表示未选择 | 运行期切换对话模型（010 期） |
-| `skills` | 字符串数组 | 本次对话勾选的 skill 名字（018 期） |
+| `model` | `'供应商名:模型名'`，空字符串表示未选择 | 运行期切换对话模型 |
+| `skills` | 字符串数组 | 本次对话勾选的 skill 名字 |
 
 > ⚠️ **命名冲突警告**：前端传的 `permissions`（确认档位）与 Deep Agents `create_deep_agent(permissions=...)` 参数（文件读写的路径 ACL 规则）**是两个完全不同的东西**，只是重名。后端代码里建议把档位变量命名为 `permission_level` 以免混淆，但对前端暴露的 context key 保持 `permissions` 不变（前端已硬编码）。
 
@@ -215,16 +215,16 @@ docker compose up --build
 | POST | `/threads/{thread_id}/runs/stream` | 流式运行（SSE，也用于 `command.resume`） | LangGraph 提供 |
 | GET | `/threads/{thread_id}/runs/{run_id}/stream` | 重新接入已有运行的流（断线恢复，§6.4） | LangGraph 提供 |
 | POST | `/threads/{thread_id}/runs/{run_id}/cancel` | 取消运行 | LangGraph 提供 |
-| POST | `/workspaces/pick` | 弹系统原生目录选择框，选一个工作空间 | **自研实现**（014 期） |
-| GET/POST/PUT/DELETE | `/admin/models` 一族 | 模型配置管理 | **自研实现**（003 期） |
-| GET/PUT | `/admin/memory` | 读两份长期记忆 / 写一份 | **自研实现**（017 期） |
-| GET | `/admin/skills` | 列可用的 skill（全局 + 项目级） | **自研实现**（018 期） |
+| POST | `/workspaces/pick` | 弹系统原生目录选择框，选一个工作空间 | **自研实现** |
+| GET/POST/PUT/DELETE | `/admin/models` 一族 | 模型配置管理 | **自研实现** |
+| GET/PUT | `/admin/memory` | 读两份长期记忆 / 写一份 | **自研实现** |
+| GET | `/admin/skills` | 列可用的 skill（全局 + 项目级） | **自研实现** |
 
 > 端点列表已与 `web/src/api/*.ts` 的实际调用逐一核对（2026-10-28）。
 
 **历史消息从哪里来**：前端不调用 `/threads/{tid}/history`，而是从 `GET /threads/{tid}/state` 返回的 `values.messages` 里自行转换（见 `web/src/api/thread.ts`）。后端无需额外处理，但要知道前端依赖这个结构——`values.messages` 必须是完整的 LangChain 消息数组。
 
-### 4.1.1 工作空间怎么选（014 期定的方案）
+### 4.1.1 工作空间怎么选
 
 **点工作空间按钮 → 弹系统原生文件浏览窗口 → 选一个文件夹。**
 
@@ -326,7 +326,7 @@ interface Message {
 
 ### 5.2 工作空间隔离
 
-前端已实现工作空间选择器，并把绝对路径通过 `context.workspace` 传给后端。**014 期已落地**（见 `stupid_code/graph/workspace.py`）。
+前端已实现工作空间选择器，并把绝对路径通过 `context.workspace` 传给后端。**已落地**（见 `stupid_code/graph/workspace.py`）。
 
 **实际做法**：
 
@@ -462,7 +462,7 @@ LangChain 提供 `HumanInTheLoopMiddleware`，通过 `interrupt_on` 声明哪些
 > 一个能在本机执行命令的 Web 服务，安全章节不能只有一句话。
 >
 > **当前的安全姿态表（每条边界的现状）见
-> [`docs/backend/PROGRESS.md`](backend/PROGRESS.md) §5「安全姿态」**，已知缺口见同节 §6。
+> [`docs/backend/backend.md`](backend/backend.md) §5「安全姿态」**，已知缺口见同节 §6。
 > 本节只写**设计意图和理由**——同一件事不要在两处各写一遍。
 
 ### 6.1 监听地址
@@ -491,7 +491,7 @@ LangChain 提供 `HumanInTheLoopMiddleware`，通过 `interrupt_on` 声明哪些
 
 否则被重试、或作为无效回答处理的工具调用可能**绕过审批**直接执行——这是安全漏洞，不只是风格问题。
 
-**skill 中间件排在记忆中间件之前**（018 期）：记忆块要留在系统提示词的**最后一块**
+**skill 中间件排在记忆中间件之前**：记忆块要留在系统提示词的**最后一块**
 （prompt-caching 的断点落在那一块上），skill 块在它之前，同样在缓存范围内。
 ⚠️ **别给 `create_deep_agent(skills=...)`**——传了 deepagents 会在 core 栈挂一份自己的
 `SkillsMiddleware`，我们的中间件只能顶替它，而顶替保留的是 core 栈的位置（更内层），
@@ -518,7 +518,7 @@ skill 块就会跑到记忆块后面。
 | `../` 路径逃逸 | realpath 归一化 + 前缀校验（§5.2） |
 | 符号链接逃逸 | 校验前必须 `os.path.realpath()` 而非 `abspath()` |
 | 读取敏感文件（.ssh / .env / .aws） | 在工作空间约束内则天然隔离；显式黑名单 `[待核实: 具体清单需按项目实际环境确定]` |
-| 读取工作空间之外的目录 | 两条**只覆盖一个目录**的例外：`/user-memory/`（`~/.scode/`，可写——用户级记忆）和 `/user-skills/`（`~/.scode/.agents/skills/`，全局 skill；**设计上只读，实际代码没有写保护**）。工作空间内的路径依然出不去（017/018 期） |
+| 读取工作空间之外的目录 | 两条**只覆盖一个目录**的例外：`/user-memory/`（`~/.scode/`，可写——用户级记忆）和 `/user-skills/`（`~/.scode/.agents/skills/`，全局 skill；**设计上只读，实际代码没有写保护**）。工作空间内的路径依然出不去 |
 | 危险 shell 命令（`rm -rf` / `curl \| sh`） | 命中正则危险模式的命令在 `normal` / `manual` 档挂起；`manual` 档每条命令都挂起。`normal` 只是过滤器，不是安全边界 |
 | 日志泄露 | 工具入参出参中的凭据、token 需脱敏后再落日志（§7） |
 
@@ -582,7 +582,7 @@ stupid_code/prompts/
 
 ## 9. 目录结构
 
-**实际布局**看 [`docs/backend/PROGRESS.md`](backend/PROGRESS.md) §2.1（活目录树，随代码演进）
+**实际布局**看 [`docs/backend/backend.md`](backend/backend.md) §2.1（活目录树，随代码演进）
 和同节 §2.2（`langgraph.json` 的三条硬编码路径、`__file__` 定位目录的层数约束）。
 本文档不复刻目录树——抄一份就多一个会漂移的地方。
 
@@ -591,7 +591,7 @@ stupid_code/prompts/
 中间件目前落在 `graph/workspace.py` 里。
 
 > `langgraph.json` 直接引用了 `./graph/agent.py:graph`、`./graph/persistence.py:checkpointer`、
-> `./admin/app.py:app` 三条路径，挪动这些文件必须同步改配置（细节见 PROGRESS §2.2）。
+> `./admin/app.py:app` 三条路径，挪动这些文件必须同步改配置（细节见后端文档 §2.2）。
 
 
 ---
@@ -613,16 +613,16 @@ stupid_code/prompts/
 
 ### 11.1 待核实项
 
-- ~~`[待核实]` deepagents 的本地磁盘 backend 具体配置方式~~ —— **已核实并落地**（007 期）：
+- ~~`[待核实]` deepagents 的本地磁盘 backend 具体配置方式~~ —— **已核实并落地**：
   `CompositeBackend(default=LocalShellBackend(root_dir=工作空间, virtual_mode=True, inherit_env=True))`，
-  见 `docs/backend/PROGRESS.md`
+  见 `docs/backend/backend.md`
 - ~~`[待核实]` deepagents 默认配置的 filesystem 是否为真实磁盘~~ —— **已核实**：默认是
   `StateBackend`（虚拟 FS，写操作不落盘）；必须显式传 `backend=`
 - `[待核实]` `TodoListMiddleware` 是否在本项目锁定版本中仍为 opt-in —— 核实方式：查官方 changelog
 - `[待核实]` `per_call` 中断模式所需的 langchain 版本下限是否满足 —— 核实方式：查本项目锁定的 langchain 版本号
-- ~~`[待核实]` **shell 的人工确认**~~ —— **已核实并落地**（009 期）：后端按
+- ~~`[待核实]` **shell 的人工确认**~~ —— **已核实并落地**：后端按
   `context.permissions` 的档位决定拦不拦，图挂起等前端批准/拒绝。
-  见 `docs/backend/PROGRESS.md` 的「009 · shell 的人工确认（HITL）」一节
+  见 `docs/backend/backend.md` 的 §3.9
 - `[待核实]` 重连 join 接口能否补齐错过的历史事件 —— 核实方式：P1 联调实测
 - `[待核实]` 各模型官方定价（用于 token → 成本换算）
 - `[待核实]` `stream_mode: ['updates']` 的文本到达粒度 —— 核实方式：P0 联调观察

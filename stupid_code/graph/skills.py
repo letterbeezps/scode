@@ -5,7 +5,7 @@
 skill 由 `context.skills` 送来，正文钉进上下文。换工作空间或换勾选时
 摘掉 `skills_metadata` 强制重读。
 
-细节见 `docs/backend/PROGRESS.md` 018 期、AGENTS.md 第 20 条。
+细节见 `docs/backend/backend.md` §3.15、AGENTS.md 第 20 条。
 """
 
 from __future__ import annotations

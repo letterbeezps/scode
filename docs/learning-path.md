@@ -2,7 +2,7 @@
 
 本文档收 README 里放不下的两块内容：**Deep Agents 这套框架给了什么**（背景知识），以及**按什么顺序学**（学习路线）。
 
-想直接跑起来的话，回 [`README.md`](../README.md) 的「快速开始」；想看代码现状，回 [`docs/backend/PROGRESS.md`](backend/PROGRESS.md)。
+想直接跑起来的话，回 [`README.md`](../README.md) 的「快速开始」；想看代码现状，回 [`docs/backend/backend.md`](backend/backend.md)。
 
 ---
 

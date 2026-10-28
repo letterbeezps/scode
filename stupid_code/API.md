@@ -1,6 +1,6 @@
 # 后端 API 清单（当前使用）
 
-本文档列出项目**实际调用**的后端 HTTP 端点，均来自 [LangGraph Platform](https://langchain-ai.github.io/langgraph/cloud/reference/api/)，由 `langgraph dev` 直接提供；001 期没有自定义后端路由。
+本文档列出项目**实际调用**的后端 HTTP 端点，均来自 [LangGraph Platform](https://langchain-ai.github.io/langgraph/cloud/reference/api/)，由 `langgraph dev` 直接提供；本项目另外挂了几个自定义路由（见下面各节）。
 
 - 基地址：`http://127.0.0.1:2024`（开发态前端经 Vite 代理 `/api` 转发）
 - 鉴权：可选 `Authorization: Bearer <VITE_LANGGRAPH_API_KEY>`，本地无鉴权时可省略
@@ -263,7 +263,7 @@ Accept: text/event-stream
   `RunContext`（`create_deep_agent(context_schema=...)`）声明。Agent Server 会按
   这个 schema 过滤 context，**schema 里没声明的 key 会被丢掉**。
   **不能和 `config.configurable` 同时出现**：同一请求里两者都非空会返回 400。
-- `context.workspace`：**这一轮的工作空间绝对路径**（014 期起真正生效）。
+- `context.workspace`：**这一轮的工作空间绝对路径**。
   agent 的文件工具（`read_file` / `write_file` / `edit_file` / `delete` / `ls` /
   `glob` / `grep`）和 `execute`（shell 的工作目录）都落在这个目录里。
   空字符串或不带这个 key = 用后端启动时的工作空间（`SCODE_WORKSPACE` 或运行
@@ -271,22 +271,22 @@ Accept: text/event-stream
   路径不存在 / 不是目录 → **这一轮直接失败**，错误信息是「工作空间不存在：xxx」，
   不会静默退回默认目录（那等于把 agent 的写操作落到用户没选过的目录里）。
   见 `stupid_code/graph/workspace.py`
-- `context.permissions`：权限档位（009 期），决定 `execute` 要不要先问人——见 `stupid_code/graph/permissions.py`
-- `context.model`：**选中的对话模型 id**（`供应商名:模型名`，010 期）。
+- `context.permissions`：权限档位，决定 `execute` 要不要先问人——见 `stupid_code/graph/permissions.py`
+- `context.model`：**选中的对话模型 id**（`供应商名:模型名`）。
   后端在**每次模型调用前**按这个 id 把模型换掉——用该供应商在 `conf/config.toml` 里的
   `base_url` / `api_key` / `protocol`——所以**切换不需要重启后端**。
   不传或传空串表示用后端启动时带的默认模型（`[models].default`）。
   见 `stupid_code/graph/model_switch.py`
-- `context.skills`：本次对话勾选的 skill 名字列表（018 期）。名字来自
+- `context.skills`：本次对话勾选的 skill 名字列表。名字来自
   `GET /admin/skills`，后端把勾选的 skill 正文钉进上下文——见 `stupid_code/graph/skills.py`
-- 消息正文本身也可以是**斜杠命令**（011 期）：正文恰好是 `/compaction` 时，
+- 消息正文本身也可以是**斜杠命令**：正文恰好是 `/compaction` 时，
   后端会强制压缩一次对话历史（不等待阈值）。这是普通消息，没有单独的端点——
   命令表在前端 `web/src/lib/commands.ts`，后端认哪个命令见
   `stupid_code/graph/compaction.py` 的 `COMPACTION_COMMAND`。
   压缩掉的旧对话会落到工作空间的 `.scode/conversation_history/<session_id>.md`，
   agent 之后可以用 `read_file` 读回来
 
-> **服务端处理顺序**（细节见 `docs/backend/PROGRESS.md` 022 期）：
+> **服务端处理顺序**（细节见 `docs/backend/backend.md` §3.17）：
 > ① 先校验调用方是否同时传了非空的 `config.configurable` 和 `context`，是则 400；
 > ② 再把 `context` 复制进 `configurable`，并追加 `thread_id`、鉴权、`run_id`
 > 等平台内部键；③ 执行前按 `context_schema` 过滤 `context`。因此运行时
@@ -298,14 +298,14 @@ Accept: text/event-stream
 |---|---|---|
 | `metadata` | `{"run_id": "..."}` | 运行 ID，取消时需要 |
 | `updates` | `{节点名: {"messages": [...]}}` | 增量状态，前端从中提取 token / tool_call / tool_result |
-| `updates` | `{"__interrupt__": [{"value": {"action_requests": [...], "review_configs": [...]}}]}` | 图挂起等人工确认（009 期） |
+| `updates` | `{"__interrupt__": [{"value": {"action_requests": [...], "review_configs": [...]}}]}` | 图挂起等人工确认 |
 | `values` | `{"messages": [...]}` | 全量状态快照 |
 | `error` | `{"message": "..."}` | 运行出错 |
 | `end` | — | 运行结束 |
 
-> 前端的 [events.ts](../web/src/api/events.ts) 同时兼容 LangGraph 原生事件（`updates`/`values`）和自定义语义事件（`messages`/`tool_call`/`tool_result`/`todos`），001 期只依赖原生 `updates`。
+> 前端的 [events.ts](../web/src/api/events.ts) 同时兼容 LangGraph 原生事件（`updates`/`values`）和自定义语义事件（`messages`/`tool_call`/`tool_result`/`todos`），只依赖原生 `updates`。
 
-### 恢复一次挂起的运行（009 期）
+### 恢复一次挂起的运行
 
 图因为人工确认挂起时，用**同一个端点**把决定送回去，图从挂起点继续：
 
@@ -340,16 +340,16 @@ Accept: text/event-stream
 - 改完再执行的决定是 `{"type": "edit", "edited_action": {"name": "execute",
   "args": {"command": "改过的命令"}}}`（框架 `EditDecision` 的定义）。
   `execute` 允许 `approve` / `edit` / `reject` 三种；`delete` 只允许前两种里的
-  `approve` / `reject`（015 期起 `delete` 也进 `interrupt_on`，只在 `manual` 档拦）。
+  `approve` / `reject`（`delete` 也进 `interrupt_on`，只在 `manual` 档拦）。
   **非只读的 MCP 工具也一样**（`mcp__{服务器}__{工具}`）：`manual` 档下只给
   `approve` / `reject`，不给 `edit`——参数结构由服务器 schema 管（2026-10-26 review 后）
-- **写记忆文件也会挂起**（017 期起）：`write_file` / `edit_file` 的目标是
+- **写记忆文件也会挂起**：`write_file` / `edit_file` 的目标是
   `.scode-memory.md`（项目级）或 `memory.md`（用户级，`~/.scode/`）时，
   `normal` 和 `manual` 档都挂起，只给 `approve` / `reject`。
   **不给 `edit`**——前端能改的只是 `file_path`（路径），改路径不等于改内容。
   写普通文件不受影响（谓词只看路径，不看工具名）
 - `context.permissions`：**建议原样带回同一个档位**。后端的拦截判定在
-  恢复时会再跑一次——不过 015 期起判定读的是**图状态里记的那一档**（开跑时写下的），
+  恢复时会再跑一次——不过判定读的是**图状态里记的那一档**（开跑时写下的），
   客户端回传的值变了也不会改变判定。仍然建议原样带回，让恢复这一轮跟发起那一轮
   看到的是同一套配置
 - `context.model`：同理**建议原样带回**。恢复时后端同样按它换模型，
@@ -402,7 +402,7 @@ GET /threads/{thread_id}/runs?limit=20
 
 ### `POST /workspaces/pick`
 
-弹**系统原生**的文件浏览窗口，让用户选一个目录作为工作空间（014 期）。
+弹**系统原生**的文件浏览窗口，让用户选一个目录作为工作空间。
 
 **为什么由后端弹窗**：浏览器的目录选择 API（File System Access API 的
 `showDirectoryPicker()`、`<input webkitdirectory>`）**故意不暴露绝对路径**，
@@ -455,7 +455,7 @@ zenity / osascript）。前端这时把「手动输入路径」的输入框亮�
 
 由 `stupid_code/admin/app.py` 提供的自定义 ASGI 路由，通过 `langgraph.json` 的 `http.app` 字段挂载到 langgraph dev 服务。操作对象是项目根 `conf/config.toml`（不入库）。**改完配置需重启 `scode` 才能让运行中的 graph 加载新模型实例**——所有响应里的 `restart_required: true` 就是这个意思。
 
-> **010 期起有一条例外**：运行期切换模型那条路径（`context.model`）**每次调用都
+> **有一条例外**：运行期切换模型那条路径（`context.model`）**每次调用都
 > 重新读 `conf/config.toml`**，所以新增模型、改 `base_url`、改 `api_key` 在**下一次运行**
 > 就生效，不用重启。`restart_required` 指的是「后端启动时带的那个默认模型实例」——
 > 改它仍然要重启。
@@ -795,7 +795,7 @@ agent 能用的 skill 有**两个来源**（见 `stupid_code/graph/skills.py`）
 
 ## 未实现
 
-（暂无。014 期起工作空间走 `POST /workspaces/pick`，不再需要目录列表端点。）
+（暂无。工作空间走 `POST /workspaces/pick`，不需要目录列表端点。）
 
 ---
 
@@ -808,9 +808,9 @@ agent 能用的 skill 有**两个来源**（见 `stupid_code/graph/skills.py`）
 
 ## 已验证的事实
 
-实测结论**统一收在** [`docs/backend/PROGRESS.md`](../docs/backend/PROGRESS.md) §8「已验证的事实」——
-那是后端的活文档，按期分节（平台与框架 / 持久化 / HITL / 模型切换 / 压缩 / MCP / 工作空间 /
-记忆 / skill），每条都注明了验证时间。框架在 0.x 迭代快，改行为前先去那里核。
+实测结论**收在** [`docs/backend/backend.md`](../docs/backend/backend.md)：§3 每个能力小节末尾有该能力的
+「已验证的事实」，§8 是平台与框架层的结论，每条都注明了验证时间。
+框架在 0.x 迭代快，改行为前先去那里核。
 
 本文档只管**接口形状**：请求体字段、响应字段、状态码。形状类的说明在上面的端点章节里
 逐个端点写着（比如 `POST /threads` 的 body 必填、`runs/stream` 的 body 形状、

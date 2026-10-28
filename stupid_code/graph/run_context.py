@@ -10,7 +10,7 @@ Agent Server 会按这个 schema 过滤 context，未声明的 key 会被丢掉�
 注意：`thread_id` 不在这里——它是 LangGraph 的保留配置，仍在
 `configurable` / 平台请求参数里。
 
-细节见 `docs/backend/PROGRESS.md` 022 期、AGENTS.md 第 8 条。
+细节见 `docs/backend/backend.md` §3.17、AGENTS.md 第 8 条。
 """
 
 from __future__ import annotations
