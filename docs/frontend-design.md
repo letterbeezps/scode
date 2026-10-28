@@ -40,7 +40,7 @@
 
 > Shiki 和 `react-diff-viewer-continued` 都走动态 `import()`。后者连带 refractor 的全部
 > 语言语法（十几 MB 的懒加载 chunk），只有真的出现文件改动时才下载。
-> 主 chunk 503 kB（gzip 155 kB，2026-10-28 实测）。
+> 主 chunk 506 kB（gzip 156 kB，2026-10-28 实测）。
 
 ---
 
@@ -84,11 +84,25 @@
 
 - **顶部**：折叠按钮 + Logo
 - **新建任务** 按钮
-- **任务列表**：按时间倒序，显示标题、时间；点击切换，hover 出现删除
+- **任务列表**：**按工作空间分二级目录**——一级是工作空间，二级是该工作空间下的任务
 - **待办**：当前任务的 TodoList，独立滚动区
 - **底部**：模型选择、亮/暗主题切换、设置页入口
 
 折叠状态存在 `uiStore`。mock 模式下底部额外挂一条黄色提示条，避免和真实数据混淆。
+
+**任务列表按工作空间收纳**
+
+同一个工作空间里往往会攒下好几个对话，平铺成一长串很难找——所以列表是二级目录：
+
+- **一级 = 工作空间**：分组 key 就是工作空间的绝对路径。**没选工作空间**的任务
+  （走后端默认目录）归到「默认工作空间」这一组
+- **二级 = 该工作空间下的任务**：跟以前一样，标题 + 时间，点击切换、hover 出现删除
+- **分组名**取路径的最后一段（`/Users/me/projects/demo` → `demo`），鼠标悬停显示完整路径
+- **组可以折叠**，折叠状态记在 `uiStore`（localStorage，刷新后还在）；默认全部展开
+- **排序**：组按「组内最近一次更新」倒序，组内也按更新时间倒序——刚用过的目录排最上面
+- **路径归一化**：`/p/demo` 和 `/p/demo/` 是同一组（末尾多个斜杠太常见了），根目录 `/` 单独保住
+- **当前任务所在的分组会自动展开**：分组折叠起来任务就在侧边栏里看不见了，而主界面还开着它。
+  但用户手动折叠的分组**不会**被自动弹开——只在切换到某个任务、或刷新页面恢复任务时展开一次
 
 ### 3.2 主对话区（ChatArea）
 
@@ -127,7 +141,8 @@ App  (BrowserRouter)
 ├── ChatPage                /chat · /chat/:threadId
 │   ├── Sidebar
 │   │   ├── NewChatButton
-│   │   ├── ConversationItem × N          任务列表项
+│   │   ├── WorkspaceGroupItem × N        工作空间分组（一级目录，可折叠）
+│   │   │   └── ConversationItem × N      该工作空间下的任务（二级）
 │   │   ├── TodoList                      待办（内联渲染，无独立 TodoItem 文件）
 │   │   └── SettingsPanel
 │   ├── EmptyState  |  MessageList
@@ -231,10 +246,13 @@ interface UIState {
   sidebarCollapsed: boolean
   activeToolCallId: string | null   // 当前展开的工具调用卡片；null = 全部折叠
   theme: Theme                      // 'dark' | 'light'
+  collapsedWorkspaces: string[]     // 侧边栏里被折叠的工作空间分组（存路径，空串 = 默认工作空间）
   toggleSidebar: () => void
   setSidebarCollapsed: (collapsed: boolean) => void
   setActiveToolCall: (id: string | null) => void
   toggleTheme: () => void
+  toggleWorkspaceGroup: (key: string) => void
+  expandWorkspaceGroup: (key: string) => void
 }
 ```
 
@@ -850,6 +868,7 @@ Shiki 的语言包，属于按需加载，不在首屏关键路径上。
 | 能力 | 状态 |
 |------|------|
 | 任务列表 / 新建 / 切换 / 删除 | ✅ |
+| 任务列表按工作空间分二级目录（分组可折叠、状态持久化） | ✅ |
 | 流式对话、停止生成、错误浮层 | ✅ |
 | 工具卡片四态、按类型差异化渲染 | ✅ |
 | Diff（统一视图，五种输入形态，2000 行截断） | ✅ |

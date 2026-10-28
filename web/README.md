@@ -216,11 +216,12 @@ src/
 │   ├── commands.ts       # 斜杠菜单项：命令 + skill（skillToMenuItem）
 │   ├── tools.ts          # 工具名 → 类型分类（纯逻辑，不含 React）
 │   ├── diff.ts           # 从工具参数/结果拼出 diff 的新旧文本
+│   ├── thread-groups.ts  # 任务按工作空间分组（纯逻辑，不含 React）
 │   └── highlight.ts      # Shiki 单例（动态 import）
 ├── hooks/
 │   └── useAutoScroll.ts  # 流式自动滚动 + 用户上滑暂停
 ├── components/
-│   ├── sidebar/          # 任务列表、待办列表、设置入口
+│   ├── sidebar/          # 任务列表（按工作空间分二级目录）、待办列表、设置入口
 │   ├── chat/             # 消息列表、输入区、工作空间/权限选择器、markdown、工具可视化
 │   ├── memory/           # 记忆面板（用户级 / 项目级两份）
 │   └── settings/         # 模型管理界面（列表 / 增删改表单）
@@ -232,6 +233,18 @@ src/
 侧边栏的**任务列表**就是会话（thread），点「新建任务」开一个新的。
 下面的**待办**是 Agent 自己维护的 TodoList（`write_todos` 工具驱动的），两者会同时出现，
 所以文档和界面统一用「任务」指会话、用「待办」指 TodoList。
+
+### 任务列表按工作空间分二级目录
+
+任务列表不是平铺的一长串，而是**按工作空间收纳**的二级目录：
+
+- **一级 = 工作空间**：分组 key 就是工作空间的绝对路径；没选工作空间的任务
+  （走后端默认目录）归到「默认工作空间」那一组
+- **二级 = 该工作空间下的任务**：组名取路径最后一段，悬停显示完整路径
+- **分组可折叠**，折叠状态存在 localStorage（刷新后还在），默认全部展开
+- 当前任务所在的分组会自动展开；手动折叠的分组不会被自动弹开
+
+分组逻辑在 `src/lib/thread-groups.ts`（纯函数，不含 React）。
 
 
 ## 实现说明
@@ -304,7 +317,7 @@ src/
 
 Shiki 和 `react-diff-viewer-continued` 都用动态 import 拆出主 chunk。
 后者连带全部语言语法包（懒加载 chunk），只有真的出现文件改动时才下载。
-主 chunk 503 kB（gzip 155 kB，2026-10-28 实测）。
+主 chunk 506 kB（gzip 156 kB，2026-10-28 实测）。
 
 `build` 时仍会提示 chunk 超过 500 kB —— 那是 Shiki 的 oniguruma wasm（622 kB）
 和 Shiki 的语言包，属于按需加载，不在首屏关键路径上。

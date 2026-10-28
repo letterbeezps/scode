@@ -10,6 +10,9 @@ export type Theme = 'light' | 'dark'
 
 const THEME_KEY = 'stupid-code:theme'
 
+/** 侧边栏里被折叠的工作空间分组（存的是工作空间路径，空串 = 默认工作空间） */
+const COLLAPSED_WORKSPACES_KEY = 'stupid-code:collapsed-workspaces'
+
 function readStoredTheme(): Theme {
   try {
     const stored = localStorage.getItem(THEME_KEY)
@@ -29,24 +32,55 @@ function applyTheme(theme: Theme) {
   }
 }
 
+function readStoredCollapsed(): string[] {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_WORKSPACES_KEY)
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((value): value is string => typeof value === 'string')
+  } catch {
+    return []
+  }
+}
+
+function persistCollapsed(list: string[]) {
+  try {
+    localStorage.setItem(COLLAPSED_WORKSPACES_KEY, JSON.stringify(list))
+  } catch {
+    /* 同上 */
+  }
+}
+
 export interface UIState {
   sidebarCollapsed: boolean
   /** 当前展开的工具调用卡片（null = 全部折叠，设计文档 4.1） */
   activeToolCallId: string | null
   theme: Theme
+  /**
+   * 侧边栏里被折叠的工作空间分组。
+   *
+   * 存的是工作空间路径本身（默认工作空间是空串），刷新后还在。
+   * 默认一个都不折叠——分组是为了收纳，不是为了藏东西。
+   */
+  collapsedWorkspaces: string[]
   toggleSidebar: () => void
   setSidebarCollapsed: (collapsed: boolean) => void
   setActiveToolCall: (id: string | null) => void
   toggleTheme: () => void
+  toggleWorkspaceGroup: (key: string) => void
+  expandWorkspaceGroup: (key: string) => void
 }
 
 const initialTheme = readStoredTheme()
 applyTheme(initialTheme)
+const initialCollapsed = readStoredCollapsed()
 
 export const useUIStore = create<UIState>((set) => ({
   sidebarCollapsed: false,
   activeToolCallId: null,
   theme: initialTheme,
+  collapsedWorkspaces: initialCollapsed,
 
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
@@ -60,6 +94,23 @@ export const useUIStore = create<UIState>((set) => ({
       const theme: Theme = s.theme === 'dark' ? 'light' : 'dark'
       applyTheme(theme)
       return { theme }
+    }),
+
+  toggleWorkspaceGroup: (key) =>
+    set((s) => {
+      const next = s.collapsedWorkspaces.includes(key)
+        ? s.collapsedWorkspaces.filter((item) => item !== key)
+        : [...s.collapsedWorkspaces, key]
+      persistCollapsed(next)
+      return { collapsedWorkspaces: next }
+    }),
+
+  expandWorkspaceGroup: (key) =>
+    set((s) => {
+      if (!s.collapsedWorkspaces.includes(key)) return {}
+      const next = s.collapsedWorkspaces.filter((item) => item !== key)
+      persistCollapsed(next)
+      return { collapsedWorkspaces: next }
     }),
 }))
 
