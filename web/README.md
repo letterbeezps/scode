@@ -26,10 +26,13 @@ pnpm dev                      # http://localhost:5173
 VITE_USE_MOCK=true pnpm dev
 ```
 
-`src/api/mock/` 按与真实后端**完全相同的接口签名**实现了假数据，
-覆盖了流式 token、工具调用状态流转、todo 同步、diff 渲染、停止生成等全部路径。
-工作空间选择器在 mock 下走一棵写死的假文件树（`MOCK_FS`），
-回复末尾还会把这次收到的 `workspace` / `permissions` 原样回显出来，方便确认参数确实传到了。
+`src/api/mock/` 按与真实后端**同名同用途的主要接口签名**实现假数据，
+覆盖了流式 token、工具调用状态流转、todo 同步、diff 渲染、停止生成等**主要路径**。
+工作空间选择器在 mock 下直接返回一个写死的假路径（不弹框），
+回复末尾会把这次收到的 `workspace` / `permissions` / `model` 原样回显出来，方便确认参数确实传到了。
+
+**人工确认（HITL）路径 mock 不覆盖**——mock 的流里不发 `interrupt` 事件，审批卡片要在真后端上验证。
+
 侧边栏会显示黄色提示条，避免和真实数据混淆。生产构建务必关掉。
 
 ## 脚本
@@ -47,7 +50,9 @@ VITE_USE_MOCK=true pnpm dev
 
 见 `.env.example`。要点：
 
-- `VITE_USE_MOCK` —— 默认 `false`，只有演示时才开
+- `VITE_USE_MOCK` —— 代码默认值 `false`；**但 `.env.example` 里预置的是 `true`**，
+  照上面「快速开始」`cp .env.example .env.local` 会直接进 mock 模式（后端没起时正合适）。
+  联调真后端时把它改成 `false`
 - `VITE_API_BASE_URL` —— 留空走同源 `/api` 代理；跨域部署时才显式设置
 - `VITE_ASSISTANT_ID` —— 对应 `langgraph.json` 里的 `graphs` key，默认 `code_agent`
 
@@ -145,6 +150,46 @@ skill 清单来自 `GET /admin/skills?workspace=<当前工作空间>`，有**两
 挂起后前端弹确认卡片，按 `action_requests` 逐条批准 / 拒绝 / 改后执行（009 / 015 期）。
 注意这是执行前的闸门，和「工具调用事后可见」是两件事。
 
+## 记忆与模型
+
+### 记忆：在输入区点「记忆」
+
+输入区那个「记忆」按钮打开面板。agent 的长期记忆有**两份**：
+
+| 作用域 | 路径 | 跟着谁走 |
+|---|---|---|
+| 用户级 | `~/.scode/memory.md` | 跟着用户，跨所有工作空间共用 |
+| 项目级 | `<工作空间>/.scode-memory.md` | 跟着项目 |
+
+读用 `GET /admin/memory`（一次读两份），写用 `PUT /admin/memory`（一次写一份）。
+
+几条容易踩的：
+
+- **改完不会立刻生效** —— 记忆是**会话开始时读一次**的，改完要开新会话（新建 thread）才生效
+- **写空内容 = 清空这个文件**（文件留着，不删）
+- **两份是独立保存的** —— 两个编辑区各管各的，保存一份不影响另一份
+- **项目级跟着当前任务的工作空间走** —— 没选工作空间时不带 `workspace`，后端退回它自己的默认工作空间
+- agent 自己写记忆走文件工具（`write_file("/user-memory/memory.md", ...)`），**要人工确认**（`normal` / `manual` 档）
+
+### 模型管理：直连 `/admin/models`
+
+「设置 → 模型管理」那一页直连后端的 `/admin/models` 一族端点：
+
+| 操作 | 端点 |
+|---|---|
+| 列全部 | `GET /admin/models` |
+| 单个详情 | `GET /admin/models/{id}` |
+| 新增 | `POST /admin/models` |
+| 改 | `PUT /admin/models/{id}` |
+| 删 | `DELETE /admin/models/{id}` |
+
+几条容易踩的：
+
+- **api_key 默认脱敏** —— 返回 `***末4位`，带 `?reveal=true` 才给明文
+- **连接字段是供应商级的** —— 改一个模型会带动同供应商的所有模型，PUT 响应里的 `co_affected` 就是这个意思，UI 上别写成「只改了这一个」
+- **删除是两步确认** —— 第一下只把按钮切成「确认删除」，不给弹窗
+- 改完 `conf/config.toml` **不需要重启后端**（切换对话模型那条路径每次调用都重读）；只有改「后端启动时带的默认模型」才要重启
+
 ## 目录结构
 
 ```
@@ -156,7 +201,9 @@ src/
 │   ├── events.ts         # 事件归一化：LangGraph 原生事件 → 前端语义事件
 │   ├── thread.ts         # 线程 CRUD + 历史消息还原
 │   ├── run.ts            # 流式运行与取消（带 workspace / permissions / model / skills）
+│   ├── models.ts         # 模型管理：/admin/models 一族（列表 / 详情 / 增删改）
 │   ├── workspace.ts      # 工作空间：POST /workspaces/pick（弹系统目录框）
+│   ├── memory.ts         # 记忆：读两份（GET /admin/memory）、写一份（PUT /admin/memory）
 │   ├── skills.ts         # skill 清单：GET /admin/skills
 │   └── mock/             # 无后端时的假实现
 ├── store/                # Zustand：conversation / ui / todo / settings / task
@@ -164,6 +211,7 @@ src/
 │   ├── cn.ts             # className 合并、文件扩展名 → shiki 语言名
 │   ├── permissions.ts    # 三级确认策略的取值与说明
 │   ├── skills.ts         # context.skills 的 key 常量
+│   ├── model.ts          # context.model 的 key 常量
 │   ├── commands.ts       # 斜杠菜单项：命令 + skill（skillToMenuItem）
 │   ├── tools.ts          # 工具名 → 类型分类（纯逻辑，不含 React）
 │   ├── diff.ts           # 从工具参数/结果拼出 diff 的新旧文本
@@ -172,7 +220,9 @@ src/
 │   └── useAutoScroll.ts  # 流式自动滚动 + 用户上滑暂停
 ├── components/
 │   ├── sidebar/          # 任务列表、待办列表、设置入口
-│   └── chat/             # 消息列表、输入区、工作空间/权限选择器、markdown、工具可视化
+│   ├── chat/             # 消息列表、输入区、工作空间/权限选择器、markdown、工具可视化
+│   ├── memory/           # 记忆面板（用户级 / 项目级两份）
+│   └── settings/         # 模型管理界面（列表 / 增删改表单）
 └── pages/                # ChatPage / RootRedirect / SettingsPage
 ```
 
@@ -187,7 +237,7 @@ src/
 
 ### 消息用有序片段，而不是平铺字段
 
-设计文档 5.2 的 `Message` 只有 `content` 和 `tool_calls` 两个平级字段，
+设计文档 5.6 的 `Message` 只有 `content` 和 `tool_calls` 两个平级字段，
 但 4.1 要求按「文本 + 代码块 + 工具调用混合排列」渲染。
 平铺字段表达不了「先说一段话 → 调工具 → 再接着说」的顺序，
 所以额外维护了 `parts: MessagePart[]`，**渲染一律以 parts 为准**，
@@ -197,7 +247,7 @@ src/
 
 「前端能消费的流式协议」有两份说法：
 
-1. 设计文档 4.2 的语义事件：`messages` / `tool_call` / `tool_result` / `todos` / `error` / `end`
+1. 设计文档 6.3 的语义事件：`messages` / `tool_call` / `tool_result` / `todos` / `error` / `end`
    （LangGraph 里用 `get_stream_writer()` 发出）
 2. LangGraph Platform `/runs/stream` 的原生事件：`metadata` / `updates` / `values` / `error` / `end`
 
@@ -219,15 +269,16 @@ src/
 `EventSource` 不支持自定义 header，生产环境的鉴权没法带。
 `run.ts` 用 `fetch` + `ReadableStream` 手动解析，同时覆盖两种场景。
 
-### Diff 的四种输入形态
+### Diff 的五种输入形态
 
-`react-diff-viewer` 只吃整篇的新旧文本，但后端给过来的东西有四种，
+`react-diff-viewer` 只吃整篇的新旧文本，但后端给过来的东西有五种，
 `lib/diff.ts` 按优先级依次尝试：
 
 1. 参数里直接给了新旧全文 → 整篇对比（行号才对得上）
 2. 结果里给了 unified diff → 解析还原两侧全文
 3. `edit_file` 只给了 `old_string` / `new_string` → 退化成片段对比
-4. 只有新内容 → 当作「从空文件写入」的全量 diff
+4. 只有新内容 + 文件路径 → 当作「从空文件写入」的全量 diff
+5. 什么都没有 → 不渲染 Diff
 
 超过 2000 行会截断并提示。
 

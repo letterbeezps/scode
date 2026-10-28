@@ -25,12 +25,12 @@
 | AGENTS.md | 主题 | 本文小节 |
 |---|---|---|
 | 1 | 参考资料要先装 | [`README.md`](../../README.md) 的「1. 装 skills」 |
-| 2 | 别传 `checkpointer` | §2.2 |
-| 3 | 三条硬编码路径 + `__file__` 层数 | §2.2 |
+| 2 | 别传 `checkpointer` | 001 · §2.2 |
+| 3 | 三条硬编码路径 + `__file__` 层数 | §2.2（三个文件、四条 path） |
 | 4 | `.langgraph_api/` 要留着 | §4.2 |
 | 5 | `GET /assistants` 返回 405 | §8.1 |
-| 6 | 前端契约先行 | §4.1 |
-| 7 | SSE 不用 EventSource | §4.2 |
+| 6 | 前端契约先行 | §4.5 |
+| 7 | SSE 不用 EventSource | 001 |
 | 8 | 任务级参数 | §4.4 |
 | 9 | 没有内置系统提示词 | §4.3 |
 | 10 | 长期记忆的挂法与边界 | 006 · §8.11 |
@@ -149,6 +149,7 @@ stupid-code/
 │   │   ├── backend.py          # 真实磁盘 + shell 的 backend
 │   │   ├── subagent_policy.py  # 子 agent 的权限/HITL/工具策略
 │   │   ├── run_context.py      # 任务参数的结构化 context（context_schema）
+│   │   ├── workspace.py        # 工作空间：解析 context.workspace + 校验 + 写进系统提示词
 │   │   ├── compaction.py       # /compaction 手动压缩 + 摘要用当前模型
 │   │   ├── memory.py           # 长期记忆中间件（用户级 + 项目级两个来源）
 │   │   ├── paths.py            # 记忆/skill 的路径常量（$SCODE_HOME）
@@ -177,7 +178,7 @@ stupid-code/
 └── skills-lock.json           # langchain-skills 安装记录
 ```
 
-### 2.2 `langgraph.json` 里的三条硬编码路径
+### 2.2 `langgraph.json` 里的硬编码路径（三个文件、四条 path）
 
 ```json
 {
@@ -189,7 +190,8 @@ stupid-code/
 }
 ```
 
-**挪这三个文件必须同步改这里**，否则启动报找不到模块。
+**挪这三个文件必须同步改这里**，否则启动报找不到模块。`graph/persistence.py` 被引用了**两次**
+（`:checkpointer` 和 `:store`），挪它的时候两条 path 都要改。
 
 另有几个模块用 `__file__` 定位目录，**层数跟包结构绑死**：
 
@@ -1791,7 +1793,7 @@ ls -la "$WS"
 
 | 内容 | 收敛到 | 原来散在 |
 |---|---|---|
-| 实测结论 | 本文档 §8 | `stupid_code/API.md` 的「已验证的事实」（整节已删，-79 行） |
+| 实测结论 | 本文档 §8 | `stupid_code/API.md` 的「已验证的事实」（内容整节删除，改成指向本文档 §8 的指针，-79 行） |
 | 目录树 | 本文档 §2.1 | `docs/overall-design.md` §9（**已漂移**：缺 `workspace.py` / `skills.py` / `admin/skills.py`，还列着「待建」目录）、`stupid_code/README.md`（-29 行，已删） |
 | 当前安全姿态 | 本文档 §5 | 根 `README.md` §安全（改成只留结论）、`docs/overall-design.md` §6（改成只写设计意图） |
 | 前端能力清单 | `docs/frontend-design.md` §12 | 本文档 §1.3（改成只留与后端耦合的条目） |

@@ -64,10 +64,11 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
 
 2. **别给 `create_deep_agent()` 传 `checkpointer`**——`langgraph dev` 会直接抛 ValueError（persistence 由平台自动处理）。
    持久化在 `langgraph.json` 里配（`graph/persistence.py` 的 SQLite 工厂），checkpoint 落 `stupid_code/data/langgraph.db`。
-   *→ §4.1*
+   *→ 001 · §2.2*
 
-3. **三个文件路径写死在 `langgraph.json` 里**：`./graph/agent.py:graph`、`./graph/persistence.py:checkpointer`、
-   `./admin/app.py:app`——挪了要同步改，否则启动找不到模块。另有几个模块用 `__file__` 定位目录，**层数跟包结构绑死**
+3. **三个文件路径写死在 `langgraph.json` 里**（**四个 path**——`graph/persistence.py` 被引用两次）：
+   `./graph/agent.py:graph`、`./admin/app.py:app`、`./graph/persistence.py:checkpointer`、`./graph/persistence.py:store`
+   ——挪了要同步改，否则启动找不到模块；`persistence.py` 那两条要一起改。另有几个模块用 `__file__` 定位目录，**层数跟包结构绑死**
    （具体哪几个、各是第几层见 §2.2）。**作者视角的路径仍相对 `stupid_code/` 写**。*→ §2.2*
 
 4. **`.langgraph_api/` 要留着，别删**：里面的 `.langgraph_ops.pckl` 是 **thread 索引**（会话列表的来源）。checkpoint 归
@@ -78,9 +79,9 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
    `GET /assistants/{id}/graph`。*→ §8.1*
 
 6. **前端已按契约写完了，后端要"实现前端已假定的契约"，不是"对齐已有实现"**。改后端接口前先看
-   `stupid_code/API.md` 和 `web/src/api/`。工作空间那条链路 014 期已闭环，别再按旧文档以为它只是「只透传」。*→ §4.1*
+   `stupid_code/API.md` 和 `web/src/api/`。工作空间那条链路 014 期已闭环，别再按旧文档以为它只是「只透传」。*→ §4.5*
 
-7. **SSE 一律用 fetch + 手动解析，不用 `EventSource`**（已定事项，别改回去）——后者不支持自定义 header。*→ §4.2*
+7. **SSE 一律用 fetch + 手动解析，不用 `EventSource`**（已定事项，别改回去）——后者不支持自定义 header。*→ 001*
 
 8. **`workspace` / `permissions` / `skills` 是任务级参数**，按 `threadId` 存而非全局：同任务内前后两条消息可能针对不同目录、
    不同 skill。另有 `draft` 副本，`createThread()` 时 `adoptDraft()` 固化并重置，否则两个任务的运行边界会串。**`model` 不是

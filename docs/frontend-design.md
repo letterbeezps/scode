@@ -45,7 +45,7 @@ v0.1 写的是「fetch + EventSource」。实际实现只保留了 fetch：`Even
 
 > Shiki 和 `react-diff-viewer-continued` 都走动态 `import()`。后者连带 refractor 的全部
 > 语言语法（十几 MB 的懒加载 chunk），只有真的出现文件改动时才下载。
-> 主 chunk 从 725 kB 降到 465 kB（gzip 145 kB）。
+> 主 chunk 从 725 kB 降到 503 kB（gzip 155 kB，2026-10-28 实测）。
 
 ---
 
@@ -111,7 +111,7 @@ v0.1 把两者都叫"任务"，侧边栏同时出现两个同名区域，用户�
 - Enter 发送 / Shift+Enter 换行；**IME 组字期间的回车是选词不是发送**，必须避开
 - 发送按钮 ↔ 停止按钮（生成中切换）
 - **下方一行两个选择器**（详见 7.7 / 7.8）：
-  - `工作空间` —— 文件夹浏览器，默认未选择
+  - `工作空间` —— 弹系统原生目录框选择，默认未选择
   - `权限` —— `manual` / `normal` / `auto` 三选一
 - **旁边还有一个「记忆」按钮**（017 期）：点开是记忆面板，查看/编辑 agent 的
   两份长期记忆（详见 7.9）
@@ -202,13 +202,15 @@ interface ConversationState {
   threads: Thread[]
   activeThreadId: string | null
   messages: Record<string, Message[]>        // thread_id -> messages
-  titles: Record<string, string>             // 后端不返回 title，前端从首条用户消息推导
+  titles: Record<string, string>             // 后端存 metadata.title，读不到时从前端 titles 回退
   pendingMessage: Message | null             // 正在流式生成的 assistant 消息
   pendingThreadId: string | null             // pendingMessage 属于哪个线程，切任务时不会串台
   isGenerating: boolean
+  recovering: boolean                        // 断线/刷新后，后端还在跑，等它跑完
   loading: boolean
   error: string | null
   cancelRequested: boolean                   // 用户点过停止：onEnd 落位时据此标记 interrupted
+  pendingApproval: PendingApproval | null    // HITL 待确认的动作组（009/015 期）
 
   loadThreads: () => Promise<void>
   createThread: () => Promise<string | null>
@@ -217,6 +219,7 @@ interface ConversationState {
   sendMessage: (content: string) => Promise<void>
   cancelRun: () => void
   clearError: () => void
+  decideApproval: (decisions: ApprovalDecision[]) => void
 }
 ```
 
@@ -309,6 +312,7 @@ v0.1 的 `Message` 只有 `content` 和 `tool_calls` 两个平级字段，**表�
 type MessagePart =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; call: ToolCall }
+  | { kind: 'approval'; id: string; requests: ApprovalRequest[]; status: 'pending' | 'approved' | 'rejected' | 'edited' }
 
 interface Message {
   id: string
@@ -316,6 +320,7 @@ interface Message {
   role: 'user' | 'assistant' | 'tool'
   content: string            // 与 parts 同步维护，供接口层与断言使用
   tool_calls?: ToolCall[]    // 同上
+  tool_call_id?: string      // LangChain 的 tool 消息用它回指调用
   parts: MessagePart[]       // ← 渲染一律以这个为准
   created_at: string
   error?: string             // 运行失败时写入
@@ -326,11 +331,6 @@ interface Message {
 从 LangGraph 的 `/state` 拉历史时，`restoreMessages()` 负责把 LangChain 的消息数组
 （含 `tool_calls` / `tool_call_id` 的配对关系）还原成同样的有序结构。
 
----
-
-## 6. API 通信层
-
-封装 `src/api/` 目录，隔离后端细节。
 
 ### 5.7 斜杠命令与 skill
 
@@ -352,6 +352,12 @@ interface Message {
 命令消息在消息列表里渲染成「命令气泡」而不是普通聊天气泡——`/compaction`
 显示成一句话看着像用户在说胡话。**skill 不是消息**，不会出现在消息列表里。
 
+---
+
+## 6. API 通信层
+
+封装 `src/api/` 目录，隔离后端细节。
+
 ### 6.1 目录结构
 
 ```
@@ -361,6 +367,7 @@ src/api/
 ├── events.ts          # 事件归一化：两套协议 → 一套前端语义事件，并去重
 ├── thread.ts          # 线程 CRUD + 历史消息还原
 ├── run.ts             # 运行相关 API（含流式与取消）
+├── models.ts          # 模型管理：/admin/models 一族（列表/详情/增删改）
 ├── workspace.ts       # 工作空间：弹系统目录选择框（POST /workspaces/pick）
 ├── memory.ts          # 记忆：读两份（GET /admin/memory）、写一份（PUT /admin/memory）
 ├── skills.ts          # skill 清单（GET /admin/skills）
@@ -379,7 +386,7 @@ export function streamRun(
   threadId: string,
   message: string,
   options: RunOptions,          // { workspace, permissions, model, skills }
-  handlers: RunHandlers,        // { onToken, onToolCall, onToolResult, onTodos, onError, onEnd, onRunId? }
+  handlers: RunHandlers,        // { onToken, onToolCall, onToolResult, onTodos, onError, onEnd, onRunId?, onInterrupt?, onConnectionLost? }
 ): () => void                   // 返回取消函数
 ```
 
@@ -435,6 +442,7 @@ type NormalizedEvent =
   | { type: 'tool_call'; call: ToolCall }
   | { type: 'tool_result'; id: string; result: ToolResult; error?: string }
   | { type: 'todos'; todos: Todo[] }
+  | { type: 'interrupt'; requests: ApprovalRequest[] }   // 图挂起等人工确认（__interrupt__）
   | { type: 'error'; message: string }
   | { type: 'end' }
 ```
@@ -471,12 +479,14 @@ POST /workspaces/pick
 
 ### 6.5 Mock 模式
 
-`VITE_USE_MOCK=true` 时，`src/api/mock/` 按与真实后端**完全相同的接口签名**提供假数据，
-覆盖流式 token、工具调用状态流转、待办同步、Diff 渲染、停止生成等全部路径，
-以及一个假的「选目录」实现（直接返回一个假路径）。
+`VITE_USE_MOCK=true` 时，`src/api/mock/` 按与真实后端**同名同用途的主要接口签名**提供假数据，
+覆盖流式 token、工具调用状态流转、待办同步、Diff 渲染、停止生成等**主要路径**，
+以及一个假的「选目录」实现（直接返回一个假路径，不弹框）。
 
-mock 回复末尾会把本次收到的 `workspace` / `permissions` / `model` / `skills` 原样回显出来，
-方便确认参数确实传到了。
+**人工确认（HITL）路径 mock 不覆盖**——mock 的流里不发 `interrupt` 事件，审批卡片要在真后端上验证。
+
+mock 回复会把本次收到的 `workspace` / `permissions` / `model` 回显在**末尾**，
+`skills` 在**开头**单独说一句（"已把 xxx 的 SKILL.md 全文钉进上下文"）。
 侧边栏显示黄色提示条标明当前是 mock。**生产构建务必关闭。**
 
 ---
@@ -515,13 +525,14 @@ Deep Agents 的内置工具名固定，但自定义工具（终端、git 等）�
 用 `react-diff-viewer-continued`，**统一视图**（分栏视图的 `splitView` 属性留着没开 ——
 窄栏下分栏每行只剩十几个字符）。
 
-它只吃 `oldValue` / `newValue` 两个整篇文本，但后端给过来的形态有四种，`lib/diff.ts`
+它只吃 `oldValue` / `newValue` 两个整篇文本，但后端给过来的形态有五种，`lib/diff.ts`
 按优先级依次尝试：
 
 1. 参数里直接给了新旧全文 → 整篇对比（行号才对得上）
 2. 结果里给了 unified diff → 解析还原两侧全文
 3. `edit_file` 只给了 `old_string` / `new_string` → 退化成片段对比
-4. 什么都没有 → 不渲染 Diff
+4. 只有新内容 + 文件路径 → 当作「从空文件写入」的全量 diff
+5. 什么都没有 → 不渲染 Diff
 
 超过 2000 行截断并提示。
 
@@ -530,7 +541,7 @@ Deep Agents 的内置工具名固定，但自定义工具（终端、git 等）�
 - 新建任务：调 `createThread`，用 `adoptDraft()` 固化当前的工作空间/权限，再跳转
 - 切换任务：加载对应 `thread_id` 的历史消息（`/state` + `restoreMessages`）
 - 删除任务：删线程，并清掉该任务的 `taskStore` 设置与待办
-- 标题：后端不返回 `title`，前端从首条用户消息截断推导，存在 `titles` 里
+- 标题：平台的 Thread 结构没有 `title` 字段，**借 `metadata.title` 存一份**（`PATCH /threads/{id}`，合并语义），刷新页面后仍在；读不到时退回从首条用户消息截断推导，存在 `titles` 里
 
 **`/chat` 下首发消息有个坑**：store 里 `sendMessage` 会兜底建线程，但那时 URL 还停在 `/chat`，
 消息会渲染到一个读不到 `threadId` 的页面上，等于凭空消失。所以 `ChatPage.handleSend`
@@ -554,19 +565,20 @@ Deep Agents 的内置工具名固定，但自定义工具（终端、git 等）�
   同时 `setActiveToolCall` 把它展开，再 `scrollIntoView({ behavior: 'smooth', block: 'center' })`
   滚到视口中间。没有 `toolCallId` 的待办不可点击
 
-### 7.7 工作空间（v0.2 新增）
+### 7.7 工作空间（014 期改）
 
-**是文件夹浏览器，不是输入框。** 手打项目路径是危险动作 —— 打错一个字符就是授权给了错误的目录。
+**是「弹系统原生目录框 + 下拉兜底」，不是文件夹浏览器。** 手打项目路径是危险动作 ——
+打错一个字符就是授权给了错误的目录，所以主路径走系统弹窗（6.4）；下拉里的手动输入只是
+无图形界面时的唯一出路。
 
 - **默认不选**。不预设任何目录，让用户明确选择，而不是默认就授权了某处
-- 每一行**两个按钮**：左边整块 = **选中这个目录**，右边箭头 = **进入**
-  （双击进入不可靠：第一次点击就会触发重渲染，第二次点击落在别的元素上）
-- 选中后面板**不关**，底栏实时显示路径，可以接着往下钻、改主意，再点「完成」
-- 底栏还有「取消选择」—— 清空并关闭
-- 选中后按钮右上角有**常驻的 ✗ 取消入口**，不用去 hover 里找
-- 下次打开从已选工作空间的**父目录**起步，省得每次从 `/` 点进来
+- 主按钮：点开 → 后端弹系统原生目录框（`POST /workspaces/pick`）；弹窗期间显示「等待选择…」
+- 弹不出来（无图形界面 / 缺依赖）时，把「手动输入绝对路径」的路子亮出来
+- 旁边的小箭头展开下拉：**最近用过的项目**（来自各 thread 的 `metadata.workspace`）
+  + **手动输入绝对路径** + **取消选择**
+- 用户点取消**不算错误**，保留原来的选择
 
-绝对路径只能由后端给出（6.4）。**工作空间不通过环境变量预设。**
+绝对路径有两条来源：后端弹窗给出的，或用户手动输入的。**工作空间不通过环境变量预设。**
 
 ### 7.8 权限（v0.2 新增）
 
@@ -842,7 +854,7 @@ refractor 的语言包，属于按需加载，不在首屏关键路径上。
 | 任务列表 / 新建 / 切换 / 删除 | ✅ |
 | 流式对话、停止生成、错误浮层 | ✅ |
 | 工具卡片四态、按类型差异化渲染 | ✅ |
-| Diff（统一视图，四种输入形态，2000 行截断） | ✅ |
+| Diff（统一视图，五种输入形态，2000 行截断） | ✅ |
 | Shiki 代码高亮 + 复制 | ✅ |
 | 待办实时同步 + 点击跳转到对应工具调用 | ✅ |
 | 亮/暗主题 | ✅ |

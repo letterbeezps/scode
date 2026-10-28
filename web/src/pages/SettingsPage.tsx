@@ -4,8 +4,10 @@
  * 模型一节接的是后端 /admin/models（契约见 stupid_code/API.md「模型管理」），
  * 操作对象是仓库根的 conf/config.toml，不再是写死的本地列表。
  *
- * 下拉框里的「选中」仍只是本地偏好：后端用哪个模型由 config.toml 的
- * [models].default 决定，没有任何端点能改它，所以这里把这点写清楚。
+ * 下拉框里的「选中」是**真正生效**的选择：它随每次 run 的 context 一起发给后端，
+ * 后端在每次模型调用前把模型换成它（见后端 stupid_code/graph/model_switch.py），
+ * 所以切换不需要重启后端，下一条消息就用新供应商的 base_url / api_key / protocol。
+ * 区别于 defaultId —— 那是后端启动时带的默认模型（config.toml 的 [models].default）。
  */
 import { Link } from 'react-router-dom'
 import { ArrowLeft, Monitor, Moon, Sun } from 'lucide-react'

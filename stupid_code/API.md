@@ -12,15 +12,15 @@
 |---|---|---|---|---|
 | `scode` | GET | [`/ok`](#get-ok) | 存活探测 | ✅ |
 | `scode` | POST | [`/assistants/search`](#post-assistantssearch) | 列出 assistant | ✅ |
-| `scode` | GET | [`/assistants/{id}/graph`](#get-assistantsidgraph) | 加载图结构 | ✅ |
+| `scode` | GET | [`/assistants/{id}/graph`](#get-assistantsassistant_idgraph) | 加载图结构 | ✅ |
 | 前端 | POST | [`/threads`](#post-threads) | 创建会话 | ✅ |
 | 前端 | POST | [`/threads/search`](#post-threadssearch) | 会话列表 | ✅ |
-| 前端 | DELETE | [`/threads/{id}`](#deletethreadsid) | 删除会话 | ✅ |
-| 前端 | PATCH | [`/threads/{id}`](#patch-threadsid) | 改 metadata（存标题） | ✅ |
-| 前端 | GET | [`/threads/{id}/state`](#get-threadsidstate) | 历史消息 | ✅ |
-| 前端 | POST | [`/threads/{id}/runs/stream`](#post-threadsidrunsstream) | 流式运行 / 恢复挂起的运行 | ✅ |
+| 前端 | DELETE | [`/threads/{id}`](#delete-threadsthread_id) | 删除会话 | ✅ |
+| 前端 | PATCH | [`/threads/{id}`](#patch-threadsthread_id) | 改 metadata（存标题） | ✅ |
+| 前端 | GET | [`/threads/{id}/state`](#get-threadsthread_idstate) | 历史消息 | ✅ |
+| 前端 | POST | [`/threads/{id}/runs/stream`](#post-threadsthread_idrunsstream) | 流式运行 / 恢复挂起的运行 | ✅ |
 | 前端 | GET | `/threads/{id}/runs/{runId}/stream` | 断线后接回正在运行的事件流 | ✅ |
-| 前端 | POST | [`/threads/{id}/runs/{runId}/cancel`](#post-threadsidrunsrunidcancel) | 停止运行 | ✅ |
+| 前端 | POST | [`/threads/{id}/runs/{runId}/cancel`](#post-threadsthread_idrunsrun_idcancel) | 停止运行 | ✅ |
 | 前端 | POST | [`/workspaces/pick`](#post-workspacespick) | 弹系统文件浏览窗口选工作空间 | ✅（014 起） |
 | 管理端 | GET | [`/admin/models`](#get-adminmodels) | 列出全部模型 | ✅（003 起） |
 | 管理端 | GET | [`/admin/models/{id}`](#get-adminmodelsid) | 单个模型详情 | ✅（003 起） |

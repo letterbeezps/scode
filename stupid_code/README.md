@@ -156,7 +156,7 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
 ## 注意
 
 - 不要给 `create_deep_agent()` 传 `checkpointer`：持久化由平台在 `langgraph.json` 层配置（`checkpointer`/`store` 指向 `graph/persistence.py`），在 agent 里显式传入会启动失败。对话历史写入 `data/langgraph.db`，重启后仍可恢复；删除该文件即重置全部历史。
-- 模型供应商配置在项目根 `conf/config.toml`（从 `conf/config.example.toml` 复制），选择顺序 `default` → `recent`，协议只支持 anthropic / openai；改配置需重启服务。
+- 模型供应商配置在项目根 `conf/config.toml`（从 `conf/config.example.toml` 复制），选择顺序 `default` → `recent`，协议只支持 anthropic / openai。**改这个文件不需要重启后端**——切换对话模型那条路径每次调用都重读 `conf/config.toml`（模型实例按 `协议/模型/base_url/api_key` 缓存，改了这些就换新实例）；只有改「后端启动时带的默认模型」（`[models] default`）才要重启，因为默认模型在建图时定死。
 - 子 agent 配置在项目根 `conf/subagents.toml`，同样改完要重启服务（子 agent 在 `graph/agent.py` 导入时构建一次）。`model` 必须是 `config.toml` 里配过的供应商 + 其 `models` 白名单里的模型名。
 - MCP 配置在项目根 `conf/mcp.json`（不入库，从 `conf/mcp.example.json` 复制），**改完要重启服务**（工具在建图时静态注册，跟 `conf/subagents.toml` 一样）。连接参数里的任何字符串都可以写 `${VAR}`，从进程环境展开，别写死密钥。每个服务器一条长会话（有状态服务器不会被重置）；MCP 工具只有异步实现（本地脚本 `graph.invoke()` 调它会抛 `NotImplementedError`）；声明了 `permissions` 的只读子 agent 不继承 MCP 工具；`manual` 档下非只读的 MCP 工具也要人工确认。
 - 长期记忆用 `middleware=` 挂 `MemoryMiddleware`，**不要用 `create_deep_agent(memory=...)`**：后者只能用框架默认的 StateBackend，读不到磁盘上的 `.scode-memory.md`。
@@ -183,4 +183,4 @@ scode 固定传 `--no-reload`（reload 会监视工作空间，agent 写文件�
   ——`langgraph dev` 自己换了端口，而就绪检查只轮询 2024，打到的是旧服务，前端连的是
   旧代码。现在启动前先探端口，占用就报错并告诉你怎么查占用进程，**绝不自动换端口**
   （前端默认就连 2024）。
-- 详细的阶段目标与验证步骤见 `../docs/backend/PROGRESS.md`（001–009 期合并成一份进度快照）。
+- 详细的阶段目标与验证步骤见 `../docs/backend/PROGRESS.md`（001–022 期合并成一份进度快照）。
