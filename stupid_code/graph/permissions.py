@@ -238,7 +238,8 @@ def is_memory_path(path: str) -> bool:
 def should_interrupt_memory(request: ToolCallRequest) -> bool:
     """写记忆文件时要不要先问人。
 
-    **为什么记忆写入也要拦**：它是唯一一条「影响未来所有会话」的写路径。
+    **为什么记忆写入也要拦**：它是最需要拦的一条「影响未来所有会话」的写路径
+    （不是唯一：`/user-skills/` 等全局 skill 路径同样影响后续会话，见 backend.md §5 / §6）。
     代码写错了改掉就行；记忆写错了会一直影响后面每一个会话——用户级的那条
     还会跟着你到每一个项目——而且没人会知道它是什么时候、为什么写错的。
     详见 `docs/backend/backend.md` 的 §3.6。
@@ -402,8 +403,8 @@ def build_interrupt_on(
 
     **不拦文件写入类工具**（`write_file` / `edit_file`）：那是 code agent 的
     日常，动辄就拦等于没法干活；真正不可逆的是删除和 shell 命令。
-    **例外是写记忆**——那是唯一一条「影响未来所有会话」的写路径（见
-    `should_interrupt_memory`）。
+    **例外是写记忆**——它是最需要拦的一条「影响未来所有会话」的写路径（见
+    `should_interrupt_memory`；全局 skill 路径目前不在这个判定里）。
 
     **MCP 工具不给 `edit` 决策**：参数结构由服务器定义，改错一个字段可能比
     拒绝更糟；要改就让模型重发一次，顺便再过一遍 schema 校验。

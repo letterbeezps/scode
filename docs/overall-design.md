@@ -1,6 +1,6 @@
 # 网页版 Code Agent 总体设计文档
 
-> 最后核对：2026-10-28（与 `stupid_code/`、`web/` 实现逐条核对）
+> 最后核对：2026-10-30（与 `stupid_code/`、`web/` 实现逐条核对）
 
 ---
 
@@ -98,7 +98,7 @@
 
 **⚠️ 版本敏感提示**：Deep Agents 的 API 在演进中，参数名与默认行为都发生过变化（例如旧参数名 `instructions` 现为 `system_prompt`；`TodoListMiddleware` 从 v0.7 起改为 opt-in）。**本文档不硬编码易变的默认值**，具体签名以本项目锁定版本的官方文档为准，核实方式：`.venv/bin/python -c "import inspect, deepagents; print(inspect.signature(deepagents.create_deep_agent))"`。
 
-**模型**：可配置的 LLM，通过 `model` 参数传入字符串或 LangChain 模型对象。API key 从环境变量读取。
+**模型**：可配置的 LLM，通过 `model` 参数传入字符串或 LangChain 模型对象。模型供应商与 API key 实际从项目根 `conf/config.toml` 读取（该文件已 gitignore）；本项目不再使用 `.env`。
 
 **系统提示词**：`system_prompt` 参数，见 `stupid_code/config/prompts.py`。
 
@@ -147,7 +147,7 @@
 > （对话历史 / 超大工具结果 / 二进制块，默认 `/` = 工作空间根目录）。本项目设成 `/.scode`，
 > 收成一个隐藏目录，详见 `docs/backend/backend.md` 的 §3.7。
 
-**子 Agent**：框架内置 `task` 工具与 general-purpose 子 Agent，可通过 `subagents` 参数扩展。子 Agent 会继承父 Agent 的工具限制（§5.2 的 allowlist），但**不自动继承权限档位**——见 §5.3 的注意事项。
+**子 Agent**：框架内置 `task` 工具与 general-purpose 子 Agent，可通过 `subagents` 参数扩展。子 Agent 会继承父 Agent 的工具限制（§5.2 的 allowlist）；权限档位不是框架自动继承的，本项目在 `apply_subagent_policies()` 里给每个子 agent 显式补 `PermissionLevelMiddleware`，并合并父级 `interrupt_on`——见 §5.3 的注意事项。
 
 > 📌 **现状**：子 agent 的声明放 `conf/subagents.toml`（`stupid_code/config/subagent.py` 解析），
 > `model` 字段复用 `config.toml` 的供应商连接信息。**框架不会把子 agent 名单写进系统提示词**，
@@ -267,6 +267,9 @@ POST /workspaces/pick
 | `end` | → `end` |
 
 前端同时兼容一份**可选的自定义语义事件**（`messages` / `tool_call` / `tool_result` / `todos` / `error` / `end`）。若后端发送这类事件，前端优先采信；若两者同时发送，前端会自动去重（收到过显式 `messages` 就不再从 `updates` 推导 token）。
+
+> ⚠️ 当前真实后端没有 `write_todos` 工具，`updates` / `values` 里不会出现 todo 工具调用；
+> `todos` 事件只有 mock 会发（见 §11.1 与 `docs/backend/backend.md` §6）。
 
 > **建议**：后端**只发 LangGraph 原生事件**。原生事件是平台契约，升级时不会变；自定义封装是自担风险。前端保留兼容层无妨，但后端不必依赖它。
 
@@ -405,13 +408,17 @@ LangChain 提供 `HumanInTheLoopMiddleware`，通过 `interrupt_on` 声明哪些
  │ 渲染确认卡片       │                             │
  │                   │                             │
  │ 用户决策           │                             │
- ├──── POST /threads/{tid}/runs ──────────────────>│
+ ├──── POST /threads/{tid}/runs/stream ────────────>│
  │      {command: {resume: {decisions: [...]}}}     │
  │                   │──── 从 interrupt 处继续 ────>│
  │<──── tool_call / tool_result / end ─────────────┤
 ```
 
-**前端尚需补充的部分**：当前前端只有档位选择器，**还没有确认卡片组件**，也没有提交决策的 API 封装。这是 P2 的前端工作量，§10 已列入。
+**前端已实现的部分**：确认卡片组件（`web/src/components/chat/ApprovalCard.tsx`）
+按 `action_requests` 逐条渲染批准 / 拒绝 / 改后执行，拒绝理由作为 `message` 传回；
+决策由 `conversationStore.decideApproval()` 经 `resumeRun()` 以 `command.resume`
+发回。恢复请求走 `POST /threads/{tid}/runs/stream`（不是 `/runs`），并原样带回
+`context.workspace` / `permissions` / `model` / `skills`。审批挂起期间相关选择器禁用。
 
 **恢复请求的形态**（两种模式）：
 
@@ -484,7 +491,7 @@ LangChain 提供 `HumanInTheLoopMiddleware`，通过 `interrupt_on` 声明哪些
 
 - 开发阶段：可选，本地直连
 - 生产阶段：`Authorization` header 或反向网关鉴权
-- 凭据只从环境变量读取，**禁止硬编码、禁止进日志**
+- 鉴权凭据从环境变量读取，**禁止硬编码、禁止进日志**；模型供应商的 API key 不属于鉴权凭据，只放 `conf/config.toml`（已 gitignore）
 
 前端另有一点做得好：SSE 用 `fetch + ReadableStream` 手动解析而非 `EventSource`，正是因为 `EventSource` 不支持自定义 header。这个选择必须保持。
 
@@ -591,7 +598,7 @@ stupid_code/prompts/
 
 **目标设计里规划了、但尚未建的目录**：`stupid_code/middlewares/`（自研中间件）、
 `stupid_code/tools/`（自定义工具）、`stupid_code/prompts/`（版本化提示词，见 §8）。
-中间件目前落在 `graph/workspace.py` 里。
+自研中间件目前分散在 `graph/` 下（`workspace.py`、`permissions.py`、`memory.py`、`skills.py`、`repeated_calls.py`、`compaction.py`、`model_switch.py` 等），没有统一放进 `middlewares/`。
 
 > `langgraph.json` 直接引用了 `./graph/agent.py:graph`、`./graph/persistence.py:checkpointer`、
 > `./admin/app.py:app` 三条路径，挪动这些文件必须同步改配置（细节见后端文档 §2.2）。
@@ -621,7 +628,9 @@ stupid_code/prompts/
   见 `docs/backend/backend.md`
 - ~~`[待核实]` deepagents 默认配置的 filesystem 是否为真实磁盘~~ —— **已核实**：默认是
   `StateBackend`（虚拟 FS，写操作不落盘）；必须显式传 `backend=`
-- `[待核实]` `TodoListMiddleware` 是否在本项目锁定版本中仍为 opt-in —— 核实方式：查官方 changelog
+- `[已核实]` `TodoListMiddleware` 在锁定版本（deepagents 0.7.28）仍是 opt-in：
+  `create_deep_agent()` 默认栈不含它，本项目也没有显式加，所以真实后端没有
+  `write_todos`，待办只在 mock 可用。见 `docs/backend/backend.md` §6。
 - `[待核实]` `per_call` 中断模式所需的 langchain 版本下限是否满足 —— 核实方式：查本项目锁定的 langchain 版本号
 - ~~`[待核实]` **shell 的人工确认**~~ —— **已核实并落地**：后端按
   `context.permissions` 的档位决定拦不拦，图挂起等前端批准/拒绝。

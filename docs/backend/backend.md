@@ -4,8 +4,8 @@
 > 实现、有哪些硬约束和踩过的坑。
 > 它**不记录开发过程**：哪一期做了什么、当时排除了什么、当时踩的什么，都不在这里。
 >
-> - 核对时间：2026-10-28，代码基线 `45f17ed`
-> - 后端：`stupid_code/`（Python 5807 行）　前端：`web/src/`（TS/TSX 7773 行）
+> - 核对时间：2026-10-30，代码基线 `ec286d9`
+> - 后端：`stupid_code/`（Python 5810 行）　前端：`web/src/`（TS/TSX 8036 行）
 > - 依赖版本：`deepagents 0.7.28` / `langchain 1.4.6` / `langgraph 1.2.16` /
 >   `langgraph-cli 0.4.36` / `langchain-anthropic 1.7.6` / `langchain-openai 1.7.2` /
 >   `langchain-mcp-adapters 0.3.2`
@@ -101,6 +101,7 @@
   → `GET`/`PUT /admin/memory`
 - 模型管理界面（直连 `/admin/models`）、会话列表 / 建会话 / 删会话 / 标题
   （存平台的 `metadata.title`）、流式对话、工具调用可视化、Diff 渲染、Todo 同步
+  （仅 mock；真实后端未注册 `write_todos`，见 §6）
 - mock 模式（`VITE_USE_MOCK=true`；mock 在真实 API 函数内部按 `isMockMode` 分支，
   同名同用途的主要接口签名一致。例外：`cancelRun` 没有 mock 分支，`listRuns` 在
   mock 下返回 `[]`）
@@ -278,7 +279,9 @@ anthropic / openai 两种协议。**不用 `.env`**。
   `ChatAnthropic` / `ChatOpenAI`：protocol 是配置字符串，需要"字符串→类"的官方分发器；
   且它**懒加载**集成包——只配 anthropic 协议的环境不会加载 langchain-openai。
 - **校验从严**：模型不在 `models` 白名单里直接报错（防拼写错误），错误信息带修复提示。
-- 模型在 `graph/agent.py` 导入时构建一次。**改 `config.toml` 必须重启 scode**。
+- **启动时的默认模型**在 `graph/agent.py` 导入时构建一次，改 `[models].default` / `recent`
+  必须重启 scode。运行期切换模型走 `graph/model_switch.py`，那条路径每次调用都重新读
+  `config.toml`——新增模型、改 `base_url` / `api_key` 不用重启（详见 §3.10）。
 
 **踩过的坑**
 
@@ -309,8 +312,9 @@ anthropic / openai 两种协议。**不用 `.env`**。
   `/runs`、`/store`、`/cron`、`/info`、`/metrics`。
 - **TOML 写回**用 `tomli_w`（保留类型，不保留注释），写临时文件 + `os.replace` 原子替换。
 - **key 脱敏**：默认返回 `***XXXX`（末 4 位），`?reveal=true` 才给明文。
-- **不缓存**：每个请求实时读盘。**不热重载**：改完 toml 要重启 `scode`，
-  所有写操作的响应都带 `restart_required: true`。
+- **不缓存**：每个请求实时读盘。**写操作的响应都带 `restart_required: true`**：
+  它指的是「启动时建好的默认模型实例」这一份。运行期切换模型（`context.model`）那条路径
+  每次调用都重读配置，新增模型 / 改 `base_url` / `api_key` 下一次运行就生效（见 §3.10）。
 
 **踩过的坑**
 
@@ -548,7 +552,8 @@ subagent 配置里重复写。
 
 **写记忆走人工确认**
 
-写记忆是**唯一一条「影响未来所有会话」的写路径**。对比一下别的写路径：
+写记忆是**最需要拦的一条「影响未来所有会话」的写路径**。它**不是唯一**——`/user-skills/`
+等全局 skill 路径同样影响后续会话，但目前不在 HITL 判定里（见 §5 / §6）。对比一下别的写路径：
 
 | 写路径 | 影响 | 有人管吗 |
 |---|---|---|
@@ -616,7 +621,8 @@ subagent 配置里重复写。
 - 记忆读的是**选中工作空间**根目录那份：同一 thread 换工作空间会重读，
   换 thread 各自独立读 ✔
 - 真实服务里模型能原样念出记忆文件里的内容
-- 服务端的图节点列表出现 `MemoryMiddleware.before_agent`；不传 `memory=` 参数时
+- 服务端的图节点列表出现 `WorkspaceMemoryMiddleware.before_agent`（框架 `MemoryMiddleware`
+  的子类）；不传 `memory=` 参数时
   框架不会自己挂这个中间件——本项目是自己挂的
 - `create_agent` 会把中间件的 `state_schema`（`MemoryState`）合并进图的状态 schema，
   所以 `memory_contents` 这个 channel 存在，私有状态不进入输出 state
@@ -775,9 +781,10 @@ deepagents 会往 backend 里写三样东西，落点由 `CompositeBackend.artif
   （`echo x > file`）。处理办法：给这类子 agent 单独一个**没有 shell** 的
   `FilesystemBackend`（真实磁盘，路径同样锁在工作空间内），权限就真的拦得住。
   实现见 `graph/subagent_policy.py` 的 `apply_subagent_policies()`。
-- **长期记忆中间件不共用这个 CompositeBackend**：记忆只需要"工作空间里那一个文件"，
-  自己持有一个以工作空间为根的 `FilesystemBackend` 更直白。两者解析出来的真实路径
-  是同一个，所以 agent 写进去的内容下次开新会话照样会被读进来。
+- **长期记忆中间件不共用这个 CompositeBackend**：它自己构造一份
+  `CompositeBackend(default=WorkspaceFilesBackend, routes={/user-memory/})`（见 §3.6 /
+  `graph/memory.py`），把项目级和用户级两条来源分开。两者解析出来的真实路径是同一个，
+  所以 agent 写进去的内容下次开新会话照样会被读进来。
 
 **已验证的事实**
 
@@ -985,8 +992,9 @@ deepagents 会往 backend 里写三样东西，落点由 `CompositeBackend.artif
 **是什么**：侧边栏下拉框换一个模型，**下一条消息就用新供应商的 base_url / api_key /
 protocol**，不用重启后端。
 
-**为什么不能靠改 config.toml**：模型实例在 `graph/agent.py` 导入时建一次，改配置就得
-重启服务——而重启会丢掉正在跑的东西，用户每换一个模型都要重启一次是不能接受的。
+**为什么不能只靠改 config.toml 的 `default`**：启动时的默认模型实例在建图时定死，
+改 `[models].default` 就得重启服务——而重启会丢掉正在跑的东西。运行期切换需要
+绕过这条路径，所以中间件按 `context.model` 每次现查配置、现建模型。
 
 **为什么是中间件**：deepagents 把模型实例交给 `create_agent()` 之后就不管了，但框架在
 **每次**模型调用前都会组装一个 `ModelRequest`，其中 `request.model` 就是那次要用的模型。
@@ -2056,9 +2064,10 @@ During task with name 'WorkspaceMiddleware.before_agent'
 - **跟 HITL 的相对顺序有讲究，但恰好是对的**：deepagents 把 `HumanInTheLoopMiddleware` 放在
   core 栈，自定义 middleware 在它之后；按 langchain 的「先定义 = 最外层」，**HITL 在外层**
   ——HITL 拒绝发生在本中间件**之前**，所以本中间件能看到那条拒绝消息（然后排除它）
-- **子 agent 不继承**：子 agent 是独立 `create_agent()` 建的图，父级的 `middleware=` 不会传
-  下去（跟 `PermissionLevelMiddleware` 一样，得显式挂）。主 agent 的重复调用是主要问题，
-  子 agent 先不管
+- **`isolated` 子 agent 不继承**：子 agent 是独立 `create_agent()` 建的图，父级的
+  `middleware=` 不会传下去（`PermissionLevelMiddleware` 由 `apply_subagent_policies()` 显式补上）。
+  `mode="fork"` 是例外——它继承父级全部 middleware（见 §3.10），所以会带上这个拦截器；
+  当前 `conf/subagents.toml` 没有启用 fork。主 agent 的重复调用是主要问题，子 agent 先不管
 - **提示词也补了一条**：deepagents 内建提示词里那句「失败别重试」本项目没继承到，
   `config/prompts.py` 补了一条对应的中文。它是软引导，中间件才是硬约束
 
@@ -2312,7 +2321,7 @@ minimax / deepseek 规格都不命中（最终提示词 == 作者提示词）；
 | 删文件 | 有人工确认关卡，但只有 `manual` 档拦；`normal` 档不拦 |
 | 文件写入 | **不拦**（`write_file`/`edit_file`）——那是 code agent 的日常。**例外：写记忆文件要拦**，`normal` 和 `manual` 档都拦 |
 | 文件路径 | 文件工具锁在工作空间内（`virtual_mode=True`），**shell 不受此限** |
-| 工作空间之外的读路径 | **一条**：`/user-skills/` 路由指向 `~/.scode/.agents/skills/`，agent 能用 `read_file` 读全局 skill 的全文 |
+| 工作空间之外的读路径 | **两条**：`/user-memory/` 路由指向整个 `~/.scode/`，`/user-skills/` 路由指向 `~/.scode/.agents/skills/`；agent 能用 `read_file` 读这两处 |
 | 工作空间之外的写路径 | **两条，都可写**：`/user-memory/` 路由指向整个 `~/.scode/`，`/user-skills/` 路由指向 `~/.scode/.agents/skills/`。deepagents 的 `FilesystemBackend` **没有只读开关**，所以 `write_file("/user-skills/...")` 直接落盘；`/user-memory/` 指向的是整个 `~/.scode/`，`write_file("/user-memory/.agents/skills/...")` 同样能写到全局 skill 目录。这两条路由下**只有 `/user-memory/memory.md` 在 `is_memory_path()` 的判定里**（会被 HITL 拦），其余路径**都不受 HITL 覆盖**。范围限于这两个目录——**跟"文件工具锁在工作空间内"不矛盾**，工作空间内的路径依然出不去 |
 | 读取范围 | agent 能读工作空间里的任何文件，**包括 `conf/config.toml` 里的 api_key**——这块没被 HITL 覆盖 |
 | 子 agent 权限 | 只有声明了 `permissions` 的子 agent 才是硬约束；没声明的拿的是主 agent 那套带 shell 的 backend |
@@ -2373,6 +2382,7 @@ minimax / deepseek 规格都不命中（最终提示词 == 作者提示词）；
 | MCP 长会话是进程级共享的 | 不同对话看到同一个服务器状态（浏览器页面、REPL 变量） | 单用户项目够用；要按 thread 隔离得把 thread_id 送进 MCP 线程 |
 | MCP 连接失败只少几个工具 | 连不上的服务器的工具不会出现在模型面前（界面看不出来） | 有意为之：不让一个外部服务拖垮整轮对话 |
 | MCP 配置写错的服务器只跳它自己 | 那几个工具整个会话都没有，界面上也看不出来 | 日志里会报一句为什么；其余服务器照常 |
+| TodoList 未接线 | 真实后端没有注册 `write_todos`（`agent.py` 的中间件栈里没有 `TodoListMiddleware`，0.7.28 的默认栈也不带），待办只在 mock 模式可见 | 前端消费链路已实现；要启用得显式加 `TodoListMiddleware`，并把 `write_todos` 纳入提示词的工具清单 |
 | 流式回复是整段到达 | 不是 token 级增量 | 平台两种模式都支持，`messages-tuple` 事件名是 `messages` |
 | 没有自动化测试、没有 CI | 验证全靠手工 | 本项目是有意如此（学习项目） |
 
