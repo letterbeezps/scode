@@ -30,6 +30,8 @@ export type { ApprovalDecision }
 
 export interface RunHandlers {
   onToken: (text: string) => void
+  /** 模型的思考内容增量 */
+  onThinking?: (text: string) => void
   onToolCall: (call: ToolCall) => void
   onToolResult: (result: ToolResultEvent) => void
   onTodos: (todos: Todo[]) => void
@@ -49,6 +51,18 @@ export interface RunHandlers {
 }
 
 /**
+ * 订阅哪几档流。
+ *
+ * - `updates`：节点级快照。工具调用、工具结果、人工确认都在这里，
+ *   但它是**节点跑完才推一次**——一轮里模型的思考和正文都没有过程感。
+ * - `messages`：模型层的流。文本和思考按块流出来，能看到「正在想、正在写」。
+ *
+ * 两档同时订阅，同一段文本会从两边各来一次，归一化层负责去重
+ * （见 api/events.ts 的 sawLiveText）。
+ */
+const STREAM_MODES = ['updates', 'messages'] as const
+
+/**
  * 发起一次流式运行，返回取消函数。
  *
  * 取消做两件事：断掉本地 SSE 连接（立刻恢复 UI），并在拿到 run_id 后通知后端
@@ -65,8 +79,8 @@ export function streamRun(
   const body = JSON.stringify({
     assistant_id: ASSISTANT_ID,
     input: { messages: [{ role: 'user', content: message }] },
-    // 只要 updates：values 每次都回传全量状态，噪音大且没必要
-    stream_mode: ['updates'],
+    // updates 给工具调用和最终结果，messages 给实时文本和思考（见 STREAM_MODES）
+    stream_mode: [...STREAM_MODES],
     // 浏览器断开后让后端继续跑完，避免半途中断留下脏状态
     on_disconnect: 'continue',
     /*
@@ -138,7 +152,7 @@ export function resumeRun(
         decisions,
       },
     },
-    stream_mode: ['updates'],
+    stream_mode: [...STREAM_MODES],
     on_disconnect: 'continue',
     context: {
       [WORKSPACE_KEY]: options.workspace,
@@ -216,6 +230,9 @@ function consumeRunStream(
               break
             case 'token':
               handlers.onToken(event.text)
+              break
+            case 'thinking':
+              handlers.onThinking?.(event.text)
               break
             case 'tool_call':
               handlers.onToolCall(event.call)
@@ -308,7 +325,7 @@ export function joinRunStream(
   return consumeRunStream(
     threadId,
     {
-      url: `${apiBaseUrl}/threads/${threadId}/runs/${runId}/stream?stream_mode=updates`,
+      url: `${apiBaseUrl}/threads/${threadId}/runs/${runId}/stream?stream_mode=updates,messages`,
       init: {
         method: 'GET',
         headers: {

@@ -9,6 +9,7 @@ import type { Message } from '../../api/types'
 import { MarkdownContent } from './markdown/MarkdownContent'
 import { ToolCallCard } from './tools/ToolCallCard'
 import { ApprovalCard } from './ApprovalCard'
+import { ThinkingBlock } from './ThinkingBlock'
 import { CodeBlock } from './markdown/CodeBlock'
 
 interface Props {
@@ -35,6 +36,11 @@ export function AssistantMessage({ message, streaming }: Props) {
               <div key={index} className={isLast && streaming ? 'after:animate-blink after:ml-0.5 after:inline-block after:h-4 after:w-[2px] after:translate-y-0.5 after:bg-accent after:content-[""]' : undefined}>
                 <MarkdownContent content={part.text} />
               </div>
+            )
+          }
+          if (part.kind === 'thinking') {
+            return (
+              <ThinkingBlock key={`thinking-${index}`} text={part.text} streaming={streaming} />
             )
           }
           if (part.kind === 'approval') {

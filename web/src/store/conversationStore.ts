@@ -494,6 +494,21 @@ function createRunHandlers(threadId: string, options: RunHandlerOptions = {}): R
       })
     },
 
+    onThinking(chunk) {
+      patchPending((msg) => {
+        const parts = [...msg.parts]
+        const last = parts[parts.length - 1]
+        // 思考和正文是分开的两段：思考增量接在上一段思考后面，
+        // 后面跟着别的片段（正文 / 工具卡片）就另起一段。
+        if (last && last.kind === 'thinking') {
+          parts[parts.length - 1] = { kind: 'thinking', text: last.text + chunk }
+        } else {
+          parts.push({ kind: 'thinking', text: chunk })
+        }
+        return { ...msg, parts }
+      })
+    },
+
     onToolCall(call: ToolCall) {
       patchPending((msg) => {
         // join 回来的流可能重发断线前已经见过的调用，按 id 去重

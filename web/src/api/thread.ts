@@ -15,7 +15,7 @@
  * 另外平台的 Thread 结构没有 title 字段，标题走 metadata.title。
  */
 import { request, isMockMode } from './client'
-import { parseInterrupts } from './events'
+import { parseInterrupts, textOf, thinkingOf } from './events'
 import { mockThreads } from './mock'
 import type {
   ApprovalRequest,
@@ -180,17 +180,6 @@ function isRunStatus(value: unknown): value is ThreadRun['status'] {
 
 /* ------------------------------------------------------- LangChain 消息还原 */
 
-function textOf(content: unknown): string {
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => (typeof part === 'string' ? part : asRecord(part).text))
-      .filter((part): part is string => typeof part === 'string')
-      .join('')
-  }
-  return ''
-}
-
 function roleOf(msg: Record<string, unknown>): 'human' | 'ai' | 'tool' | 'system' {
   const raw = String(msg.role ?? msg.type ?? '')
   if (raw === 'human' || raw === 'user') return 'human'
@@ -285,8 +274,12 @@ export function restoreMessages(
 
     // assistant
     const content = textOf(msg.content)
+    // 思考内容在 content 的 thinking / reasoning 块里，排在正文前面
+    const thinking = thinkingOf(msg.content)
     const rawCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : []
-    const parts: MessagePart[] = content ? [{ kind: 'text', text: content }] : []
+    const parts: MessagePart[] = []
+    if (thinking) parts.push({ kind: 'thinking', text: thinking })
+    if (content) parts.push({ kind: 'text', text: content })
 
     const toolCalls: ToolCall[] = rawCalls.map((item) => {
       const rec = asRecord(item)

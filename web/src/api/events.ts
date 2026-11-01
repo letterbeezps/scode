@@ -11,6 +11,17 @@
  *
  * 两份都接，且做去重：优先采信显式语义事件，只有在没有收到过显式 `messages` 时
  * 才从 `updates` 里推导文本 token，避免同一段话被追加两遍。
+ *
+ * **平台原生事件有三档**（run 的 stream_mode 决定订阅哪几档）：
+ *
+ *  - `updates`：节点级快照，**节点跑完才推一次**。工具调用、interrupt、todo 都在这里。
+ *  - `messages`：模型层的流，事件名是 `messages/partial` / `messages/metadata` /
+ *    `messages/complete`。文本和思考按块流出来，但**给的是累计快照，不是增量**。
+ *  - `events`：最细的一档，`on_chat_model_stream` / `on_tool_start` / `on_tool_end`。
+ *
+ * 前端同时订阅 `updates` + `messages`：`updates` 给工具调用和最终结果，
+ * `messages` 给「正在想 / 正在写」的实时过程。两者会重复同一段文本，
+ * 所以这里要去重（见 sawLiveText）。
  */
 import type { SseEvent } from './sse'
 import type {
@@ -24,6 +35,8 @@ import type {
 export type NormalizedEvent =
   | { type: 'metadata'; runId?: string }
   | { type: 'token'; text: string }
+  /** 模型的思考内容增量（不是 token，是「思考」的增量） */
+  | { type: 'thinking'; text: string }
   | { type: 'tool_call'; call: ToolCall }
   | { type: 'tool_result'; id: string; result: ToolResult; error?: string }
   | { type: 'todos'; todos: Todo[] }
@@ -53,7 +66,8 @@ function normalizeArgs(raw: unknown): Record<string, unknown> {
   return asRecord(raw)
 }
 
-function textOf(content: unknown): string {
+/** 取文本内容。协议可能是纯字符串，也可能是 [{type:'text',text:'...'}] 这样的块数组。 */
+export function textOf(content: unknown): string {
   if (typeof content === 'string') return content
   // 多模态内容可能是 [{type:'text',text:'...'}]
   if (Array.isArray(content)) {
@@ -63,6 +77,26 @@ function textOf(content: unknown): string {
       .join('')
   }
   return ''
+}
+
+/**
+ * 思考内容。
+ *
+ * 两种形态都要认：
+ *  - Anthropic 原生块：`{"type":"thinking","thinking":"..."}`（langchain-anthropic
+ *    直接把供应商返回的块放进 content）
+ *  - langchain 标准 content_blocks：`{"type":"reasoning","reasoning":"..."}`
+ */
+export function thinkingOf(content: unknown): string {
+  if (!Array.isArray(content)) return ''
+  return content
+    .map((part) => {
+      const rec = asRecord(part)
+      if (rec.type === 'thinking' && typeof rec.thinking === 'string') return rec.thinking
+      if (rec.type === 'reasoning' && typeof rec.reasoning === 'string') return rec.reasoning
+      return ''
+    })
+    .join('')
 }
 
 function extractTodos(raw: unknown): Todo[] | null {
@@ -150,9 +184,60 @@ export function createEventNormalizer(): Normalizer {
   let sawExplicitMessages = false
   const seenToolCalls = new Set<string>()
 
+  /**
+   * 当前模型回合的流式快照。
+   *
+   * 平台的 messages 模式给的是**累计快照**——每条消息里带的是「到目前为止」
+   * 的内容，不是增量。所以这里存上一份快照，自己算出真正的增量再发出去，
+   * 前端才能沿用「追加」的语义（否则同一段话会被追加很多遍）。
+   */
+  let liveText = ''
+  let liveThinking = ''
+  /** 本回合的文本 / 思考是不是已经通过 messages 流实时发过了 */
+  let sawLiveText = false
+  let sawLiveThinking = false
+
   function reset() {
     sawExplicitMessages = false
     seenToolCalls.clear()
+    liveText = ''
+    liveThinking = ''
+    sawLiveText = false
+    sawLiveThinking = false
+  }
+
+  /**
+   * messages 模式：模型层的流。
+   *
+   * 数据是一个消息块数组，每块的 content 是到这一刻为止的累计内容。
+   * 跟上一份比，只有「在上一份末尾继续长」的部分才算增量——
+   * 平台偶尔会重发同一份内容，靠这个判断避免重复追加。
+   */
+  function fromMessagePartials(payload: unknown): NormalizedEvent[] {
+    const list = Array.isArray(payload) ? payload : [payload]
+    const out: NormalizedEvent[] = []
+
+    for (const raw of list) {
+      const chunk = asRecord(raw)
+      const content = chunk.content
+
+      const text = textOf(content)
+      if (text.length > liveText.length && text.startsWith(liveText)) {
+        const delta = text.slice(liveText.length)
+        liveText = text
+        sawLiveText = true
+        if (delta) out.push({ type: 'token', text: delta })
+      }
+
+      const thinking = thinkingOf(content)
+      if (thinking.length > liveThinking.length && thinking.startsWith(liveThinking)) {
+        const delta = thinking.slice(liveThinking.length)
+        liveThinking = thinking
+        sawLiveThinking = true
+        if (delta) out.push({ type: 'thinking', text: delta })
+      }
+    }
+    return out
   }
 
   /** 从 LangChain 消息（updates / values 里）提取事件 */
@@ -183,7 +268,12 @@ export function createEventNormalizer(): Normalizer {
 
     // ai
     const content = textOf(msg.content)
-    if (content && !sawExplicitMessages) out.push({ type: 'token', text: content })
+    // 本回合的文本已经从 messages 流实时发过了，就不要再发一遍
+    if (content && !sawExplicitMessages && !sawLiveText) out.push({ type: 'token', text: content })
+
+    // 思考内容同理：messages 流里有就跳过，没有（只订阅了 updates）才补发
+    const thinking = thinkingOf(msg.content)
+    if (thinking && !sawLiveThinking) out.push({ type: 'thinking', text: thinking })
 
     const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : []
     for (const rawCall of toolCalls) {
@@ -203,6 +293,14 @@ export function createEventNormalizer(): Normalizer {
         if (todos) out.push({ type: 'todos', todos })
       }
     }
+
+    // 这一回合的模型输出已经完整落地（节点跑完了）：
+    // 下一回合的流式快照从头算，否则增量会跟上一回合的尾巴接上。
+    liveText = ''
+    liveThinking = ''
+    sawLiveText = false
+    sawLiveThinking = false
+
     return out
   }
 
@@ -350,6 +448,16 @@ export function createEventNormalizer(): Normalizer {
         const payload = asRecord(safeJsonParse(evt.data))
         return fromUpdates(payload)
       }
+
+      // 模型层的流：文本和思考按块流出来（给的是累计快照，这里换算成增量）
+      case 'messages/partial':
+        return fromMessagePartials(safeJsonParse(evt.data))
+
+      // 这两个是模型的元信息和回合结束时的完整消息，用不上：
+      // 完整消息 updates 里已经有了。
+      case 'messages/metadata':
+      case 'messages/complete':
+        return []
 
       case 'values': {
         const payload = asRecord(safeJsonParse(evt.data))

@@ -61,19 +61,17 @@ function collapsedHint(call: ToolCall): string {
   return call.result?.output?.split('\n')[0] ?? ''
 }
 
-/** 原始参数，方便排查「Agent 到底传了什么」 */
+/** 原始参数：展开卡片时直接摊开，方便排查「Agent 到底传了什么」 */
 function ArgsBlock({ args }: { args: Record<string, unknown> }) {
   const entries = Object.entries(args)
   if (entries.length === 0) return null
 
   return (
-    <details className="mb-2">
-      <summary className="cursor-pointer text-[11px] text-fg-muted select-none hover:text-fg">
-        工具参数
-      </summary>
+    <div className="mb-2">
+      <p className="mb-1 text-[11px] text-fg-muted">工具参数</p>
       <pre className="scrollbar-slim mt-1.5 max-h-56 overflow-auto rounded bg-surface px-3 py-2 font-mono text-[11px] leading-relaxed text-fg-muted">
         {JSON.stringify(args, null, 2)}
       </pre>
-    </details>
+    </div>
   )
 }

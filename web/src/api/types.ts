@@ -118,6 +118,14 @@ export type ApprovalDecision =
  */
 export type MessagePart =
   | { kind: 'text'; text: string }
+  /**
+   * 模型的思考内容（reasoning）。
+   *
+   * 只有开了思考预算的模型（后端 [models.thinking]）才会有；
+   * 协议把思考放在 content 的 `thinking` 块（Anthropic）或
+   * `reasoning` 块（langchain 标准 content_blocks）里。
+   */
+  | { kind: 'thinking'; text: string }
   | { kind: 'tool'; call: ToolCall }
   /**
    * 一次待确认的动作组。
