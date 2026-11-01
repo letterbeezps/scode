@@ -56,7 +56,7 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
 
 ## 硬约束
 
-动手前至少扫一遍这 20 条。每条末尾的 **→** 指向后端文档的对应小节（个别指向 README），细则在那里。
+动手前至少扫一遍这 21 条。每条末尾的 **→** 指向后端文档的对应小节（个别指向 README），细则在那里。
 
 1. **clone 后先装参考资料**：`.agents/` 和 `.claude/` 是 gitignore 的，跑
    `npx skills add langchain-ai/langchain-skills --skill '*' --yes`，否则编码 Agent 看不到它们。
@@ -144,6 +144,14 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
     ② **别传 `create_deep_agent(skills=...)`**；③ **`.name` 报成框架那份的公开别名**；
     ④ **pin 在重读时写**（同一工作空间 + 同一选择不重读，也就不重复 pin；换选择或换工作空间都会重新 pin）；
     ⑤ **取消勾选不移除已钉内容**。*→ §3.15*
+
+21. **模型思考要配两样东西，缺一样就静默失效**：思考预算在 `[models.thinking]` 按
+    `"供应商名:模型名"` 配（只有 anthropic 协议支持，`openai` 配了直接报错）；
+    供应商私有开关在 `[models.providers.*.extra_body]`——**MiniMax 带工具时不给
+    `interleaved_thinking`，思考会被静默丢掉**（不报错、响应里就是没有 thinking 块）。
+    前端要看到过程，run 得同时订阅 `updates` + `messages`：前者给工具调用，
+    后者给实时文本和思考；注意 `messages` 给的是**累计快照**不是增量，要自己算差，
+    否则同一段话会被追加很多遍。*→ §3.18*
 
 ---
 

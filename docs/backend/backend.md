@@ -44,6 +44,7 @@
 | 18 | 中间产物收在 `.scode/` | §3.7 |
 | 19 | 记忆两个作用域 + 写记忆走人工确认 | §3.6 |
 | 20 | skill 两个作用域 | §3.15 |
+| 21 | 思考预算 + 供应商私有字段 + 流式档位 | §3.18 |
 | Security | 安全姿态总表 | §5 |
 | Security | 每条姿态的理由 | §5.1 |
 | Security | 已知缺口（都是「已知的边界」） | §6 |
@@ -271,6 +272,8 @@ anthropic / openai 两种协议。**不用 `.env`**。
 | `base_url` | `[models.providers.<name>]` | 否 | 不填则用协议官方端点 |
 | `api_key` | `[models.providers.<name>]` | 是 | 明文，写在 `conf/config.toml`（已 gitignore） |
 | `models` | `[models.providers.<name>]` | 是 | 该供应商可用模型名白名单，不在列表里的模型直接报错 |
+| `thinking` | `[models.thinking]` | 否 | 按 `"供应商名:模型名"` 配的思考预算（token），缺省 = 不开；只有 anthropic 协议支持（详见 §3.18） |
+| `extra_body` | `[models.providers.<name>]` | 否 | 供应商私有的请求体字段，原样透传进请求 body（详见 §3.18） |
 
 **关键取舍**
 
@@ -2194,6 +2197,90 @@ During task with name 'WorkspaceMiddleware.before_agent'
 - **恢复不经过 `before_agent`**：`WorkspaceMiddleware.wrap_model_call` /
   `awrap_model_call` 仍要从 `request.runtime` 读 context，补一次缓存兜底。
 
+### 3.18 思考（reasoning）与流式事件档位
+
+**是什么**：两件事，都跟「在网页上看到 agent 干活的过程」有关。
+
+1. **模型思考**：按模型配一个「思考预算」，请求带上 anthropic 协议的 `thinking` 参数，
+   模型就会在回答前先想一遍，把思考内容作为 `thinking` 块返回。前端把它渲染成
+   「思考过程」折叠块。
+2. **流式档位**：run 的 `stream_mode` 从只订阅 `updates` 改成同时订阅 `messages`，
+   于是正文和思考是**逐块**流出来的，不再是「节点跑完一次性出现」。
+
+**配置**
+
+```toml
+# conf/config.toml
+[models.thinking]
+# 键是 "供应商名:模型名"，值是思考预算（token）。缺省 / 0 = 不开。
+"minimax:MiniMax-M3" = 1024
+
+[models.providers.minimax.extra_body]
+# 供应商私有的请求体字段，原样透传进请求 body
+interleaved_thinking = true
+```
+
+代码位置：`config/model.py` 的 `_thinking_budget()` / `_apply_thinking()` / `_extra_body()`，
+都在 `build_model_by_spec()` 里生效。思考预算和 extra_body 都进了模型缓存键，
+改配置不用重启后端（运行期切模型那条路径每次都重读 config.toml，见 §3.10）。
+
+**关键取舍**
+
+- **预算按模型配，不按供应商**。`[models.providers.*].models` 是一个字符串列表，
+  在里面插一张「模型 → 参数」的表就得改掉列表结构，模型管理接口（add / update / list）
+  全得跟着改。单独开 `[models.thinking]` 一段，两边互不干扰。
+- **extra_body 按供应商配**。官方 Anthropic API 对未知字段是严格校验的（多余字段直接 400），
+  所以「要不要带某个私有开关」只能由供应商自己声明，不能一股脑全带上。
+  它走模型客户端的 `extra_body` 选项（anthropic / openai SDK 都认），字段会并进 JSON body。
+- **openai 协议配了思考预算直接报错**，不静默忽略。官方是 `reasoning_effort`（枚举档位），
+  第三方端点又是各自的私有字段，这里不猜——配了就告诉用户这个预算对这个模型不生效。
+- **思考预算 ≤ max_tokens 的两倍**。Anthropic 要求 `budget_tokens < max_tokens`，
+  给小了输出额度会被思考挤掉，所以开了思考时 `max_tokens = max(4096, 预算 × 2)`。
+- **同时订阅 `updates` 和 `messages` 的代价是同一段文本会来两遍**：
+  `updates` 给的是完整正文，`messages` 给的是逐块增量。前端归一化层负责去重
+  （见前端 `web/src/api/events.ts` 的 `sawLiveText`）。
+
+**SSE 三档事件（实测）**
+
+| 档位 | 事件名 | 内容 | 前端用不用 |
+|---|---|---|---|
+| `updates` | `updates` | 节点级快照：`{节点名: {"messages": [...]}}`；节点跑完推一次 | 用：工具调用、工具结果、人工确认、todo |
+| `messages` | `messages/partial` / `messages/metadata` / `messages/complete` | 模型层的流：文本和思考按块出来 | 用：实时文本 + 思考 |
+| `events` | `events` | 最细：`on_chat_model_stream` / `on_tool_start` / `on_tool_end` | 不用（噪音大，`updates` 已够） |
+
+**踩过的坑**
+
+- **`messages` 模式给的是累计快照，不是增量**。同一个块的内容每来一次都是
+  「到目前为止的全文」——直接追加会把同一段话重复 N 遍。前端要自己跟上一份比、
+  算出真正的增量。
+- **MiniMax 带工具时不给 `interleaved_thinking`，思考会被静默丢掉**：
+  不报错、请求 200、响应里就是没有 thinking 块。带工具时不给这个字段，
+  `thinking` 参数形同虚设；给了才有。**排查「开了思考却看不到思考」先看这里。**
+- **`model_kwargs={"interleaved_thinking": True}` 会让 SDK 报 TypeError**
+  （`Messages.create() got an unexpected keyword argument`）。
+  正确写法是 `model_kwargs={"extra_body": {"interleaved_thinking": True}}`。
+- **思考在 content 块里，不在 `additional_kwargs`**。langchain-anthropic 1.7.6 把
+  `{"type":"thinking","thinking":"...","signature":"..."}` 直接放进 `AIMessage.content`；
+  langchain 标准 content_blocks 那一面叫 `{"type":"reasoning","reasoning":"..."}`。
+  两种形态前端都认。
+- **模型自己决定要不要思考**。MiniMax-M3 带工具时同一请求连发多次，可能这次想、下次不想
+  （实测 4 次里 1 次有思考）。这是模型行为，不是配置没生效——
+  没开思考预算时**一次都没有**。所以界面上「有时有思考块、有时没有」是正常的。
+
+**已验证的事实（2026-11-01 对真实服务 + MiniMax-M3）**
+
+| 验证项 | 结果 |
+|---|---|
+| 请求体里 `thinking` / `interleaved_thinking` 都带上 | ✔（本地代理抓包确认） |
+| 不带 `interleaved_thinking` + 带工具 | 200，但响应里没有 thinking 块（静默丢弃） |
+| 带 `interleaved_thinking` + 带工具 | 响应含 `["thinking", "tool_use"]` ✔ |
+| `messages/partial` 里的 thinking 分片 | 有，**累计快照**（每片都是到目前为止的全文） |
+| `updates` 里 model 节点的 AI 消息 | 含 `thinking` 块 ✔（思考也落进 checkpoint，历史可还原） |
+| 前端渲染 | 每个模型回合一个「思考过程 N 字」折叠块，点开是模型的原始推理 ✔ |
+| 前端正文 | 逐块流式出现，不再整段到达 ✔ |
+| 开思考会不会影响多轮工具调用 | 不影响（开 / 关两种配置下多轮行为一致） |
+| `openai` 协议配了思考预算 | 构建模型时抛 `ConfigError`，提示该协议不支持 ✔ |
+
 ## 4. 关键机制速查
 
 ### 4.1 图的构建（`graph/agent.py`）
@@ -2383,7 +2470,9 @@ minimax / deepseek 规格都不命中（最终提示词 == 作者提示词）；
 | MCP 连接失败只少几个工具 | 连不上的服务器的工具不会出现在模型面前（界面看不出来） | 有意为之：不让一个外部服务拖垮整轮对话 |
 | MCP 配置写错的服务器只跳它自己 | 那几个工具整个会话都没有，界面上也看不出来 | 日志里会报一句为什么；其余服务器照常 |
 | TodoList 未接线 | 真实后端没有注册 `write_todos`（`agent.py` 的中间件栈里没有 `TodoListMiddleware`，0.7.28 的默认栈也不带），待办只在 mock 模式可见 | 前端消费链路已实现；要启用得显式加 `TodoListMiddleware`，并把 `write_todos` 纳入提示词的工具清单 |
-| 流式回复是整段到达 | 不是 token 级增量 | 平台两种模式都支持，`messages-tuple` 事件名是 `messages` |
+| 流式回复是整段到达 | 不是 token 级增量 | 已修：run 同时订阅 `updates` + `messages`，正文和思考逐块流出来（详见 §3.18） |
+| 子 agent 内部的过程看不到 | 主 agent 派出去的 `task` 子 agent 读文件、跑命令都不出现在界面上，只看到它的最终汇报 | deepagents 的 `task` 工具用 `subagent.invoke()` 执行，**没有流式**（deepagents 0.7.28 的实现）；`subgraphs: true` 也救不了（实测） |
+| 模型不一定思考 | MiniMax-M3 带工具时有些回合不返回 thinking 块，界面上就没有「思考过程」 | 模型自己决定的（实测同一请求 4 次里 1 次有思考）；不是配置没生效——没开预算时一次都没有 |
 | 没有自动化测试、没有 CI | 验证全靠手工 | 本项目是有意如此（学习项目） |
 
 ---

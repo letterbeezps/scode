@@ -245,7 +245,7 @@ Accept: text/event-stream
 {
   "assistant_id": "code_agent",
   "input": {"messages": [{"role": "user", "content": "你好"}]},
-  "stream_mode": ["updates"],
+  "stream_mode": ["updates", "messages"],
   "on_disconnect": "continue",
   "context": {
     "workspace": "/abs/path",
@@ -257,7 +257,11 @@ Accept: text/event-stream
 ```
 
 - `assistant_id`：来自 `VITE_ASSISTANT_ID`，默认 `code_agent`
-- `stream_mode`：只取 `updates`（`values` 会回传全量状态，噪音大）
+- `stream_mode`：`["updates", "messages"]`——`updates` 给工具调用、工具结果和人工确认
+  （节点跑完推一次），`messages` 给模型层的实时流（正文和思考逐块出来）。
+  不取 `values`：每次都回传全量状态，噪音大。
+  ⚠️ 两档会推**同一段文本**（`updates` 是完整正文，`messages` 是增量），
+  消费方要自己去重。详见 `docs/backend/backend.md` §3.18
 - `on_disconnect: "continue"`：浏览器断开后后端继续跑完，避免脏状态
 - `context`：本次 run 的任务参数，结构由后端 `graph/run_context.py` 的
   `RunContext`（`create_deep_agent(context_schema=...)`）声明。Agent Server 会按
@@ -299,11 +303,15 @@ Accept: text/event-stream
 | `metadata` | `{"run_id": "..."}` | 运行 ID，取消时需要 |
 | `updates` | `{节点名: {"messages": [...]}}` | 增量状态，前端从中提取 token / tool_call / tool_result |
 | `updates` | `{"__interrupt__": [{"value": {"action_requests": [...], "review_configs": [...]}}]}` | 图挂起等人工确认 |
+| `messages/partial` | `[{"content": [{"type":"text","text":"..."}, {"type":"thinking","thinking":"..."}], ...}]` | 模型层的实时流。⚠️ content 是**累计快照**不是增量，消费方要自己算差 |
+| `messages/metadata` | `{...}` | 模型调用的元信息，前端不用 |
+| `messages/complete` | `[{...}]` | 回合结束时的完整消息，前端不用（`updates` 里已有） |
 | `values` | `{"messages": [...]}` | 全量状态快照 |
 | `error` | `{"message": "..."}` | 运行出错 |
 | `end` | — | 运行结束 |
 
-> 前端的 [events.ts](../web/src/api/events.ts) 同时兼容 LangGraph 原生事件（`updates`/`values`）和自定义语义事件（`messages`/`tool_call`/`tool_result`/`todos`），只依赖原生 `updates`。
+> 前端的 [events.ts](../web/src/api/events.ts) 同时兼容 LangGraph 原生事件
+> （`updates`/`values`/`messages/*`）和自定义语义事件（`messages`/`tool_call`/`tool_result`/`todos`）。
 
 ### 恢复一次挂起的运行
 
@@ -321,7 +329,7 @@ Accept: text/event-stream
       "decisions": [{"type": "approve"}]
     }
   },
-  "stream_mode": ["updates"],
+  "stream_mode": ["updates", "messages"],
   "on_disconnect": "continue",
   "context": {
     "workspace": "/abs/path",
@@ -370,7 +378,7 @@ Accept: text/event-stream
 断线 / 刷新后接回**已经在跑**的 run（前端 `joinRunStream`）。
 
 ```http
-GET /threads/{thread_id}/runs/{run_id}/stream?stream_mode=updates
+GET /threads/{thread_id}/runs/{run_id}/stream?stream_mode=updates,messages
 Accept: text/event-stream
 ```
 

@@ -182,12 +182,19 @@ App  (BrowserRouter)
 - **复合内容渲染：文本 + 工具调用混合排列**（以 `parts` 为准，见 5.6）
 - 工具调用卡片可展开/折叠，**默认全部折叠**（`uiStore.activeToolCallId` 为 null）
 - 文件编辑类工具自动渲染 Diff
+- 思考内容渲染成 `ThinkingBlock`（见 7.1.1）
+
+#### ThinkingBlock
+
+- 模型的思考内容，**可折叠**：流式生成中默认展开（看着它一段段长出来），这一轮结束后收起
+- 标题行显示「思考过程」+ 字数，点一下展开/收起
 
 #### ToolCallCard
 
 - 头部：按工具类型选图标 + 工具名 + 一句话摘要（命令显示命令、文件类显示路径、搜索显示 `pattern  in path`，中间两个空格）+ 状态
 - 状态四态：`pending` / `running` / `success` / `error`，各有独立图标
 - 展开后按类型差异化渲染结果（见 7.2）
+- **展开后直接摊开工具参数**（JSON），不再套一层折叠——排查「Agent 到底传了什么」要少点一次
 
 #### CodeBlock
 
@@ -327,6 +334,7 @@ thread 的 `metadata`（`PATCH /threads/{id}` 是合并语义，不会覆盖平�
 ```typescript
 type MessagePart =
   | { kind: 'text'; text: string }
+  | { kind: 'thinking'; text: string }   // 模型的思考（reasoning）
   | { kind: 'tool'; call: ToolCall }
   | { kind: 'approval'; id: string; requests: ApprovalRequest[]; status: 'pending' | 'approved' | 'rejected' | 'edited' }
 
@@ -346,6 +354,11 @@ interface Message {
 
 从 LangGraph 的 `/state` 拉历史时，`restoreMessages()` 负责把 LangChain 的消息数组
 （含 `tool_calls` / `tool_call_id` 的配对关系）还原成同样的有序结构。
+
+**`thinking` 片段**：模型的思考内容。后端开了思考预算（`conf/config.toml` 的
+`[models.thinking]`）才会有，落在 AI 消息 content 的 `thinking` 块（Anthropic 原生块）
+或 `reasoning` 块（langchain 标准 content_blocks）里——两种形态都认。
+它在 parts 里排在同一回合的正文**前面**。
 
 
 ### 5.7 斜杠命令与 skill
@@ -402,7 +415,7 @@ export function streamRun(
   threadId: string,
   message: string,
   options: RunOptions,          // { workspace, permissions, model, skills }
-  handlers: RunHandlers,        // { onToken, onToolCall, onToolResult, onTodos, onError, onEnd, onRunId?, onInterrupt?, onConnectionLost? }
+  handlers: RunHandlers,        // { onToken, onThinking?, onToolCall, onToolResult, onTodos, onError, onEnd, onRunId?, onInterrupt?, onConnectionLost? }
 ): () => void                   // 返回取消函数
 ```
 
@@ -413,7 +426,7 @@ POST /threads/{thread_id}/runs/stream
 {
   "assistant_id": "code_agent",
   "input": { "messages": [{ "role": "user", "content": "..." }] },
-  "stream_mode": ["updates"],
+  "stream_mode": ["updates", "messages"],
   "on_disconnect": "continue",
   "context": {
     "workspace": "",              // 空字符串 = 不选工作空间
@@ -424,7 +437,9 @@ POST /threads/{thread_id}/runs/stream
 }
 ```
 
-`stream_mode` 只请求 `["updates"]` —— `values` 每次都回传全量状态，噪音大且没必要。
+`stream_mode` 订阅两档：`updates` 给工具调用和最终结果，`messages` 给模型层的实时流
+（正文和思考逐块出来）。不请求 `values`——每次都回传全量状态，噪音大且没必要。
+⚠️ 两档会推同一段文本，消费方要去重（见 7.1）。
 `on_disconnect: "continue"` 让浏览器断开后后端继续跑完，避免半途中断留下脏状态。
 
 `context` 是任务参数的落点，结构由后端 `graph/run_context.py` 的 `RunContext`
@@ -514,10 +529,32 @@ mock 回复会把本次收到的 `workspace` / `permissions` / `model` 回显在
 1. 用户发送消息 → 乐观追加到消息列表
 2. 调用 `streamRun`，创建空的 `pendingMessage`
 3. 归一化后的 `token` 事件 → 追加文本到最后一个 `text` 片段
-4. `tool_call` 事件 → 往 `parts` 追加 `{ kind: 'tool' }` 片段
-5. `tool_result` 事件 → 按 id 定位到对应 ToolCall，更新 result 与 status
-6. `todos` 事件 → 更新 `todoStore`
-7. `end` 事件 → 将 `pendingMessage` 移入正式消息列表，清空
+4. `thinking` 事件 → 追加到最后一个 `thinking` 片段（没有就新起一段）
+5. `tool_call` 事件 → 往 `parts` 追加 `{ kind: 'tool' }` 片段
+6. `tool_result` 事件 → 按 id 定位到对应 ToolCall，更新 result 与 status
+7. `todos` 事件 → 更新 `todoStore`
+8. `end` 事件 → 将 `pendingMessage` 移入正式消息列表，清空
+
+**订阅两档流**：`run` 的 `stream_mode` 是 `["updates", "messages"]`。
+
+- `updates`：**节点跑完推一次**。工具调用、工具结果、人工确认都在这里。
+- `messages`：**模型层的实时流**。正文和思考按块出来，所以能看到「正在想、正在写」。
+
+两档会推同一段文本（`updates` 是完整正文，`messages` 是逐块增量），
+归一化层用 `sawLiveText` 标志去重：这一回合的正文已经从 `messages` 流实时发过，
+`updates` 里那份就不再重复发。**去重标志在每个模型回合结束后清零**。
+
+⚠️ `messages` 模式给的是**累计快照**（每块都是「到目前为止的全文」），不是增量。
+归一化层要跟上一份比、自己算出增量，否则同一段话会被追加很多遍。
+
+### 7.1.1 思考过程（ThinkingBlock）
+
+模型的思考渲染成可折叠的「思考过程」块，放在同一回合正文的前面：
+
+- **流式生成中默认展开**——能看着它一段段长出来
+- 这一轮结束后**收起**，正文才读得下去；标题行显示字数，点一下再展开
+
+实现见 `web/src/components/chat/ThinkingBlock.tsx`。
 
 ### 7.2 工具调用可视化
 
