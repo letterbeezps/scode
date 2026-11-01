@@ -8,12 +8,21 @@
 build_model_by_spec() 按显式规格建模型，conf/subagents.toml 的 subagent
 也走这里，供应商连接信息只在 config.toml 里写一遍。
 
+**思考预算**写在 [models.thinking] 段，按 "供应商名:模型名" 配（单位 token，
+缺省 = 不开）。开启后请求会带上 anthropic 协议的 thinking 参数，模型返回
+thinking 内容块，前端渲染成「思考过程」。只有 anthropic 协议支持。
+
+**供应商私有的请求体字段**写在 [models.providers.*.extra_body]，原样透传进
+请求 body（走模型客户端的 extra_body 选项）。用来开供应商特有开关，
+比如 MiniMax 的 interleaved_thinking。
+
 **运行期切换模型**（见 graph/model_switch.py）也会调 build_model_by_spec()：
-那条路径每次调用都重新读本文件，所以新增模型、改 base_url、改 api_key
-都不用重启后端就能生效。构建结果按连接信息缓存，键里带 api_key，
+那条路径每次调用都重新读本文件，所以新增模型、改 base_url、改 api_key、
+改思考预算都不用重启后端就能生效。构建结果按连接信息缓存，键里带 api_key，
 改 key 后缓存自然失效。
 """
 
+import json
 import os
 import tomllib
 import tomli_w
@@ -28,11 +37,18 @@ SUPPORTED_PROTOCOLS = ("anthropic", "openai")
 _CONF_DIR = Path(__file__).resolve().parents[2] / "conf"
 _CONFIG_FILENAME = "config.toml"
 
-_MODEL_CACHE: dict[tuple[str, str, str | None, str], BaseChatModel] = {}
-"""已构建的模型实例。键是 (protocol, model_id, base_url, api_key)。
+_MODEL_CACHE: dict[tuple[str, str, str | None, str, int, str], BaseChatModel] = {}
+"""已构建的模型实例。键是 (protocol, model_id, base_url, api_key, thinking_budget, extra_body)。
 
-改了 api_key 或 base_url 之后键就变了，缓存自然失效；删掉的模型会留下一条
-没人再用的记录，条目数只随配置改动增长，不回收也不影响正确性。
+改了 api_key、base_url、思考预算或 extra_body 之后键就变了，缓存自然失效；
+删掉的模型会留下一条没人再用的记录，条目数只随配置改动增长，不回收也不影响正确性。
+"""
+
+DEFAULT_MAX_TOKENS = 4096
+"""不指定时的输出上限（langchain-anthropic 的默认值也是 4096）。
+
+开启思考时用它当下限：Anthropic 协议要求 budget_tokens **小于** max_tokens，
+思考预算给大了就会把输出额度挤没，所以这里按预算的两倍兜底。
 """
 
 
@@ -119,6 +135,79 @@ def _parse_model_id(model_id: str) -> tuple[str, str]:
     return provider, model_name
 
 
+def _thinking_budget(config: dict[str, Any], spec: str) -> int:
+    """取某个模型的思考预算（token）。缺省 / 0 / 写错类型都是 0，即不开启。
+
+    配置写在 [models.thinking] 段，键是 "供应商名:模型名"：
+
+        [models.thinking]
+        "minimax:MiniMax-M3" = 1024
+
+    为什么不放在 [models.providers.*] 里按模型列：providers 段的 models 是一个
+    字符串列表，插一张「模型 → 参数」的表进去就得改掉列表结构，
+    模型管理接口（add_model / update_model / list_models）全得跟着改。
+    单独开一段，两边互不干扰。
+    """
+    models = config.get("models")
+    if not isinstance(models, dict):
+        return 0
+    budgets = models.get("thinking")
+    if not isinstance(budgets, dict):
+        return 0
+    value = budgets.get(spec)
+    # bool 是 int 的子类，得单独排掉：True 会被当成 1 token
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        return 0
+    return value
+
+
+def _apply_thinking(
+    kwargs: dict[str, Any],
+    *,
+    protocol: str,
+    spec: str,
+    budget: int,
+) -> None:
+    """按协议把思考预算写进模型构造参数。
+
+    只有 anthropic 协议能按 token 数精确控制思考量（thinking.budget_tokens）。
+    openai 协议没有等价的参数：官方是 reasoning_effort（枚举档位），
+    第三方端点（DeepSeek 等）又是各自的私有字段，这里不猜——
+    配了就报错，让用户知道这个预算对这个模型不生效。
+    """
+    if budget <= 0:
+        return
+
+    if protocol != "anthropic":
+        raise ConfigError(
+            f"模型 {spec!r} 配了思考预算（{budget} token），"
+            f"但 {protocol!r} 协议不支持按 token 数控制思考量"
+            "（只有 anthropic 协议支持 thinking.budget_tokens）。"
+            "去掉该配置，或把这个模型换成 anthropic 协议的供应商。"
+        )
+
+    kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+    # Anthropic 要求 budget_tokens < max_tokens，给小了输出额度会被思考挤掉
+    kwargs["max_tokens"] = max(DEFAULT_MAX_TOKENS, budget * 2)
+
+
+def _extra_body(provider: dict[str, Any]) -> dict[str, Any]:
+    """取供应商特有的请求体扩展（[models.providers.*.extra_body]）。
+
+    这些字段原样塞进请求 body，用来开供应商私有的开关。典型例子：
+    MiniMax 的 Anthropic 兼容端点只有在 body 里带上
+    `interleaved_thinking: true` 才会返回 thinking 内容块——
+    **带工具时不给这个字段，思考会被静默丢掉**（不报错，只是没有思考块）。
+
+    为什么不给所有 anthropic 端点都带上：官方 Anthropic API 对未知字段是
+    严格校验的（多余字段直接 400），所以这必须由供应商自己声明。
+    """
+    extra = provider.get("extra_body")
+    if not isinstance(extra, dict):
+        return {}
+    return {key: value for key, value in extra.items() if isinstance(key, str)}
+
+
 def build_model_by_spec(config: dict[str, Any], spec: str) -> BaseChatModel:
     """按 "供应商名:模型名" 规格构建模型实例。
 
@@ -170,7 +259,26 @@ def build_model_by_spec(config: dict[str, Any], spec: str) -> BaseChatModel:
         kwargs["base_url"] = base_url
     kwargs["api_key"] = _require_api_key(provider_name, provider)
 
-    cache_key = (protocol, model_id, base_url, kwargs["api_key"])
+    # 思考预算：按模型配，缺省 0 = 不开。开启后模型会返回 thinking 内容块，
+    # 前端据此渲染「思考过程」。
+    budget = _thinking_budget(config, spec)
+    _apply_thinking(kwargs, protocol=protocol, spec=spec, budget=budget)
+
+    # 供应商私有的请求体扩展（extra_body）：原样透传给模型客户端。
+    extra = _extra_body(provider)
+    if extra:
+        # 模型客户端（anthropic / openai SDK）都认 extra_body 这个 httpx 选项，
+        # 它会把里面的字段并进 JSON body——正好对应「供应商特有开关」的语义。
+        kwargs["model_kwargs"] = {"extra_body": extra}
+
+    cache_key = (
+        protocol,
+        model_id,
+        base_url,
+        kwargs["api_key"],
+        budget,
+        json.dumps(extra, sort_keys=True, ensure_ascii=False),
+    )
     cached = _MODEL_CACHE.get(cache_key)
     if cached is not None:
         return cached

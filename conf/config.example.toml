@@ -11,6 +11,15 @@ default = "minimax:MiniMax-M3"
 # 现建模型实例——所以新增模型、改 base_url、改 api_key 都不用重启后端。
 recent = "minimax:MiniMax-M3"
 
+# 思考预算（单位 token）：按 "供应商名:模型名" 配，缺省或 0 = 不开思考。
+#
+# 开启后，请求会带上 anthropic 协议的 thinking 参数，模型在回答前先想一遍，
+# 返回的 thinking 内容块由前端渲染成「思考过程」。
+# 只有 anthropic 协议支持（thinking.budget_tokens）；openai 协议配了会直接报错。
+# 代价：每轮多消耗这部分 token，首字延迟也变长。
+[models.thinking]
+"minimax:MiniMax-M3" = 1024
+
 [models.providers.minimax]
 # 协议只支持 anthropic / openai
 protocol = "anthropic"
@@ -22,6 +31,17 @@ models = [
     "MiniMax-M3",
     "MiniMax-M2.5",
 ]
+
+# 该供应商特有的请求体字段，原样透传进请求 body。
+#
+# 为什么要按供应商配：官方 Anthropic API 对未知字段是严格校验的（多余字段
+# 直接 400），所以不能一股脑全带上，只能由供应商自己声明需要什么。
+#
+# MiniMax 的 Anthropic 兼容端点：带工具时不给 interleaved_thinking，
+# 思考内容会被**静默丢掉**（不报错，只是不返回 thinking 块）——
+# 排查「开了思考却看不到思考」时先看这里。
+[models.providers.minimax.extra_body]
+interleaved_thinking = true
 
 # 第二个供应商示例：openai 协议（用于验证多供应商切换）
 [models.providers.deepseek]
