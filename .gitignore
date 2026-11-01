@@ -14,6 +14,7 @@ wheels/
 .claude
 .agents
 .workbuddy
+.ai-memory/
 
 # Secrets — never commit API keys
 .env
@@ -49,3 +50,5 @@ stupid_code/data/
 conversation_history/
 
 
+learn/
+scode-agent/
