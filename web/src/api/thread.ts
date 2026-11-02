@@ -15,18 +15,26 @@
  * 另外平台的 Thread 结构没有 title 字段，标题走 metadata.title。
  */
 import { request, isMockMode } from './client'
-import { parseInterrupts, textOf, thinkingOf } from './events'
+import { parseInterrupts, parseSubagentSessions, textOf, thinkingOf } from './events'
 import { mockThreads } from './mock'
 import type {
   ApprovalRequest,
   Message,
   MessagePart,
+  SubagentSession,
   Thread,
   ThreadRun,
   ThreadStatus,
   ToolCall,
   ToolResult,
 } from './types'
+
+/**
+ * 图状态里存子 agent 会话的键。
+ *
+ * 后端 `stupid_code/graph/subagent_trace.py` 写。名字两端必须一致。
+ */
+const SUBAGENT_SESSIONS_KEY = 'scode_subagent_sessions'
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
@@ -126,6 +134,13 @@ export interface ThreadSnapshot {
   next: string[]
   /** 平台已经持久化的 interrupt，刷新后用它重建审批卡片 */
   interrupts: ApprovalRequest[]
+  /**
+   * 子 agent 的会话过程（一次委派 = 一份）。
+   *
+   * 来自图状态里的 `scode_subagent_sessions` 通道——后端把子 agent 的
+   * transcript 存在那儿，刷新页面后靠它还原子 agent 的会话页。
+   */
+  subagentSessions: SubagentSession[]
 }
 
 export async function loadThreadSnapshot(threadId: string): Promise<ThreadSnapshot> {
@@ -137,7 +152,8 @@ export async function loadThreadSnapshot(threadId: string): Promise<ThreadSnapsh
     : []
   const rawInterrupts = Array.isArray(state.interrupts) ? state.interrupts : []
   const interrupts = parseInterrupts({ __interrupt__: rawInterrupts }) ?? []
-  return { rawMessages, next, interrupts }
+  const subagentSessions = parseSubagentSessions(values[SUBAGENT_SESSIONS_KEY])
+  return { rawMessages, next, interrupts, subagentSessions }
 }
 
 /**

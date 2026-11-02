@@ -56,6 +56,13 @@ export interface UIState {
   sidebarCollapsed: boolean
   /** 当前展开的工具调用卡片（null = 全部折叠，设计文档 4.1） */
   activeToolCallId: string | null
+  /**
+   * 当前展开的子 agent 会话（工具调用 id）。
+   *
+   * 从左侧栏第三层点开某个子 agent 时设上——主会话里对应的 task 卡片
+   * 跟着展开，两边指向同一份 transcript。
+   */
+  activeSubagentId: string | null
   theme: Theme
   /**
    * 侧边栏里被折叠的工作空间分组。
@@ -67,6 +74,7 @@ export interface UIState {
   toggleSidebar: () => void
   setSidebarCollapsed: (collapsed: boolean) => void
   setActiveToolCall: (id: string | null) => void
+  setActiveSubagent: (id: string | null) => void
   toggleTheme: () => void
   toggleWorkspaceGroup: (key: string) => void
   expandWorkspaceGroup: (key: string) => void
@@ -79,6 +87,7 @@ const initialCollapsed = readStoredCollapsed()
 export const useUIStore = create<UIState>((set) => ({
   sidebarCollapsed: false,
   activeToolCallId: null,
+  activeSubagentId: null,
   theme: initialTheme,
   collapsedWorkspaces: initialCollapsed,
 
@@ -88,6 +97,8 @@ export const useUIStore = create<UIState>((set) => ({
   setActiveToolCall: (id) =>
     // 再点一次同一个卡片 = 收起（null 表示全部折叠）
     set((s) => ({ activeToolCallId: s.activeToolCallId === id ? null : id })),
+
+  setActiveSubagent: (id) => set({ activeSubagentId: id }),
 
   toggleTheme: () =>
     set((s) => {

@@ -27,6 +27,8 @@ import type { SseEvent } from './sse'
 import type {
   ApprovalDecisionType,
   ApprovalRequest,
+  SubagentMessage,
+  SubagentSession,
   Todo,
   ToolCall,
   ToolResult,
@@ -42,11 +44,21 @@ export type NormalizedEvent =
   | { type: 'todos'; todos: Todo[] }
   /** 图挂起等人工确认（LangGraph 的 __interrupt__） */
   | { type: 'interrupt'; requests: ApprovalRequest[] }
+  /** 子 agent 的会话过程（一次委派 = 一份） */
+  | { type: 'subagent_session'; session: SubagentSession }
   | { type: 'error'; message: string }
   | { type: 'end' }
 
 /** Deep Agents 内置的任务规划工具名（总体设计文档 3.1） */
 const TODO_TOOLS = new Set(['write_todos', 'write_todo', 'todo_write', 'todos'])
+
+/**
+ * 图状态里存子 agent 会话的键。
+ *
+ * 后端 `stupid_code/graph/subagent_trace.py` 写、子 agent 的 transcript
+ * 通过它回到父图。名字两端必须一致。
+ */
+const SUBAGENT_SESSIONS_KEY = 'scode_subagent_sessions'
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
@@ -177,6 +189,58 @@ export function parseInterrupts(payload: Record<string, unknown>): ApprovalReque
 export interface Normalizer {
   push: (evt: SseEvent) => NormalizedEvent[]
   reset: () => void
+}
+
+/**
+ * 认出后端写进图状态的子 agent 会话。
+ *
+ * 状态通道的值是 `{ [工具调用id]: { agent, tool_call_id, messages } }`。
+ * 任何认不出来的东西一律丢掉——宁可少显示，也不要渲染出半截结构。
+ */
+export function parseSubagentSessions(raw: unknown): SubagentSession[] {
+  if (!raw || typeof raw !== 'object') return []
+  const out: SubagentSession[] = []
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const rec = asRecord(value)
+    const messages = Array.isArray(rec.messages) ? rec.messages : []
+    if (!messages.length) continue
+    const toolCallId = typeof rec.tool_call_id === 'string' && rec.tool_call_id ? rec.tool_call_id : key
+    out.push({
+      agent: typeof rec.agent === 'string' ? rec.agent : 'unknown',
+      tool_call_id: toolCallId,
+      description: typeof rec.description === 'string' ? rec.description : undefined,
+      messages: messages.map(parseSubagentMessage),
+    })
+  }
+  return out
+}
+
+/** 子 agent 的一条消息 → 前端的结构 */
+function parseSubagentMessage(raw: unknown): SubagentMessage {
+  const rec = asRecord(raw)
+  const role = rec.role
+  const normalizedRole: SubagentMessage['role'] =
+    role === 'ai' || role === 'tool' || role === 'user' ? role : 'other'
+  const message: SubagentMessage = {
+    role: normalizedRole,
+    content: typeof rec.content === 'string' ? rec.content : '',
+  }
+  if (typeof rec.thinking === 'string' && rec.thinking) message.thinking = rec.thinking
+  if (typeof rec.tool_call_id === 'string' && rec.tool_call_id) {
+    message.tool_call_id = rec.tool_call_id
+  }
+  if (typeof rec.name === 'string' && rec.name) message.name = rec.name
+  if (Array.isArray(rec.tool_calls)) {
+    message.tool_calls = rec.tool_calls.map((item) => {
+      const call = asRecord(item)
+      return {
+        id: typeof call.id === 'string' ? call.id : '',
+        name: typeof call.name === 'string' ? call.name : 'unknown',
+        args: asRecord(call.args),
+      }
+    })
+  }
+  return message
 }
 
 export function createEventNormalizer(): Normalizer {
@@ -312,7 +376,15 @@ export function createEventNormalizer(): Normalizer {
 
     const out: NormalizedEvent[] = []
     for (const nodeUpdate of Object.values(payload)) {
-      const messages = asRecord(nodeUpdate).messages
+      const update = asRecord(nodeUpdate)
+
+      // 子 agent 的会话过程：跟 messages 平级，在 task 工具返回的那个节点上
+      const sessions = parseSubagentSessions(update[SUBAGENT_SESSIONS_KEY])
+      for (const session of sessions) {
+        out.push({ type: 'subagent_session', session })
+      }
+
+      const messages = update.messages
       if (!Array.isArray(messages)) continue
       for (const msg of messages) out.push(...fromLangChainMessage(asRecord(msg)))
     }

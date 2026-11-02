@@ -24,6 +24,7 @@ import type {
   ApprovalRequest,
   Message,
   RunOptions,
+  SubagentSession,
   Thread,
   Todo,
   ToolCall,
@@ -105,6 +106,13 @@ export interface ConversationState {
   activeThreadId: string | null
   /** thread_id -> 消息列表 */
   messages: Record<string, Message[]>
+  /**
+   * thread_id -> 子 agent 会话（工具调用 id -> 会话）
+   *
+   * 一次委派 = 一个子 agent 会话，键是父图里那条 `task` 工具调用的 id。
+   * 主会话里 task 工具卡片展开后显示的就是它。
+   */
+  subagentSessions: Record<string, Record<string, SubagentSession>>
   /** thread_id -> 标题（后端不返回 title，前端从首条用户消息推导） */
   titles: Record<string, string>
   /** 正在流式生成的 assistant 消息 */
@@ -136,7 +144,27 @@ export interface ConversationState {
    * 整个运行报错。
    */
   decideApproval: (decisions: ApprovalDecision[]) => void
+  /** 记一份子 agent 会话（流式事件或从 /state 还原时都会调） */
+  putSubagentSession: (threadId: string, session: SubagentSession) => void
   clearError: () => void
+}
+
+/**
+ * 把子 agent 会话记进 store。
+ *
+ * 按工具调用 id 存——同一个委派在流式事件和 /state 还原时会来两次，
+ * 后到的覆盖先到的（内容一样，无所谓）。
+ */
+function putSubagentSession(threadId: string, session: SubagentSession): void {
+  useConversationStore.setState((prev) => ({
+    subagentSessions: {
+      ...prev.subagentSessions,
+      [threadId]: {
+        ...(prev.subagentSessions[threadId] ?? {}),
+        [session.tool_call_id]: session,
+      },
+    },
+  }))
 }
 
 /** 只改 pendingMessage，不动 messages */
@@ -230,6 +258,18 @@ function presentInterrupt(threadId: string, requests: ApprovalRequest[], message
   })
 }
 
+/**
+ * 把 /state 里的子 agent 会话写回 store。
+ *
+ * 刷新页面后子 agent 的会话页要还在——transcript 存在图状态里，
+ * 这里读出来存进 store，工具卡片展开时才有东西可显示。
+ */
+function restoreSubagentSessions(threadId: string, sessions: SubagentSession[]): void {
+  for (const session of sessions) {
+    putSubagentSession(threadId, session)
+  }
+}
+
 /** 以 /state 为准重新加载线程，用于恢复结束后对齐历史 */
 async function refreshThread(threadId: string): Promise<void> {
   try {
@@ -253,6 +293,7 @@ async function refreshThread(threadId: string): Promise<void> {
     }
 
     const messages = threadApi.restoreMessages(threadId, snapshot.rawMessages)
+    restoreSubagentSessions(threadId, snapshot.subagentSessions)
     const state = useConversationStore.getState()
     // 刷新期间用户已经发了新消息：别把新运行的 pending 状态冲掉
     if (state.isGenerating || state.pendingThreadId) return
@@ -322,6 +363,7 @@ async function startRecoveryPolling(threadId: string, runId?: string): Promise<v
         const messages = threadApi.restoreMessages(threadId, snapshot.rawMessages, {
           unresolvedToolCalls: 'pending',
         })
+        restoreSubagentSessions(threadId, snapshot.subagentSessions)
         presentInterrupt(threadId, snapshot.interrupts, messages)
         recoveryRunId = null
         return
@@ -329,6 +371,7 @@ async function startRecoveryPolling(threadId: string, runId?: string): Promise<v
 
       if (snapshot.next.length === 0) {
         const messages = threadApi.restoreMessages(threadId, snapshot.rawMessages)
+        restoreSubagentSessions(threadId, snapshot.subagentSessions)
         useConversationStore.setState((prev) => {
           const thread = prev.threads.find((item) => item.thread_id === threadId)
           return {
@@ -551,6 +594,12 @@ function createRunHandlers(threadId: string, options: RunHandlerOptions = {}): R
       useTodoStore.getState().updateTodos(threadId, todos)
     },
 
+    onSubagentSession(session: SubagentSession) {
+      // 子 agent 的会话过程：跟父图的工具调用 id 对应上，
+      // 主会话里那张 task 工具卡片展开后显示的就是它。
+      putSubagentSession(threadId, session)
+    },
+
     onError(message) {
       patchPending((msg) => ({ ...msg, error: message }))
       useConversationStore.setState({ error: message, recovering: false })
@@ -648,6 +697,7 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
   threads: [],
   activeThreadId: null,
   messages: {},
+  subagentSessions: {},
   titles: {},
   pendingMessage: null,
   pendingThreadId: null,
@@ -736,6 +786,7 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       const messages = threadApi.restoreMessages(id, snapshot.rawMessages, {
         unresolvedToolCalls: active ? 'pending' : 'error',
       })
+      restoreSubagentSessions(id, snapshot.subagentSessions)
 
       set((state) => {
         const thread = state.threads.find((t) => t.thread_id === id)
@@ -978,6 +1029,10 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       // 恢复请求本身也会流式返回；结束后以 state 对齐，补上挂起前后没进 pending 的内容
       createRunHandlers(pending.threadId, { recovered: true }),
     )
+  },
+
+  putSubagentSession(threadId, session) {
+    putSubagentSession(threadId, session)
   },
 
   clearError() {

@@ -8,13 +8,16 @@ import { SettingsPanel } from './SettingsPanel'
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { groupThreadsByWorkspace, workspaceKeyOf } from '../../lib/thread-groups'
+import type { SubagentSession } from '../../api/types'
 
 interface Props {
   onNewChat: () => void
   onSelect: (id: string) => void
+  /** 点开某个子 agent 会话：切到它所属的主会话，并展开那张工具卡片 */
+  onSelectSubagent: (threadId: string, toolCallId: string) => void
 }
 
-export function Sidebar({ onNewChat, onSelect }: Props) {
+export function Sidebar({ onNewChat, onSelect, onSelectSubagent }: Props) {
   const collapsed = useUIStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useUIStore((s) => s.toggleSidebar)
   const collapsedWorkspaces = useUIStore((s) => s.collapsedWorkspaces)
@@ -24,9 +27,23 @@ export function Sidebar({ onNewChat, onSelect }: Props) {
   const titles = useConversationStore((s) => s.titles)
   const activeThreadId = useConversationStore((s) => s.activeThreadId)
   const deleteThread = useConversationStore((s) => s.deleteThread)
+  const subagentSessions = useConversationStore((s) => s.subagentSessions)
+  const activeSubagentId = useUIStore((s) => s.activeSubagentId)
 
-  /** 任务按工作空间收纳：一级是目录，二级是该目录下的任务 */
+  /** 任务按工作空间收纳：一级是目录，二级是该目录下的任务，三级是子 agent 会话 */
   const groups = useMemo(() => groupThreadsByWorkspace(threads), [threads])
+
+  /**
+   * 第三层要按 thread 归拢：子 agent 会话是按工具调用 id 存的，
+   * 这里转成「thread_id -> 会话列表」，顺序按首次出现的先后。
+   */
+  const sessionsByThread = useMemo(() => {
+    const out: Record<string, SubagentSession[]> = {}
+    for (const [threadId, sessions] of Object.entries(subagentSessions)) {
+      out[threadId] = Object.values(sessions)
+    }
+    return out
+  }, [subagentSessions])
 
   /**
    * 当前任务所在的工作空间分组自动展开。
@@ -90,9 +107,12 @@ export function Sidebar({ onNewChat, onSelect }: Props) {
                   group={group}
                   expanded={!collapsedWorkspaces.includes(group.key)}
                   titles={titles}
+                  subagentSessions={sessionsByThread}
                   activeThreadId={activeThreadId}
+                  activeSubagentId={activeSubagentId}
                   onToggle={() => toggleWorkspaceGroup(group.key)}
                   onSelect={onSelect}
+                  onSelectSubagent={onSelectSubagent}
                   onDelete={(id) => void deleteThread(id)}
                 />
               ))}

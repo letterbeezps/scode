@@ -7,6 +7,7 @@ import { ErrorBanner } from '../components/chat/ErrorBanner'
 import { InputBar } from '../components/chat/InputBar'
 import { EmptyState } from '../components/chat/EmptyState'
 import { useConversationStore } from '../store/conversationStore'
+import { useUIStore } from '../store/uiStore'
 
 export function ChatPage() {
   const { threadId } = useParams<{ threadId?: string }>()
@@ -60,6 +61,22 @@ export function ChatPage() {
   )
 
   /**
+   * 左侧栏第三层点开某个子 agent 会话。
+   *
+   * 子 agent 的 transcript 折叠在它所属主会话的 task 卡片里——所以这里
+   * 切到那个主会话，并把对应的工具卡片展开。两边指向同一份内容。
+   */
+  const handleSelectSubagent = useCallback(
+    (threadId: string, toolCallId: string) => {
+      if (isGenerating) cancelRun()
+      useUIStore.getState().setActiveSubagent(toolCallId)
+      useUIStore.getState().setActiveToolCall(toolCallId)
+      navigate(`/chat/${threadId}`)
+    },
+    [isGenerating, cancelRun, navigate],
+  )
+
+  /**
    * 发送一条消息。
    *
    * 文本由调用方给（输入框传当前内容，斜杠命令菜单传命令本体）——
@@ -85,7 +102,7 @@ export function ChatPage() {
 
   return (
     <div className="flex h-full">
-      <Sidebar onNewChat={handleNewChat} onSelect={handleSelect} />
+      <Sidebar onNewChat={handleNewChat} onSelect={handleSelect} onSelectSubagent={handleSelectSubagent} />
 
       <main className="relative flex min-w-0 flex-1 flex-col">
         {/* 错误条浮在主区域顶部：空会话时 MessageList 不渲染，

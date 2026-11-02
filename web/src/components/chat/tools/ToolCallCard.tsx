@@ -8,17 +8,25 @@ import type { ToolCall } from '../../../api/types'
 import { cn } from '../../../lib/cn'
 import { filePathOf } from '../../../lib/tools'
 import { useUIStore } from '../../../store/uiStore'
+import { useConversationStore } from '../../../store/conversationStore'
 import { ToolCallHeader } from './ToolCallHeader'
 import { ToolCallResult } from './ToolCallResult'
+import { SubagentSessionPanel } from './SubagentSessionPanel'
 
 interface Props {
   call: ToolCall
+  /** 所属线程——子 agent 会话是按线程存的 */
+  threadId: string
 }
 
-export function ToolCallCard({ call }: Props) {
+export function ToolCallCard({ call, threadId }: Props) {
   const activeToolCallId = useUIStore((s) => s.activeToolCallId)
   const setActiveToolCall = useUIStore((s) => s.setActiveToolCall)
   const expanded = activeToolCallId === call.id
+
+  // task 工具调用的子 agent 会话：按工具调用 id 对应
+  const sessions = useConversationStore((s) => s.subagentSessions[threadId])
+  const subagentSession = sessions?.[call.id]
 
   return (
     <div
@@ -47,6 +55,8 @@ export function ToolCallCard({ call }: Props) {
           <div className="mt-2">
             <ToolCallResult call={call} />
           </div>
+          {/* 子 agent 的会话过程：折叠在父会话的 task 卡片里 */}
+          {subagentSession && <SubagentSessionPanel session={subagentSession} />}
         </div>
       )}
     </div>

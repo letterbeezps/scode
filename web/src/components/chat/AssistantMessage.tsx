@@ -53,7 +53,13 @@ export function AssistantMessage({ message, streaming }: Props) {
               />
             )
           }
-          return <ToolCallCard key={`tool-${part.call.id}`} call={part.call} />
+          return (
+            <ToolCallCard
+              key={`tool-${part.call.id}`}
+              call={part.call}
+              threadId={message.thread_id}
+            />
+          )
         })}
 
         {streaming && message.parts.length === 0 && (

@@ -15,6 +15,7 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   RunOptions,
+  SubagentSession,
   Todo,
   ToolCall,
   ToolResult,
@@ -35,6 +36,8 @@ export interface RunHandlers {
   onToolCall: (call: ToolCall) => void
   onToolResult: (result: ToolResultEvent) => void
   onTodos: (todos: Todo[]) => void
+  /** 子 agent 的会话过程（一次委派 = 一份） */
+  onSubagentSession?: (session: SubagentSession) => void
   onError: (err: string) => void
   onEnd: () => void
   /** LangGraph 的 metadata 事件里带着 run_id，取消运行需要 */
@@ -248,6 +251,9 @@ function consumeRunStream(
               break
             case 'todos':
               handlers.onTodos(event.todos)
+              break
+            case 'subagent_session':
+              handlers.onSubagentSession?.(event.session)
               break
             case 'interrupt':
               handlers.onInterrupt?.(event.requests)

@@ -152,6 +152,47 @@ export interface Message {
   interrupted?: boolean
 }
 
+/* ------------------------------------------------------------ 子 agent 会话 */
+
+/**
+ * 子 agent 内部的一条消息。
+ *
+ * 后端把子 agent 的消息历史转成了普通对象（不是 LangChain 的消息类），
+ * 因为图状态要进 checkpoint、前端拿到的也是 JSON。详见
+ * `stupid_code/graph/subagent_trace.py`。
+ */
+export interface SubagentMessage {
+  /** user / ai / tool / other */
+  role: 'user' | 'ai' | 'tool' | 'other'
+  /** 正文 */
+  content: string
+  /** 思考内容（Anthropic 的 thinking 块 / langchain 的 reasoning 块） */
+  thinking?: string
+  /** assistant 消息发起的工具调用 */
+  tool_calls?: { id: string; name: string; args: Record<string, unknown> }[]
+  /** tool 消息对应的工具调用 id */
+  tool_call_id?: string
+  /** tool 消息的工具名 */
+  name?: string
+}
+
+/**
+ * 一次子 agent 委派 = 一个子 agent 会话。
+ *
+ * 键是**父图里那条 `task` 工具调用的 id**——这样前端能把子 agent 的过程
+ * 挂到对应的工具卡片上。
+ */
+export interface SubagentSession {
+  /** 子 agent 的名字（规格里的 `name`，如 reviewer） */
+  agent: string
+  /** 父图里对应的 task 工具调用 id */
+  tool_call_id: string
+  /** 委派任务描述 */
+  description?: string
+  /** 子 agent 内部的完整消息历史 */
+  messages: SubagentMessage[]
+}
+
 /* ------------------------------------------------------------------ 任务列表 */
 
 export type TodoStatus = 'pending' | 'in_progress' | 'completed'
