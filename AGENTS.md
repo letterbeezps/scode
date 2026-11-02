@@ -46,7 +46,7 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
 
 | 路径 | 内容 |
 |---|---|
-| `stupid_code/graph/` | `agent.py` 建图 · `backend.py` 磁盘+shell · `subagent_policy.py` 子 agent 策略 · `run_context.py` 任务参数 schema · `workspace.py` 工作空间 · `memory.py`+`paths.py` 长期记忆/路径常量 · `skills.py` skill · `model_switch.py` 切模型 · `compaction.py` 压缩 · `mcp.py` MCP · `permissions.py` 人工确认 · `repeated_calls.py` 重复失败拦截 · `persistence.py` SQLite |
+| `stupid_code/graph/` | `agent.py` 建图 · `backend.py` 磁盘+shell · `subagent_policy.py` 子 agent 策略 · `subagent_trace.py` 子 agent 会话 transcript · `run_context.py` 任务参数 schema · `workspace.py` 工作空间 · `memory.py`+`paths.py` 长期记忆/路径常量 · `skills.py` skill · `model_switch.py` 切模型 · `compaction.py` 压缩 · `mcp.py` MCP · `permissions.py` 人工确认 · `repeated_calls.py` 重复失败拦截 · `persistence.py` SQLite |
 | `stupid_code/config/` | 读 `conf/` 下三个配置：`model.py` / `subagent.py` / `mcp.py`；`prompts.py` 是系统提示词 |
 | `stupid_code/admin/` | `/admin` 下的接口：`models.py` / `memory.py` / `skills.py`（共用 `common.py` 的工作空间解析）；`workspaces.py` 是 `POST /workspaces/pick` |
 | `web/src/` | `api/` 通信层（`mock/` 在真实 API 函数内部按 `isMockMode` 分支，**同名同用途的主要接口签名**）· `store/` Zustand · `components/` `pages/` `lib/` |
@@ -56,7 +56,7 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
 
 ## 硬约束
 
-动手前至少扫一遍这 21 条。每条末尾的 **→** 指向后端文档的对应小节（个别指向 README），细则在那里。
+动手前至少扫一遍这 22 条。每条末尾的 **→** 指向后端文档的对应小节（个别指向 README），细则在那里。
 
 1. **clone 后先装参考资料**：`.agents/` 和 `.claude/` 是 gitignore 的，跑
    `npx skills add langchain-ai/langchain-skills --skill '*' --yes`，否则编码 Agent 看不到它们。
@@ -152,6 +152,15 @@ Python 侧**没有** ruff / black / mypy，**整个仓库没有测试、没有 C
     前端要看到过程，run 得同时订阅 `updates` + `messages`：前者给工具调用，
     后者给实时文本和思考；注意 `messages` 给的是**累计快照**不是增量，要自己算差，
     否则同一段话会被追加很多遍。*→ §3.18*
+
+22. **子 agent 的过程靠「状态回传」拿，不靠流**。deepagents 的 `task` 工具内部用 `subagent.invoke()`
+    调子 agent，**`invoke()` 不产生流**——子 agent 侧写 custom 事件能写成功，但父图**收不到**
+    （`subgraphs: true` 也无效）。所以走框架官方的自定义 state 通道：① 子 agent 侧挂
+    `SubagentTranscriptMiddleware`，在 **`after_agent`**（不是 `after_model`）里把整轮历史写进
+    通道，**用临时键**（子 agent 拿不到父图的 tool_call_id）；② 父图侧挂 `SubagentSessionBinder`，
+    在 `wrap_tool_call` 里从 task 返回的 `Command.update` 捞出来，**用父图那条工具调用的 id 重新编组**；
+    ③ 通道名 `scode_subagent_sessions`，**别用 `PrivateStateAttr`**（会被 `OmitFromSchema` 排除，
+    前端读不到）。另外：**保留框架原生 task 工具**，别注册同名工具（会报 `Unknown tools`）。*→ §3.19*
 
 ---
 

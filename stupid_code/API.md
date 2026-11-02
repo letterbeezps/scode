@@ -219,13 +219,30 @@ Content-Type: application/json
       {"id": "...", "type": "human", "content": "你好", "created_at": "..."},
       {"id": "...", "type": "ai", "content": "...", "tool_calls": [...]},
       {"id": "...", "type": "tool", "tool_call_id": "...", "content": "..."}
-    ]
+    ],
+    "scode_subagent_sessions": {
+      "call_xxx": {
+        "agent": "reviewer",
+        "tool_call_id": "call_xxx",
+        "description": "请审查当前工作目录……",
+        "messages": [
+          {"role": "user", "content": "请审查当前工作目录……"},
+          {"role": "ai", "content": "...", "thinking": "...",
+           "tool_calls": [{"id": "call_yyy", "name": "ls", "args": {}}]},
+          {"role": "tool", "name": "ls", "tool_call_id": "call_yyy", "content": "..."}
+        ]
+      }
+    }
   },
   "next": null
 }
 ```
 
 > LangGraph 把一次 assistant 回合拆成多条消息（`ai` 文本 + `tool_calls`、`tool` 结果、`ai` 续写），前端按 `tool_call_id` 回填。
+
+> `values.scode_subagent_sessions` 是**子 agent 的会话过程**（transcript）：键是父图那条
+> `task` 工具调用的 id，值是这个子 agent 收到的任务 + 它的思考、工具调用、工具结果。
+> 没有子 agent 委派时这个键不存在。详见 `docs/backend/backend.md` §3.19。
 
 ---
 
@@ -302,6 +319,7 @@ Accept: text/event-stream
 |---|---|---|
 | `metadata` | `{"run_id": "..."}` | 运行 ID，取消时需要 |
 | `updates` | `{节点名: {"messages": [...]}}` | 增量状态，前端从中提取 token / tool_call / tool_result |
+| `updates` | `{节点名: {"scode_subagent_sessions": {...}}}` | 子 agent 的会话过程（键是父图那条 `task` 工具调用的 id），见 `docs/backend/backend.md` §3.19 |
 | `updates` | `{"__interrupt__": [{"value": {"action_requests": [...], "review_configs": [...]}}]}` | 图挂起等人工确认 |
 | `messages/partial` | `[{"content": [{"type":"text","text":"..."}, {"type":"thinking","thinking":"..."}], ...}]` | 模型层的实时流。⚠️ content 是**累计快照**不是增量，消费方要自己算差 |
 | `messages/metadata` | `{...}` | 模型调用的元信息，前端不用 |

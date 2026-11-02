@@ -84,7 +84,8 @@
 
 - **顶部**：折叠按钮 + Logo
 - **新建任务** 按钮
-- **任务列表**：**按工作空间分二级目录**——一级是工作空间，二级是该工作空间下的任务
+- **任务列表**：**按工作空间分二级目录**——一级是工作空间，二级是该工作空间下的任务；
+  有子 agent 委派记录的任务下面再挂**第三级**（子 agent 会话），见 7.11
 - **待办**：当前任务的 TodoList，独立滚动区（真实后端暂不产生待办，见 7.6）
 - **底部**：模型选择、亮/暗主题切换、设置页入口
 
@@ -143,6 +144,7 @@ App  (BrowserRouter)
 │   │   ├── NewChatButton
 │   │   ├── WorkspaceGroupItem × N        工作空间分组（一级目录，可折叠）
 │   │   │   └── ConversationItem × N      该工作空间下的任务（二级）
+│   │   │       └── SubagentItem × N      该任务派出去的子 agent（第三级，见 7.11）
 │   │   ├── TodoList                      待办（内联渲染，无独立 TodoItem 文件）
 │   │   └── SettingsPanel
 │   ├── EmptyState  |  MessageList
@@ -152,6 +154,7 @@ App  (BrowserRouter)
 │   │       └── ToolCallCard
 │   │           ├── ToolCallHeader
 │   │           ├── ToolCallResult
+│   │           ├── SubagentSessionPanel   task 卡片里的子 agent 会话（见 7.11）
 │   │           ├── FileDiff
 │   │           └── TerminalOutput
 │   └── InputBar
@@ -195,6 +198,15 @@ App  (BrowserRouter)
 - 状态四态：`pending` / `running` / `success` / `error`，各有独立图标
 - 展开后按类型差异化渲染结果（见 7.2）
 - **展开后直接摊开工具参数**（JSON），不再套一层折叠——排查「Agent 到底传了什么」要少点一次
+- **`task` 卡片展开后，底下挂一个 `SubagentSessionPanel`**——子 agent 的内部过程（见 7.11）。
+  面板要 `threadId`：子 agent 会话是按线程存的，工具调用 id 只在所属线程内唯一
+
+#### SubagentSessionPanel
+
+- 一个折叠块：标题「子 agent：<名字>」+ 任务描述摘要 + 消息条数
+- 展开后按角色渲染 transcript：任务（user）/ 正文 + 思考过程 + 工具调用（ai）/ 工具结果（tool）
+- **思考内容单独一层折叠**（`思考过程 N 字`），跟主会话的 `ThinkingBlock` 一个路子
+- 数据来自 `conversationStore.subagentSessions[threadId][toolCallId]`，**渲染时不自己再取**
 
 #### CodeBlock
 
@@ -225,6 +237,8 @@ interface ConversationState {
   titles: Record<string, string>             // 后端存 metadata.title，读不到时从前端 titles 回退
   pendingMessage: Message | null             // 正在流式生成的 assistant 消息
   pendingThreadId: string | null             // pendingMessage 属于哪个线程，切任务时不会串台
+  subagentSessions: Record<string, Record<string, SubagentSession>>
+  //                                        // thread_id -> tool_call_id -> 子 agent 会话
   isGenerating: boolean
   recovering: boolean                        // 断线/刷新后，后端还在跑，等它跑完
   loading: boolean
@@ -246,17 +260,27 @@ interface ConversationState {
 `pendingThreadId` 让待发消息按任务隔离：只有一个全局 `pendingMessage` 时，在 A 任务生成中切到 B，
 流式内容会串到 B 的界面上。
 
+`subagentSessions` 是**两级索引**：先按线程再按工具调用 id。之所以要按线程分——工具调用 id
+只在所属线程内唯一，而侧边栏、工具卡片、状态快照三处都要按「线程 + 调用」找同一份 transcript。
+它有三个来源，走同一个 `putSubagentSession()` 落位：
+
+1. **流式**：run 的 `updates` 事件里带子 agent 会话（`events.ts` 归一化成 `subagent_session` 事件）
+2. **读历史**：`GET /threads/{id}/state` 的 `values.scode_subagent_sessions`
+3. **切任务**：恢复时把快照里的子 agent 会话一并还原（否则刷新页面就没了）
+
 ### 5.2 uiStore
 
 ```typescript
 interface UIState {
   sidebarCollapsed: boolean
   activeToolCallId: string | null   // 当前展开的工具调用卡片；null = 全部折叠
+  activeSubagentId: string | null   // 左侧栏选中的子 agent 会话（存 tool_call_id）
   theme: Theme                      // 'dark' | 'light'
   collapsedWorkspaces: string[]     // 侧边栏里被折叠的工作空间分组（存路径，空串 = 默认工作空间）
   toggleSidebar: () => void
   setSidebarCollapsed: (collapsed: boolean) => void
   setActiveToolCall: (id: string | null) => void
+  setActiveSubagent: (id: string | null) => void
   toggleTheme: () => void
   toggleWorkspaceGroup: (key: string) => void
   expandWorkspaceGroup: (key: string) => void
@@ -568,7 +592,7 @@ Deep Agents 的内置工具名固定，但自定义工具（终端、git 等）�
 | 搜索 | `grep` `glob` `search` `find` `rg` | 结果列表，摘要显示 `pattern  in path` |
 | 命令 | `bash` `shell` `command` `terminal` `execute` `run_` | 终端风格输出（等宽字体），摘要显示命令行 |
 | 待办 | `todo` | 同步到侧边栏待办列表 |
-| 子 Agent | `task` `subagent` `dispatch` | 按工具卡片渲染 |
+| 子 Agent | `task` `subagent` `dispatch` | 按工具卡片渲染；展开后底下挂一份子 agent 的会话过程（见 7.11） |
 
 `lib/tools.ts` 只放纯数据与判定，**图标由 `ToolCallHeader` 自己持有**：渲染层直接 import
 图标组件会让 `.ts` 变成 `.tsx`，而分类逻辑并不依赖 React。
@@ -740,6 +764,55 @@ Deep Agents 的内置工具名固定，但自定义工具（终端、git 等）�
   可能是技能），只用 `command` 当 key 会撞
 - **mock 模式也要回显**：mock 的 `stream` 里加一句「已把 xxx 的 SKILL.md 全文钉进
   上下文」，让前端开发时能看出勾选确实随请求发出去了
+
+### 7.11 子 agent 会话页
+
+**是什么**：主 agent 用 `task` 把活派给子 agent 之后，子 agent 内部想了什么、跑了什么命令、
+读了什么文件——以前界面上**一个字都看不到**，只有它最后那句汇报。现在这份过程能看了，
+出现在两个地方：
+
+- **内嵌在主会话里**：`task` 工具卡片展开后，底下挂一个「子 agent：<名字>」的折叠块，
+  点开是完整 transcript
+- **左侧栏第三层**：工作空间 → 主会话 → 子 agent，点它跳到那条 task 卡片并展开
+
+**两处指向同一份 transcript**，不是各存一份。数据由后端写进图状态的
+`scode_subagent_sessions` 通道（见 `docs/backend/backend.md` §3.19），前端只读不算。
+
+**为什么不做成独立的路由页**：子 agent 的会话**从属于**主会话——它的 transcript 是主会话
+那一轮 task 调用的产物，单独开一个页面就得处理「它在哪个主会话里」的问题。折叠在主会话里
+天然带上下文，左侧栏那条入口只是个快捷跳转。
+
+**三层树的层级含义**
+
+| 层 | 是什么 | 键 |
+|---|---|---|
+| 一级 | 工作空间分组 | 路径（空串 = 默认工作空间） |
+| 二级 | 主会话（thread） | `thread_id` |
+| 三级 | 子 agent 会话 | 父图那条 task 工具调用的 id（`tool_call_id`） |
+
+第三层**只在有子 agent 委派记录的任务下出现**。任务切换时不自动展开第三层——
+它太深了，默认全折叠。
+
+**交互**
+
+1. 点左侧栏第三层 → 切到那个主会话 + 展开对应的 task 卡片（`activeToolCallId`）
+2. 任务卡片展开后，底下的子 agent 面板**默认也是折叠的**（避免长 transcript 撑爆卡片）
+3. 点开面板 → 按角色渲染：任务（user）/ 正文 + 思考过程 + 工具调用（ai）/ 工具结果（tool）
+4. 思考内容再嵌一层折叠（「思考过程 N 字」），跟主会话的 `ThinkingBlock` 一个路子
+
+**几个实现要点**
+
+- **transcript 是「整轮跑完才有」的**，不是流式：后端等子 agent 整轮结束才把 transcript
+  写回状态（框架的 task 工具用 `invoke()` 调子 agent，没有流）。所以子 agent 面板
+  是在 task 调用**返回后**突然出现的，不是逐块长出来
+- **键是父图那条工具调用的 id**：工具调用 id 只在所属线程内唯一，所以 store 里
+  `subagentSessions` 是 `thread_id -> tool_call_id -> 会话` 两级索引（见 5.1）
+- **刷新页面不丢**：子 agent 会话随 checkpoint 持久化，切任务 / 刷新时从
+  `GET /threads/{id}/state` 的 `values.scode_subagent_sessions` 还原
+- **认不出来的一律丢掉**：`events.ts` 的 `parseSubagentSessions()` 遇到认不出的结构直接
+  跳过——宁可少显示，也不要渲染出半截 transcript
+- **工具卡片要拿 `threadId`**：`ToolCallCard` 渲染时从 store 里按
+  `subagentSessions[threadId][call.id]` 取，取不到就不渲染面板（不报错、不占位）
 
 ---
 
@@ -915,6 +988,7 @@ Shiki 的语言包，属于按需加载，不在首屏关键路径上。
 |------|------|
 | 任务列表 / 新建 / 切换 / 删除 | ✅ |
 | 任务列表按工作空间分二级目录（分组可折叠、状态持久化） | ✅ |
+| 子 agent 会话页（task 卡片内嵌 transcript + 左侧栏第三层 + 刷新后还原） | ✅（见 7.11；transcript 由后端 `scode_subagent_sessions` 状态通道提供） |
 | 流式对话、停止生成、错误浮层 | ✅ |
 | 工具卡片四态、按类型差异化渲染 | ✅ |
 | Diff（统一视图，五种输入形态，2000 行截断） | ✅ |

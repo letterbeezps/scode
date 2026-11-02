@@ -36,7 +36,7 @@
 | 后端依赖 | Deep Agents + LangGraph | ✅ 已装齐并锁进 `uv.lock` |
 | `langgraph.json` | §3.2 已给出 | ✅ 在 `stupid_code/` 目录（不是根目录），图注册 + http.app + checkpointer/store 都已配 |
 | 模型配置 | §4 多供应商 | ✅ `conf/config.toml` + `/admin/models` 管理接口 |
-| 子 agent | §3 委派机制 | ✅ `conf/subagents.toml` 声明，`task` 工具可调 |
+| 子 agent | §3 委派机制 | ✅ `conf/subagents.toml` 声明，`task` 工具可调；子 agent 的内部过程（思考、工具调用、结果）通过图状态通道回传，前端能看（见 `docs/backend/backend.md` §3.19） |
 | MCP 工具 | — | ✅ `conf/mcp.json` 声明，http / stdio 都支持；建图时静态注册（改配置需重启），每个服务器一条长会话；`manual` 档下非只读工具走人工确认 |
 | 目录浏览端点 | §4.1 已定义 | ✅ 已实现：`POST /workspaces/pick` 弹系统原生目录选择框 |
 | skill | — | ✅ 全局 `~/.scode/.agents/skills/` + 项目级 `<工作空间>/.agents/skills/`；`GET /admin/skills` 列清单；用户勾选的 `SKILL.md` 全文钉进上下文 |

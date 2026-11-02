@@ -4,8 +4,8 @@
 > 实现、有哪些硬约束和踩过的坑。
 > 它**不记录开发过程**：哪一期做了什么、当时排除了什么、当时踩的什么，都不在这里。
 >
-> - 核对时间：2026-10-30，代码基线 `ec286d9`
-> - 后端：`stupid_code/`（Python 5810 行）　前端：`web/src/`（TS/TSX 8036 行）
+> - 核对时间：2026-11-01，代码基线 `8bcef2e`
+> - 后端：`stupid_code/`（Python 6221 行）　前端：`web/src/`（TS/TSX 8686 行）
 > - 依赖版本：`deepagents 0.7.28` / `langchain 1.4.6` / `langgraph 1.2.16` /
 >   `langgraph-cli 0.4.36` / `langchain-anthropic 1.7.6` / `langchain-openai 1.7.2` /
 >   `langchain-mcp-adapters 0.3.2`
@@ -45,6 +45,7 @@
 | 19 | 记忆两个作用域 + 写记忆走人工确认 | §3.6 |
 | 20 | skill 两个作用域 | §3.15 |
 | 21 | 思考预算 + 供应商私有字段 + 流式档位 | §3.18 |
+| 22 | 子 agent 会话 transcript（子 agent 的独立会话页） | §3.19 |
 | Security | 安全姿态总表 | §5 |
 | Security | 每条姿态的理由 | §5.1 |
 | Security | 已知缺口（都是「已知的边界」） | §6 |
@@ -56,7 +57,7 @@
 
 ### 1.1 一句话
 
-**后端 Agent Server 已跑通，前端已连真后端完成整轮对话，agent 能改真实文件、跑本机 shell、派子 agent、存长期记忆，执行命令前有人工确认关卡。**
+**后端 Agent Server 已跑通，前端已连真后端完成整轮对话，agent 能改真实文件、跑本机 shell、派子 agent、存长期记忆，执行命令前有人工确认关卡。子 agent 的内部过程（思考、工具调用、结果）也能看到了——折叠在主会话的 `task` 卡片里，左侧栏多一层子 agent 条目。**
 
 ### 1.2 能力清单
 
@@ -79,6 +80,8 @@
 | skill（全局 + 项目级） | `stupid_code/graph/skills.py` + `admin/skills.py` + 前端 `lib/skills.ts` | §3.15 |
 | 重复调用拦截 | `stupid_code/graph/repeated_calls.py` | §3.16 |
 | 任务参数（`context_schema`） | `stupid_code/graph/run_context.py` + `graph/agent.py` | §3.17 |
+| 思考与流式档位 | `stupid_code/config/model.py` + 前端 `events.ts` | §3.18 |
+| 子 agent 会话 transcript | `stupid_code/graph/subagent_trace.py` + 前端 `SubagentSessionPanel.tsx` | §3.19 |
 
 ### 1.3 前端完成度
 
@@ -100,6 +103,9 @@
   → `context.skills`
 - **记忆面板**（输入区「记忆」按钮，查看/编辑用户级 + 项目级两份记忆）
   → `GET`/`PUT /admin/memory`
+- **子 agent 会话页**（主会话的 `task` 卡片里内嵌一份子 agent 的 transcript；
+  左侧栏按「工作空间 → 主会话 → 子 agent」三层收纳）
+  → 图状态通道 `values.scode_subagent_sessions`，见 §3.19
 - 模型管理界面（直连 `/admin/models`）、会话列表 / 建会话 / 删会话 / 标题
   （存平台的 `metadata.title`）、流式对话、工具调用可视化、Diff 渲染、Todo 同步
   （仅 mock；真实后端未注册 `write_todos`，见 §6）
@@ -149,6 +155,7 @@ stupid-code/
 │   │   ├── agent.py            # create_deep_agent()，导出 graph
 │   │   ├── backend.py          # 真实磁盘 + shell 的 backend
 │   │   ├── subagent_policy.py  # 子 agent 的权限/HITL/工具策略
+│   │   ├── subagent_trace.py   # 子 agent 会话 transcript：捕获 + 编组 + 状态通道
 │   │   ├── run_context.py      # 任务参数的结构化 context（context_schema）
 │   │   ├── workspace.py        # 工作空间：解析 context.workspace + 校验 + 写进系统提示词
 │   │   ├── compaction.py       # /compaction 手动压缩 + 摘要用当前模型
@@ -2281,6 +2288,99 @@ interleaved_thinking = true
 | 开思考会不会影响多轮工具调用 | 不影响（开 / 关两种配置下多轮行为一致） |
 | `openai` 协议配了思考预算 | 构建模型时抛 `ConfigError`，提示该协议不支持 ✔ |
 
+### 3.19 子 agent 会话 transcript（子 agent 的独立会话页）
+
+**是什么**：主 agent 用 `task` 委派出去之后，子 agent 内部想了什么、跑了什么命令、
+读了什么文件——以前界面上**一个字都看不到**，只有它最后那句汇报。现在这段过程被
+抓下来写进主 agent 的图状态，前端渲染成两处：
+
+- **内嵌折叠面板**：主会话里那条 `task` 工具卡片展开后，底下挂一个「子 agent：<名字>」
+  的折叠块，点开就是完整 transcript（任务描述 / 思考 / 工具调用 / 工具结果）。
+- **左侧栏第三层**：工作空间 → 主会话 → 子 agent，点它跳到那条 task 卡片并展开它。
+
+两处指向**同一份 transcript**，不是各存一份。
+
+**涉及的文件**
+
+| 位置 | 内容 |
+|---|---|
+| `graph/subagent_trace.py` | `SubagentSessionState`（状态通道声明）+ `SubagentTranscriptMiddleware`（子 agent 侧写）+ `SubagentSessionBinder`（父图侧编组） |
+| `graph/subagent_policy.py` | 给每个子 agent 的规格挂上 `SubagentTranscriptMiddleware` |
+| `graph/agent.py` | `create_deep_agent(state_schema=SubagentSessionState)`；主 agent 中间件栈里加 `SubagentSessionBinder()` |
+| 前端 `web/src/api/{types,events,thread,run}.ts` | 归一化 `scode_subagent_sessions` 通道 |
+| 前端 `web/src/store/{conversationStore,uiStore}.ts` | 存 / 还原子 agent 会话 |
+| 前端 `web/src/components/chat/tools/SubagentSessionPanel.tsx` | 内嵌折叠面板 |
+| 前端 `web/src/components/sidebar/SubagentItem.tsx` | 左侧栏第三层条目 |
+
+**关键取舍**
+
+- **放弃流式转发，改走状态回传**。deepagents 0.7.28 的 `task` 工具内部用
+  `subagent.invoke()` 调子 agent，而 **`invoke()` 不产生流**——子 agent 侧用
+  `get_stream_writer()` 或 `runtime.stream_writer` 都能写成功，但父图**收不到任何
+  custom 事件**（实测：父图 writer 地址 `0x111eb9760` ≠ 子 agent writer
+  `0x111ebaf20`），`subgraphs: true` 也无效。自己包一层 task 工具就得复制框架整套
+  fork / response_format / interrupt 语义，框架一升级就跟着坏。**状态回传是框架官方
+  支持的路子**，不碰框架私有实现。
+- **transcript 存父图 state 通道，不新建存储层**。通道名 `scode_subagent_sessions`，
+  随 checkpoint 持久化 → 刷新页面不丢，也不用加管理端点。
+- **关联键分两步**。子 agent 侧拿不到父图的 tool_call_id（隔离模式下它只看得到父图的
+  `messages`），所以先写**临时键** `__pending__`；父图的 `SubagentSessionBinder` 在
+  `wrap_tool_call` 里拦截 task 的返回值，从 `Command.update` 里把这份 transcript 捞出来，
+  **用父图那条工具调用的 id 重新编组**再交回状态。
+- **用 `after_agent` 而不是 `after_model`**。前者整轮只触发一次、写完整历史；
+  后者每轮触发，会写出半截历史还得自己去重。
+- **自定义字段不用 `PrivateStateAttr`**。那个标记会让字段被 `OmitFromSchema` 排除，
+  不进平台输出的 state，前端读不到。
+- **保留框架原生 task 工具**。不注册同名工具（会触发 `Unknown tools` 报错），
+  改成用 `wrap_tool_call` 拦截它的返回值。
+- **transcript 截断保留最后 200 条**。transcript 进 checkpoint，不设限会撑大状态；
+  结论在末尾，开头的铺垫价值最低。
+
+**数据形状**
+
+```jsonc
+// 图状态 values.scode_subagent_sessions
+{
+  "call_xxx": {
+    "agent": "reviewer",
+    "tool_call_id": "call_xxx",
+    "description": "请审查当前工作目录……",   // 子 agent 收到的第一条人类消息
+    "messages": [
+      { "role": "user", "content": "请审查当前工作目录……" },
+      { "role": "ai", "content": "……", "thinking": "……",
+        "tool_calls": [{ "id": "call_yyy", "name": "ls", "args": {} }] },
+      { "role": "tool", "name": "ls", "tool_call_id": "call_yyy", "content": "……" }
+    ]
+  }
+}
+```
+
+**踩过的坑**
+
+- **`Annotated` 必须在运行时可导入**。`SubagentSessionState` 里用了
+  `Annotated[dict[str, Any], _merge_sessions]`；只把它放进 `TYPE_CHECKING` 块
+  （或 `from __future__ import annotations` 之后只当类型用），建图时会
+  `NameError: name 'Annotated' is not defined`。
+- **`Command` 从 `langgraph.types` 导入**，不是 `langgraph.graph`。
+- **中间件钩子靠类级别覆盖才生效**：框架判定某个钩子是否被接管，用的是
+  `m.__class__.X is not AgentMiddleware.X`——所以 `wrap_tool_call` / `after_agent`
+  必须是**实例方法**（不能写成 `staticmethod` / `classmethod`）。
+- **`after_agent` 的节点名是 `{middleware.name}.after_agent`**，调试时按这个名字找节点。
+- **平台原生支持 custom 流**（`langgraph_api` 的 `SUPPORTED_CHANNELS` 含 `custom`，
+  SSE 事件名 `event: custom`）——但这条在 task 工具这里用不上（见上面的 invoke 吞流）。
+
+**已验证的事实（2026-11-01 对真实服务 + MiniMax-M3）**
+
+| 验证项 | 结果 |
+|---|---|
+| 真实委派后 `GET /threads/{id}/state` 的 `values.scode_subagent_sessions` | 含键 `call_ldowvXxRUjP3CsUIt6dIDs2A`，内容是 reviewer 的完整 transcript（55 条）✔ |
+| 键是否等于父图那条 task 工具调用的 id | 是（与 `messages[].tool_calls[].id` 一致）✔ |
+| transcript 内容 | 任务描述 + AI 思考 + 工具调用（`ls` / `glob` / `grep` / `read_file`）+ 工具结果 ✔ |
+| 前端内嵌面板 | task 卡片展开后出现「子 agent：reviewer · 55 条」，点开是完整 transcript ✔ |
+| 前端左侧栏 | 三层树：工作空间 → 主会话 → 子 agent ✔ |
+| 刷新页面后子 agent 会话还在 | ✔（通道随 checkpoint 持久化，`/state` 的 `values` 里能读回来） |
+| 同一请求同时带 `context` + `config.configurable` | 仍 400（没碰这条链路）✔ |
+
 ## 4. 关键机制速查
 
 ### 4.1 图的构建（`graph/agent.py`）
@@ -2305,11 +2405,15 @@ graph = create_deep_agent(
     backend=backend,
     # 一次 run 的任务参数：workspace / permissions / model / skills
     context_schema=RunContext,
+    # 图状态里多一个通道存子 agent 的会话过程（见 §3.19）
+    state_schema=SubagentSessionState,
     # 切换中间件放最前 → 在最终栈里比 prompt-caching / memory 更外层
     middleware=[
         ChatModelSwitchMiddleware(),
         WorkspaceMiddleware(),
         PermissionLevelMiddleware(),
+        # 把子 agent 的 transcript 跟父图的工具调用对上号（见 §3.19）
+        SubagentSessionBinder(),
         # 名字叫 SummarizationMiddleware → 顶掉 create_deep_agent 自带的那份
         compaction,
         # compact_conversation 工具：模型自己也能压缩
@@ -2471,7 +2575,7 @@ minimax / deepseek 规格都不命中（最终提示词 == 作者提示词）；
 | MCP 配置写错的服务器只跳它自己 | 那几个工具整个会话都没有，界面上也看不出来 | 日志里会报一句为什么；其余服务器照常 |
 | TodoList 未接线 | 真实后端没有注册 `write_todos`（`agent.py` 的中间件栈里没有 `TodoListMiddleware`，0.7.28 的默认栈也不带），待办只在 mock 模式可见 | 前端消费链路已实现；要启用得显式加 `TodoListMiddleware`，并把 `write_todos` 纳入提示词的工具清单 |
 | 流式回复是整段到达 | 不是 token 级增量 | 已修：run 同时订阅 `updates` + `messages`，正文和思考逐块流出来（详见 §3.18） |
-| 子 agent 内部的过程看不到 | 主 agent 派出去的 `task` 子 agent 读文件、跑命令都不出现在界面上，只看到它的最终汇报 | deepagents 的 `task` 工具用 `subagent.invoke()` 执行，**没有流式**（deepagents 0.7.28 的实现）；`subgraphs: true` 也救不了（实测） |
+| 子 agent 的过程不是流式的 | 子 agent 的 transcript 要等它**整轮跑完**才一次性出现，不能像主 agent 的正文那样逐块流出来 | `task` 工具用 `subagent.invoke()` 执行，**没有流式**（deepagents 0.7.28 的实现）；`subgraphs: true` 也救不了（实测）。内容本身已用「状态回传」补上（见 §3.19），但逐块流拿不到 |
 | 模型不一定思考 | MiniMax-M3 带工具时有些回合不返回 thinking 块，界面上就没有「思考过程」 | 模型自己决定的（实测同一请求 4 次里 1 次有思考）；不是配置没生效——没开预算时一次都没有 |
 | 没有自动化测试、没有 CI | 验证全靠手工 | 本项目是有意如此（学习项目） |
 
@@ -2808,6 +2912,49 @@ ls -la "$WS"
 #    预期：SSE 里是 error 事件，message 是「工作空间不存在：/definitely/not/here」
 #    （WorkspaceError 必须继承 ValueError，平台才透传 str(exc)，见下方补充）
 ```
+
+### 步骤 11：子 agent 会话 transcript
+
+```bash
+# 1. 起服务，让主 agent 真的委派一次（子 agent 名见 conf/subagents.toml）
+cd /path/to/repo && uv run scode
+
+TID=$(curl -s -X POST http://127.0.0.1:2024/threads \
+  -H 'Content-Type: application/json' -d '{}' \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['thread_id'])")
+
+curl -sN -X POST "http://127.0.0.1:2024/threads/$TID/runs/stream" \
+  -H 'Content-Type: application/json' -H 'Accept: text/event-stream' \
+  -d '{"assistant_id":"code_agent",
+       "input":{"messages":[{"role":"user","content":"请调用 task 工具委派给 reviewer，让它读一下当前目录。"}]},
+       "stream_mode":["updates"],"on_disconnect":"continue",
+       "context":{"permissions":"auto"}}'
+
+# 2. 查状态：子 agent 的 transcript 在 values.scode_subagent_sessions 里
+curl -s "http://127.0.0.1:2024/threads/$TID/state" | python3 -c '
+import sys, json
+vals = json.load(sys.stdin).get("values", {})
+sess = vals.get("scode_subagent_sessions") or {}
+for k, v in sess.items():
+    print(k, "| agent =", v.get("agent"), "| messages =", len(v.get("messages", [])))
+'
+#    预期：键就是父图那条 task 工具调用的 id，
+#          agent 是子 agent 的名字，messages 里有它的完整过程
+
+# 3. 核对键确实是父图的 tool_call_id
+curl -s "http://127.0.0.1:2024/threads/$TID/state" | python3 -c '
+import sys, json
+vals = json.load(sys.stdin).get("values", {})
+ids = [tc["id"] for m in vals.get("messages", []) for tc in (m.get("tool_calls") or [])]
+print("父图 tool_call id:", ids)
+print("子 agent 会话键:", list(vals.get("scode_subagent_sessions") or {}))
+'
+#    预期：task 那条调用的 id 出现在子 agent 会话的键里
+```
+
+前端：打开该会话 → 左侧栏应出现三层树（工作空间 → 主会话 → 子 agent）；
+展开主会话里那条 `task` 卡片 → 底下有「子 agent：<名字>」折叠块，点开是完整 transcript；
+**刷新页面后仍在**（通道随 checkpoint 持久化）。
 
 ## 8. 平台与框架的实测结论
 
