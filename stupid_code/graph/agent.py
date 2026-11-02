@@ -19,6 +19,7 @@ from stupid_code.graph.repeated_calls import RepeatedCallMiddleware
 from stupid_code.graph.run_context import RunContext
 from stupid_code.graph.skills import build_skills_middleware
 from stupid_code.graph.subagent_policy import apply_subagent_policies
+from stupid_code.graph.subagent_trace import SubagentSessionBinder, SubagentSessionState
 from stupid_code.graph.workspace import WorkspaceMiddleware
 
 # 真实 backend：文件操作落工作空间的真实磁盘，execute 直接在本机跑 shell。
@@ -64,6 +65,10 @@ graph = create_deep_agent(
     # 每次 run 的任务参数（workspace / permissions / model / skills）走结构化
     # context，不再从 configurable 字典里按字符串键取。见 graph/run_context.py
     context_schema=RunContext,
+    # 图状态里多一个通道存子 agent 的会话过程（transcript）。
+    # 子 agent 写、框架带回、这里声明——前端从 /threads/{id}/state 读它，
+    # 刷新页面后子 agent 的会话页还在。见 graph/subagent_trace.py
+    state_schema=SubagentSessionState,
     # skill 源：**全局**的那份是静态的（`GLOBAL_SKILL_SOURCES`）——它不依赖
     # 工作空间，可以写死。项目级的那份不行（工作空间是运行期参数），由
     # 下面的 build_skills_middleware() 每轮现算。
@@ -99,6 +104,10 @@ graph = create_deep_agent(
         # 权限档位记进 state：HITL 的 when 谓词在恢复时会再跑一次，必须给出
         # 同样的答案，只读客户端回传的值会被档位变化带偏（详见 permissions.py）
         PermissionLevelMiddleware(),
+        # 把子 agent 的 transcript 跟父图的工具调用对上号。
+        # 排在权限中间件之后：它只是改写 task 工具返回值里的一个键，
+        # 不碰提示词、不碰模型，跟别人的顺序无关。
+        SubagentSessionBinder(),
         compaction,
         # compact_conversation 工具：模型自己也能压缩上下文窗口
         build_compaction_tool_middleware(compaction),

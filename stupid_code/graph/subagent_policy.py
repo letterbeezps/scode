@@ -37,6 +37,7 @@ from deepagents.middleware.filesystem import (
 
 from stupid_code.graph.backend import build_restricted_backend
 from stupid_code.graph.permissions import PermissionLevelMiddleware
+from stupid_code.graph.subagent_trace import SubagentTranscriptMiddleware
 
 # 受限子 agent 的文件工具白名单：去掉 execute。
 # 它的 backend 本来就没有 shell，留着 execute 只会让模型调一个必然报错的工具。
@@ -79,6 +80,9 @@ def apply_subagent_policies(
 
     middleware = list(new_spec.get("middleware", []))
     middleware.append(PermissionLevelMiddleware())
+    # 抓子 agent 的会话过程（它内部想了什么、做了什么）。
+    # transcript 通过状态通道回到父图，见 graph/subagent_trace.py。
+    middleware.append(SubagentTranscriptMiddleware(str(new_spec["name"])))
 
     permissions = new_spec.get("permissions")
     if not permissions:
