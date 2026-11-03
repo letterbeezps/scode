@@ -1,4 +1,4 @@
-from deepagents import create_deep_agent
+from deepagents import RubricMiddleware, create_deep_agent
 
 from stupid_code.config.model import load_model
 from stupid_code.config.prompts import SYSTEM_PROMPT
@@ -42,6 +42,20 @@ mcp_tools = load_mcp_tools()
 # 拦下时图挂起等前端批准/拒绝——见 graph/permissions.py
 # 非只读的 MCP 工具也在这里登记：manual 档下同样要确认
 interrupt_on = build_interrupt_on(mcp_tools=mcp_tools)
+
+# 验收闭环（beta API）：run 的 input 带 `rubric` 键时激活——agent 每次要
+# 收尾（模型不再调工具）时，由独立的 grader 子 agent 按 rubric 逐条验收
+# 本次 transcript，不通过就注入 gap 反馈跳回模型返工（最多 max_iterations
+# 轮），通过才正常结束。input 不带 rubric 时两个钩子都直接返回，等于不存在。
+#
+# ① grader 用的模型在**建图时固定**：ChatModelSwitchMiddleware 只换主 agent
+#    的 request.model，管不到 grader 子 agent——所以这里给 default_model。
+# ② rubric 走 **input** 而不是 context：它是框架的公开 state key（按 thread
+#    粘滞），前端语义是「非空=设置/换尺子，null=清除」（见 web/src/api/run.ts）。
+# ③ 位置不敏感：只有 before_agent / after_agent 钩子，不碰提示词不碰模型。
+# ④ 反馈消息进对话历史，带 lc_source="rubric_grader" 标记；验收状态在
+#    state 的 _rubric_status（PrivateStateAttr，从 /threads/{id}/state 读）。
+rubric = RubricMiddleware(model=default_model, max_iterations=3)
 
 graph = create_deep_agent(
     model=default_model,
@@ -115,6 +129,9 @@ graph = create_deep_agent(
         build_skills_middleware(backend),
         build_memory_middleware(),
         RepeatedCallMiddleware(),
+        # 验收闭环：见上面的 rubric 说明。挂在最后（after_agent 钩子，
+        # 位置不敏感，只是让「按请求路径插刀」的几个排在一起）
+        rubric,
     ],
     interrupt_on=interrupt_on,
 )
