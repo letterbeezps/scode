@@ -261,7 +261,10 @@ Accept: text/event-stream
 
 {
   "assistant_id": "code_agent",
-  "input": {"messages": [{"role": "user", "content": "你好"}]},
+  "input": {
+    "messages": [{"role": "user", "content": "你好"}],
+    "rubric": "1. 所有公开函数有类型注解 2. 测试全部通过"
+  },
   "stream_mode": ["updates", "messages"],
   "on_disconnect": "continue",
   "context": {
@@ -274,6 +277,19 @@ Accept: text/event-stream
 ```
 
 - `assistant_id`：来自 `VITE_ASSISTANT_ID`，默认 `code_agent`
+- `input.rubric`：**任务验收标准**（可选键，走 input 而不是 context）。
+  后端 `RubricMiddleware` 的公开 state key。语义由前端固定为「UI 所见即所是」：
+  - 非空字符串 = 设置/换尺子。agent 每次收尾（模型不再调工具）时，由独立的
+    grader 子 agent（用后端默认模型）按 rubric 逐条验收本次 transcript，
+    `needs_revision` 则注入反馈返工，最多 3 轮；`satisfied` / 超限 / 评审出错
+    才正常结束（最后一次回答原样返回）。
+  - `null` = 显式清除。**注意不能省略这个键**：rubric 按 thread 粘滞，省略只
+    表示「这次不改」，state 里的旧值继续生效。
+  - 恢复挂起的运行（`command.resume`）**不需要带**：rubric 已在图状态里，
+    挂起的那次 run 的 before_agent 已经跑过。
+  - 返工反馈消息会进对话历史（`name="rubric_grader"`、`lc_source` 标记）；验收
+    状态在图状态的 `_rubric_status`（从 `GET /threads/{thread_id}/state` 读）。
+  见 `stupid_code/graph/agent.py` 的 rubric 说明
 - `stream_mode`：`["updates", "messages"]`——`updates` 给工具调用、工具结果和人工确认
   （节点跑完推一次），`messages` 给模型层的实时流（正文和思考逐块出来）。
   不取 `values`：每次都回传全量状态，噪音大。

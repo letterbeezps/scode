@@ -82,6 +82,7 @@
 | 任务参数（`context_schema`） | `stupid_code/graph/run_context.py` + `graph/agent.py` | §3.17 |
 | 思考与流式档位 | `stupid_code/config/model.py` + 前端 `events.ts` | §3.18 |
 | 子 agent 会话 transcript | `stupid_code/graph/subagent_trace.py` + 前端 `SubagentSessionPanel.tsx` | §3.19 |
+| 验收闭环（rubric） | `graph/agent.py` 的 `RubricMiddleware`（deepagents 自带）+ 前端 `RubricPicker.tsx` | §3.20 |
 
 ### 1.3 前端完成度
 
@@ -2381,6 +2382,45 @@ interleaved_thinking = true
 | 刷新页面后子 agent 会话还在 | ✔（通道随 checkpoint 持久化，`/state` 的 `values` 里能读回来） |
 | 同一请求同时带 `context` + `config.configurable` | 仍 400（没碰这条链路）✔ |
 
+### 3.20 验收闭环（RubricMiddleware，beta API）
+
+**是什么**：deepagents 自带的自我验收中间件。run 的 **input** 带 `rubric` 键（描述「什么算干完」）
+时激活——agent 每次要收尾（模型不再调工具）时，由一个**独立的 grader 子 agent**（内部
+`create_agent` + `response_format=GraderResponse` 结构化输出）按 rubric 逐条验收本次 transcript，
+`needs_revision` 就把 gap 清单作为 `HumanMessage` 注入并 `jump_to="model"` 返工，最多
+`max_iterations`（本项目配 3）轮；`satisfied` / 超限 / `failed` / `grader_error` 则正常结束，
+最后一次回答原样返回。**input 不带 rubric 时两个钩子都直接返回，等于不存在**——所以可以
+无条件挂载、按需激活。
+
+**关键取舍**：
+
+- **走 input 而不是 context**：rubric 是框架的公开 state key（`RubricState.rubric`），**按
+  thread 粘滞**。与 workspace / skills 那类「每次 run 都随请求走」的任务参数是两套通道。
+- **前端语义「UI 所见即所是」**（`web/src/api/run.ts`）：非空 = 设置/换尺子，空串 =
+  显式清除（`rubric: null`）。**清除必须显式传 null**——省略这个键只表示「这次不改」，
+  state 里的旧值会继续生效。
+- **grader 模型建图时固定**：`ChatModelSwitchMiddleware` 只换主 agent 的 `request.model`，
+  管不到 grader 子 agent——给它 `default_model`，运行期切模型不影响它。
+- **换 rubric = 新的验收轮**：框架检测到字符串变了会重置迭代预算并重新分解 criterion
+  （替换，不是叠加；不回溯已验收的产出）。
+- **位置不敏感**：只有 `before_agent`（重置簿记）/ `after_agent`（评审 + 跳转）两个钩子，
+  不碰提示词不碰模型；挂在 middleware 列表最后。
+
+**踩过的坑**：
+
+- 验收状态 `_rubric_status` 是 `PrivateStateAttr`——**不在 run 的输出里**，要从
+  `GET /threads/{id}/state` 的 values 读，或订阅 `rubric_evaluation_start/end` 流事件。
+- 直接 `graph.invoke` 验证时 input.rubric 照常生效，但要读验收状态得给图挂 checkpointer
+  再 `get_state()`（生产环境走平台没有这个问题）。
+
+**已验证的事实**（deepagents 0.7.28，镜像建图 + 假主模型 + 真 grader 实测）：
+
+- rubric 进 input 后 grader 真实评审，`needs_revision` 反馈消息进历史且带
+  `lc_source="rubric_grader"` 标记；3 轮耗尽后 `_rubric_status=max_iterations_reached`，
+  `_rubric_evaluations` 记满 3 条。
+- `rubric: null` 清除后中间件恢复休眠。
+- 不带 rubric 的 run 两个钩子零开销直接返回。
+
 ## 4. 关键机制速查
 
 ### 4.1 图的构建（`graph/agent.py`）
@@ -2391,6 +2431,8 @@ default_model = load_model()
 compaction = build_compaction_middleware(default_model, backend)
 mcp_tools = load_mcp_tools()
 interrupt_on = build_interrupt_on(mcp_tools=mcp_tools)
+# 验收闭环：input 带 rubric 时激活，见 §3.20
+rubric = RubricMiddleware(model=default_model, max_iterations=3)
 
 graph = create_deep_agent(
     model=default_model,
@@ -2421,6 +2463,8 @@ graph = create_deep_agent(
         build_skills_middleware(backend),
         build_memory_middleware(),
         RepeatedCallMiddleware(),
+        # 验收闭环（after_agent 钩子，位置不敏感）——见 §3.20
+        rubric,
     ],
     interrupt_on=interrupt_on,
 )
