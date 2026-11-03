@@ -81,6 +81,7 @@ function hydrateTaskSettings(thread: Thread): void {
   if (Array.isArray(metadata.skills)) {
     patch.skills = metadata.skills.filter((s): s is string => typeof s === 'string')
   }
+  if (typeof metadata.rubric === 'string') patch.rubric = metadata.rubric
   if (Object.keys(patch).length === 0) return
 
   useTaskStore.getState().hydrate(thread.thread_id, patch)
@@ -943,6 +944,9 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       permissions: taskSettings.permissions,
       // 勾选的 skill 也存进去：刷新页面后能回填，不用重新勾一遍
       skills: taskSettings.skills,
+      // 验收标准同理：刷新页面后回填，发送时非空设置 / 空串清除
+      // （语义见 api/run.ts streamRun 的注释）
+      rubric: taskSettings.rubric,
     }
     if (title && title !== '新任务') metadata.title = title
     // **先落盘再开跑**：审批挂起时刷新页面，档位和工作空间是从 metadata 回填的

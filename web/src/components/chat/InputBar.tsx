@@ -19,6 +19,7 @@ import { SLASH_COMMANDS, skillToMenuItem, type SlashCommand } from '../../lib/co
 import { SlashCommandMenu } from './SlashCommandMenu'
 import { WorkspacePicker } from './WorkspacePicker'
 import { PermissionPicker } from './PermissionPicker'
+import { RubricPicker } from './RubricPicker'
 import { MemoryPanel } from '../memory/MemoryPanel'
 import { useConversationStore } from '../../store/conversationStore'
 import { useTaskSettings, useTaskStore } from '../../store/taskStore'
@@ -280,6 +281,7 @@ export function InputBar({
         <div className="mt-2 flex flex-wrap items-center gap-2 px-1">
           <WorkspacePicker threadId={threadId} disabled={isGenerating || approvalPending} />
           <PermissionPicker threadId={threadId} disabled={isGenerating || approvalPending} />
+          <RubricPicker threadId={threadId} disabled={isGenerating || approvalPending} />
           <button
             type="button"
             onClick={() => setMemoryOpen(true)}

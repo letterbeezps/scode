@@ -18,11 +18,19 @@ export interface TaskSettings {
    * 勾选的会被**钉进上下文**（`SKILL.md` 全文直接进对话历史）。
    */
   skills: string[]
+  /**
+   * 任务验收标准（rubric）。空字符串表示关闭验收。
+   *
+   * 发送时的语义见 api/run.ts：非空设置/换尺子，空串显式清除——
+   * 后端 rubric 按 thread 粘滞，不带这个键就沿用 state 里的旧值，
+   * 所以「清除」必须显式传 null，不能只是省略。
+   */
+  rubric: string
 }
 
 function defaultSettings(): TaskSettings {
   // 默认不给工作空间：让用户明确选，而不是默认就授权了某个目录
-  return { workspace: '', permissions: DEFAULT_PERMISSION_LEVEL, skills: [] }
+  return { workspace: '', permissions: DEFAULT_PERMISSION_LEVEL, skills: [], rubric: '' }
 }
 
 export interface TaskStore {

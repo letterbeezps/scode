@@ -312,6 +312,11 @@ export const mockRuns = {
         )
       }
 
+      // 验收标准同理：回显「已在验收」，前端开发时能看出 rubric 随请求发出了
+      if (options.rubric.trim()) {
+        await emitText(`（mock）已按验收标准核验：${options.rubric.trim()}\n\n`, 8)
+      }
+
       for (const step of scriptFor(message)) {
         if (signal.aborted) break
 

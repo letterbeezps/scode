@@ -81,7 +81,21 @@ export function streamRun(
 
   const body = JSON.stringify({
     assistant_id: ASSISTANT_ID,
-    input: { messages: [{ role: 'user', content: message }] },
+    /*
+     * rubric（验收标准）走 **input** 而不是上面的 context：它是后端
+     * RubricMiddleware 的公开 state key（按 thread 粘滞）。语义固定为
+     * 「UI 所见即所是」：
+     * - 非空：设置/换尺子。agent 每次收尾时由独立 grader 按 rubric 逐条
+     *   验收本次工作，不通过自动返工（最多 3 轮）才交付。
+     * - 空串：**显式清除**（传 rubric: null）。不能省略这个键——省略只
+     *   表示「这次不改」，state 里的旧 rubric 会继续生效，用户会以为
+     *   关了其实还在验。
+     * 重复传相同字符串无害：后端把它当新的一轮验收（迭代预算重置）。
+     */
+    input: {
+      messages: [{ role: 'user', content: message }],
+      rubric: options.rubric.trim() || null,
+    },
     // updates 给工具调用和最终结果，messages 给实时文本和思考（见 STREAM_MODES）
     stream_mode: [...STREAM_MODES],
     // 浏览器断开后让后端继续跑完，避免半途中断留下脏状态

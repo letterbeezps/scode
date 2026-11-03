@@ -229,6 +229,15 @@ export interface RunOptions {
    * 未勾选的只在系统提示词的 skill 列表里，agent 觉得相关时会自己读。
    */
   skills: string[]
+  /**
+   * 任务验收标准（后端 RubricMiddleware）。
+   *
+   * 走 run 的 **input** 而不是 context：它是框架的公开 state key，按 thread
+   * 粘滞。语义：非空 = 设置/换尺子（每次回答交付前由独立 grader 逐条验收，
+   * 不过自动返工）；空串 = 显式清除（后端收到 rubric: null）。UI 所见即
+   * 所是，避免粘滞造成「以为关了其实还在验」的意外。
+   */
+  rubric: string
 }
 
 /* ---------------------------------------------------------------------- 技能 */
